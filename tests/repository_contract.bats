@@ -40,6 +40,34 @@
   [ "$status" -eq 0 ]
 }
 
+@test "workflow action refs are full 40-character SHAs" {
+  invalid_ref='3d3c42e5aac5ba805825da76410c181273ba90b'
+  run bash -c '
+    ref="$1"
+    if [[ ! "$ref" =~ ^[0-9a-fA-F]{40}$ ]]; then
+      printf "action ref must be exactly 40 hex chars (got %d): %s\n" "${#ref}" "$ref"
+      exit 1
+    fi
+  ' _ "$invalid_ref"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"action ref must be exactly 40 hex chars"* ]]
+
+  run awk '
+    /^[[:space:]]*-[[:space:]]*uses:/ {
+      ref = $0
+      sub(/^[^@]*@/, "", ref)
+      sub(/[[:space:]]+#.*/, "", ref)
+      sub(/[[:space:]]*$/, "", ref)
+      if (length(ref) != 40 || ref !~ /^[0-9a-fA-F]+$/) {
+        print "action ref must be exactly 40 hex chars: " ref
+        invalid = 1
+      }
+    }
+    END { exit invalid }
+  ' .github/workflows/quality.yml
+  [ "$status" -eq 0 ]
+}
+
 @test "phase 0 contains no application workspaces" {
   [ ! -d apps ]
   [ ! -d services ]
