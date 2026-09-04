@@ -140,11 +140,11 @@ uv python install 3.14.7
 
 ```bash
 uv --version
-UV_PYTHON_DOWNLOADS=never uv python find 3.14.7
+UV_PYTHON_DOWNLOADS=never uv python find --managed-python 3.14.7
 /usr/bin/python3 --version
 ```
 
-The first Python command must resolve an uv-managed 3.14.7 interpreter, not `/usr/bin`, and the final command confirms the system interpreter is unchanged.
+The first Python command must resolve an uv-managed 3.14.7 interpreter, not `/usr/bin` or Homebrew's Python path, and the final command confirms the system interpreter is unchanged.
 
 ### If it fails
 
@@ -207,7 +207,7 @@ The status command must report an authenticated session for `github.com` without
 
 ### If it fails
 
-See [github.cli](troubleshooting.md#github-cli) or [github.auth](troubleshooting.md#github-auth). Check the hostname and network connection, then rerun the interactive login. Do not print tokens or copy credential files into the repository.
+See [github.cli](troubleshooting.md#github-cli) or [github.auth](troubleshooting.md#github-auth). If the doctor reports that `github.com` cannot be reached, restore network connectivity before retrying. Only after connectivity succeeds should an unauthenticated result be remediated with the interactive login. Do not print tokens or copy credential files into the repository.
 
 ## 8. Focused doctor checks
 
@@ -290,12 +290,13 @@ Confirm the following in the same fresh terminal:
 ```bash
 xcrun simctl list devices available | grep 'iPhone 17 Pro'
 docker info >/dev/null
+docker run --rm hello-world
 docker compose version
 gh auth status --hostname github.com
 ```
 
-The iPhone 17 Pro reaches a finished boot state, Docker's daemon responds, Compose is available, and GitHub CLI remains authenticated. This is the Phase 0 manual acceptance journey; no application code exists yet.
+The iPhone 17 Pro reaches a finished boot state, Docker's daemon responds, the disposable smoke container exits successfully, Compose is available, and GitHub CLI remains authenticated. This is the Phase 0 manual acceptance journey; no application code exists yet.
 
 ### If it fails
 
-Use [xcode.simulator](troubleshooting.md#xcode-simulator), [docker.daemon](troubleshooting.md#docker-daemon), [docker.compose](troubleshooting.md#docker-compose), or [github.auth](troubleshooting.md#github-auth). Start or authenticate the relevant application interactively, then rerun the affected read-only command. Do not erase simulator data, delete Docker data, or expose credentials as a shortcut.
+Use [xcode.simulator](troubleshooting.md#xcode-simulator), [docker.daemon](troubleshooting.md#docker-daemon), [docker.compose](troubleshooting.md#docker-compose), or [github.auth](troubleshooting.md#github-auth). Start or authenticate the relevant application interactively, then rerun the affected read-only command. Do not reset Docker or delete Docker data, erase simulator data, or expose credentials as a shortcut.

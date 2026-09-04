@@ -196,11 +196,11 @@ Run:
 
 ```bash
 uv python install 3.14.7
-UV_PYTHON_DOWNLOADS=never uv python find 3.14.7
+UV_PYTHON_DOWNLOADS=never uv python find --managed-python 3.14.7
 /usr/bin/python3 --version
 ```
 
-Expected: uv finds Python 3.14.7; `/usr/bin/python3` still reports the Apple-supplied version.
+Expected: uv finds the managed Python 3.14.7 interpreter; `/usr/bin/python3` still reports the Apple-supplied version.
 
 - [ ] **Step 5: Start and verify Docker Desktop**
 
@@ -742,7 +742,7 @@ doctor_register platform.arch required check_platform_arch
 
 Create `scripts/doctor.d/20-xcode.sh` with these exact behaviors:
 
-- `check_xcode_version`: require the selected path `/Applications/Xcode.app/Contents/Developer` and `xcodebuild -version` beginning with `Xcode 26.6`.
+- `check_xcode_version`: require the selected path `/Applications/Xcode.app/Contents/Developer`, extract only the first line of `xcodebuild -version`, and require it to equal exactly `Xcode 26.6`; a mismatch reports that first line only (or the safe placeholder `<no output>`).
 - `check_xcode_first_launch`: run `xcodebuild -checkFirstLaunchStatus`; exit `0` is `PASS`, any other status is `FAIL` with the remediation `Run xcodebuild -runFirstLaunch after accepting the Xcode license.`
 - `check_xcode_simulator`: inspect `xcrun simctl list runtimes available` and `xcrun simctl list devices available`; require an iOS 26 runtime and an iPhone 17 Pro. Never call `simctl boot` from the doctor.
 
@@ -816,12 +816,23 @@ setup() {
   [[ "$output" == *"Docker is installed but the daemon is not reachable"* ]]
 }
 
-@test "GitHub authentication failure never prints command output" {
+@test "GitHub auth failure with connectivity succeeds recommends login without exposing output" {
   fake_command gh 'printf "%s\\n" "token=secret-value"; exit 1'
+  fake_command curl 'exit 0'
   . "$PROJECT_ROOT/scripts/doctor.d/80-github.sh"
   run doctor_run_registered github.auth
   [ "$status" -eq 1 ]
   [[ "$output" == *"run gh auth login --hostname github.com"* ]]
+  [[ "$output" != *"secret-value"* ]]
+}
+
+@test "GitHub connectivity failure recommends network recovery without exposing output" {
+  fake_command gh 'printf "%s\\n" "token=secret-value"; exit 1'
+  fake_command curl 'printf "%s\\n" "network-secret-value"; exit 1'
+  . "$PROJECT_ROOT/scripts/doctor.d/80-github.sh"
+  run doctor_run_registered github.auth
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"cannot reach github.com; check network connectivity"* ]]
   [[ "$output" != *"secret-value"* ]]
 }
 
@@ -877,12 +888,12 @@ Every missing required command calls `doctor_missing` with a command and trouble
 `python.uv` requires `uv`. `python.runtime` must run this read-only probe:
 
 ```sh
-python_path=$(UV_PYTHON_DOWNLOADS=never uv python find 3.14.7 2>/dev/null) || {
+python_path=$(UV_PYTHON_DOWNLOADS=never uv python find --managed-python 3.14.7 2>/dev/null) || {
   doctor_fail 'uv-managed Python 3.14.7 is not installed; see troubleshooting#python-runtime.'
   return
 }
 case "$python_path" in
-  /usr/bin/*) doctor_fail 'project Python resolved to macOS system Python; see troubleshooting#python-runtime.' ;;
+  /usr/bin/*|/opt/homebrew/bin/*) doctor_fail 'project Python is not uv-managed; see troubleshooting#python-runtime.' ;;
   *) doctor_pass "uv-managed Python 3.14.7 at $python_path" ;;
 esac
 ```
@@ -898,10 +909,10 @@ docker.cli: require command -v docker and report docker --version
 docker.daemon: run docker info with stdout and stderr redirected to /dev/null
 docker.compose: run docker compose version and report only its first line
 github.cli: require command -v gh and report gh --version first line
-github.auth: run gh auth status --hostname github.com with all output redirected to /dev/null
+github.auth: run gh auth status --hostname github.com with all output redirected to /dev/null; on failure, run a fully suppressed bounded unauthenticated curl probe to https://api.github.com/. Report network remediation if the probe fails, and login remediation only if it succeeds. A missing curl reports a safe connectivity remediation.
 ```
 
-No diagnostic output from `docker info` or `gh auth status` may be copied into the doctor's messages.
+No diagnostic output from `docker info`, `gh auth status`, or the GitHub connectivity probe may be copied into the doctor's messages.
 
 - [ ] **Step 6: Implement repository contract checks**
 
@@ -1208,7 +1219,7 @@ git add .github/workflows/quality.yml tests/doctor/integration.bats package.json
 git commit -m "ci: verify phase 0 quality pyramid"
 ```
 
-### Task 9: Publish, run acceptance, and create the Phase 0 checkpoint
+### Task 9: Safely publish the reviewed feature, run acceptance, and create the Phase 0 checkpoint
 
 **Files:**
 
@@ -1216,8 +1227,10 @@ git commit -m "ci: verify phase 0 quality pyramid"
 
 **Interfaces:**
 
-- Consumes: a clean, fully tested local `main`, authenticated GitHub CLI, and the prepared reference Mac.
+- Consumes: a clean, fully tested, final-review-approved `feature/phase-00-environment` HEAD, authenticated GitHub CLI, and the prepared reference Mac.
 - Produces: public `https://github.com/tylervsd/expo-fastapi-todo`, passing GitHub Actions, a passing local doctor, and the pushed annotated tag `phase-00-environment`.
+
+This task is deferred until final-review approval. It must never publish, push, or merge the stale local `main` history. The repository-creation action and the object-publication action are deliberately separate; this implementation pass performs neither action.
 
 - [ ] **Step 1: Verify the exact publication target and local state**
 
@@ -1226,14 +1239,21 @@ Run:
 ```bash
 gh auth status --hostname github.com
 gh repo view tylervsd/expo-fastapi-todo >/dev/null 2>&1; test $? -ne 0
-git branch --show-current
+test "$(git branch --show-current)" = 'feature/phase-00-environment'
+reviewed_head='<full commit SHA approved by final whole-branch review>'
+git merge-base --is-ancestor "$reviewed_head" HEAD
+test "$reviewed_head" = "$(git rev-parse HEAD)"
+if git merge-base --is-ancestor main "$reviewed_head"; then
+  printf '%s\n' 'refusing publication: stale local main is an ancestor of the reviewed feature HEAD' >&2
+  exit 1
+fi
 git status --short
 pnpm quality
 ```
 
-Expected: authentication succeeds; the target repository does not already exist; branch is `main`; only the preserved `AGENTS.md` is untracked; quality passes.
+Expected: authentication succeeds; the target repository does not already exist; the current branch is `feature/phase-00-environment`; the final review's recorded commit is the current reviewed HEAD and belongs to its ancestry; stale local `main` is not an ancestor; only the preserved `AGENTS.md` is untracked; quality passes.
 
-- [ ] **Step 2: Create the public repository and push `main`**
+- [ ] **Step 2: Create the public repository without publishing Git objects**
 
 Run:
 
@@ -1243,12 +1263,22 @@ gh repo create tylervsd/expo-fastapi-todo \
   --source=. \
   --remote=origin \
   --description="A phased tutorial for production-shaped Expo and FastAPI development."
-git push --set-upstream origin main
 ```
 
-Expected: the repository URL is `https://github.com/tylervsd/expo-fastapi-todo`, visibility is public, and `main` tracks `origin/main`.
+Expected: the repository URL is `https://github.com/tylervsd/expo-fastapi-todo`, visibility is public, and `origin` is configured. This step creates the remote only; it does not publish a branch, tag, or stale local `main` history.
 
-- [ ] **Step 3: Wait for GitHub Actions and inspect failures if any**
+- [ ] **Step 3: Publish exactly the reviewed feature HEAD as remote `main`**
+
+Run:
+
+```bash
+test "$(git rev-parse HEAD)" = "$reviewed_head"
+git push --set-upstream origin HEAD:refs/heads/main
+```
+
+Expected: exactly the approved current `HEAD` is published as `origin/main`. Never run `git push origin main`, `git push --set-upstream origin main`, or `git merge main` for this publication; the local `main` ref is stale and must remain unpublished.
+
+- [ ] **Step 4: Wait for GitHub Actions and inspect failures if any**
 
 Run:
 
@@ -1259,7 +1289,7 @@ gh run watch "$run_id" --exit-status
 
 Expected: `static`, `doctor-unit`, and `doctor-macos-integration` pass. If a job fails, inspect with `gh run view --log-failed`, make the narrowest tested correction, commit it, push, and wait for the replacement run.
 
-- [ ] **Step 4: Run the manual reference-Mac acceptance journey**
+- [ ] **Step 5: Run the manual reference-Mac acceptance journey**
 
 Run:
 
@@ -1274,7 +1304,7 @@ gh auth status --hostname github.com
 
 Expected: the doctor reports zero failures; the simulator boots; Docker's disposable smoke container exits successfully; Compose and GitHub authentication succeed. Confirm that no credential value appears in doctor output.
 
-- [ ] **Step 5: Create and push the checkpoint only after acceptance passes**
+- [ ] **Step 6: Create and push the checkpoint only after acceptance passes**
 
 Run:
 

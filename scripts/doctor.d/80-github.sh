@@ -22,8 +22,18 @@ check_github_auth() {
 
   if gh auth status --hostname github.com >/dev/null 2>&1; then
     doctor_pass 'GitHub CLI is authenticated for github.com'
-  else
+    return
+  fi
+
+  if ! command -v curl >/dev/null 2>&1; then
+    doctor_fail 'cannot verify GitHub connectivity because curl is missing; install curl or check network connectivity; see troubleshooting#github-auth.'
+    return
+  fi
+
+  if curl --connect-timeout 5 --max-time 10 --silent --output /dev/null https://api.github.com/ >/dev/null 2>&1; then
     doctor_fail 'GitHub CLI is not authenticated; run gh auth login --hostname github.com; see troubleshooting#github-auth.'
+  else
+    doctor_fail 'cannot reach github.com; check network connectivity, DNS, VPN, or proxy settings; see troubleshooting#github-auth.'
   fi
 }
 

@@ -177,11 +177,19 @@ teardown() {
   . "$PROJECT_ROOT/scripts/doctor.d/60-python.sh"
   run doctor_run_registered python.runtime
   [ "$status" -eq 1 ]
-  [[ "$output" == *"project Python resolved to macOS system Python"* ]]
+  [[ "$output" == *"project Python is not uv-managed"* ]]
 }
 
-@test "uv runtime probe does not allow downloads" {
-  fake_command uv 'if [ "$#" -ne 3 ] || [ "$1" != python ] || [ "$2" != find ] || [ "$3" != 3.14.7 ] || [ "$UV_PYTHON_DOWNLOADS" != never ]; then exit 2; fi; printf "%s\n" "/Users/example/.local/share/uv/python/cpython-3.14.7/bin/python"; exit 0'
+@test "Homebrew Python cannot satisfy the managed project runtime" {
+  fake_command uv 'printf "%s\n" "/opt/homebrew/bin/python3.14"'
+  . "$PROJECT_ROOT/scripts/doctor.d/60-python.sh"
+  run doctor_run_registered python.runtime
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"project Python is not uv-managed"* ]]
+}
+
+@test "uv runtime probe requires managed Python and does not allow downloads" {
+  fake_command uv 'if [ "$#" -ne 4 ] || [ "$1" != python ] || [ "$2" != find ] || [ "$3" != --managed-python ] || [ "$4" != 3.14.7 ] || [ "$UV_PYTHON_DOWNLOADS" != never ]; then exit 2; fi; printf "%s\n" "/Users/example/.local/share/uv/python/cpython-3.14.7/bin/python"; exit 0'
   . "$PROJECT_ROOT/scripts/doctor.d/60-python.sh"
   run doctor_run_registered python.runtime
   [ "$status" -eq 0 ]
@@ -263,13 +271,40 @@ teardown() {
   [[ "$output" == *"GitHub CLI version could not be detected; see troubleshooting#github-cli"* ]]
 }
 
-@test "GitHub authentication failure never prints command output" {
+@test "GitHub auth failure with connectivity succeeds recommends login without exposing output" {
   fake_command gh 'printf "%s\n" "token=secret-value"; exit 1'
+  fake_command curl 'if [ "$#" -ne 8 ] || [ "$1" != --connect-timeout ] || [ "$2" != 5 ] || [ "$3" != --max-time ] || [ "$4" != 10 ] || [ "$5" != --silent ] || [ "$6" != --output ] || [ "$7" != /dev/null ] || [ "$8" != https://api.github.com/ ]; then exit 97; fi; : >"$BATS_TEST_TMPDIR/curl-called"; exit 0'
   . "$PROJECT_ROOT/scripts/doctor.d/80-github.sh"
   run doctor_run_registered github.auth
-  [ "$status" -eq 1 ]
-  [[ "$output" == *"run gh auth login --hostname github.com"* ]]
+  [ "$status" -eq 1 ] || return 1
+  [[ "$output" == *"run gh auth login --hostname github.com"* ]] || return 1
+  [[ "$output" != *"secret-value"* ]] || return 1
+  [ -f "$BATS_TEST_TMPDIR/curl-called" ]
+}
+
+@test "GitHub connectivity failure recommends network recovery without exposing output" {
+  fake_command gh 'printf "%s\n" "token=secret-value"; exit 1'
+  fake_command curl 'if [ "$#" -ne 8 ] || [ "$1" != --connect-timeout ] || [ "$2" != 5 ] || [ "$3" != --max-time ] || [ "$4" != 10 ] || [ "$5" != --silent ] || [ "$6" != --output ] || [ "$7" != /dev/null ] || [ "$8" != https://api.github.com/ ]; then exit 97; fi; printf "%s\n" "network-secret-value"; exit 1'
+  . "$PROJECT_ROOT/scripts/doctor.d/80-github.sh"
+  run doctor_run_registered github.auth
+  [ "$status" -eq 1 ] || return 1
+  [[ "$output" == *"cannot reach github.com; check network connectivity"* ]] || return 1
+  [[ "$output" != *"run gh auth login"* ]] || return 1
   [[ "$output" != *"secret-value"* ]]
+}
+
+@test "missing curl reports safe GitHub connectivity remediation" {
+  fake_command gh 'exit 1'
+  saved_path=$PATH
+  PATH="$FAKE_BIN"
+  export PATH
+  . "$PROJECT_ROOT/scripts/doctor.d/80-github.sh"
+  run doctor_run_registered github.auth
+  PATH=$saved_path
+  export PATH
+  [ "$status" -eq 1 ] || return 1
+  [[ "$output" == *"cannot verify GitHub connectivity because curl is missing"* ]] || return 1
+  [[ "$output" != *"run gh auth login"* ]]
 }
 
 @test "GitHub authentication receives the exact status arguments" {

@@ -71,7 +71,7 @@ if [ "$#" -ne 1 ] || [ "$1" != --version ]; then exit 97; fi
 printf "%s\\n" "11.25.0"
 '
   fake_command uv '
-if [ "$#" -ne 3 ] || [ "$1" != python ] || [ "$2" != find ] || [ "$3" != 3.14.7 ] || [ "$UV_PYTHON_DOWNLOADS" != never ]; then exit 97; fi
+if [ "$#" -ne 4 ] || [ "$1" != python ] || [ "$2" != find ] || [ "$3" != --managed-python ] || [ "$4" != 3.14.7 ] || [ "$UV_PYTHON_DOWNLOADS" != never ]; then exit 97; fi
 printf "%s\\n" "/Users/example/.local/share/uv/python/cpython-3.14.7/bin/python"
 '
   fake_command docker '

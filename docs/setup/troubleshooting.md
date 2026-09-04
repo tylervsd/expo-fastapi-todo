@@ -150,13 +150,13 @@ Use the stable check ID printed by `./scripts/doctor` to find a symptom, safe di
 
 ## `python.runtime`
 
-**Symptom:** uv cannot find Python 3.14.7, or the project resolves to `/usr/bin/python3`.
+**Symptom:** uv cannot find a managed Python 3.14.7 interpreter, or the project resolves to `/usr/bin/python3` or Homebrew's Python path.
 
-**Likely cause:** The uv-managed interpreter has not been provisioned, or a system interpreter was selected.
+**Likely cause:** The uv-managed interpreter has not been provisioned, or a system/Homebrew interpreter was selected.
 
-**Diagnose:** Run `UV_PYTHON_DOWNLOADS=never uv python find 3.14.7` and `/usr/bin/python3 --version`.
+**Diagnose:** Run `UV_PYTHON_DOWNLOADS=never uv python find --managed-python 3.14.7` and `/usr/bin/python3 --version`.
 
-**Remediate:** Run `uv python install 3.14.7`, then repeat `UV_PYTHON_DOWNLOADS=never uv python find 3.14.7` and `./scripts/doctor --check python.runtime`. Leave `/usr/bin/python3` unchanged; do not rewrite system paths or install into system Python.
+**Remediate:** Run `uv python install 3.14.7`, then repeat `UV_PYTHON_DOWNLOADS=never uv python find --managed-python 3.14.7` and `./scripts/doctor --check python.runtime`. Leave `/usr/bin/python3` unchanged; do not rewrite system paths or install into system Python.
 
 <a id="docker-cli"></a>
 
@@ -210,13 +210,13 @@ Use the stable check ID printed by `./scripts/doctor` to find a symptom, safe di
 
 ## `github.auth`
 
-**Symptom:** GitHub CLI is installed but is not authenticated for `github.com`.
+**Symptom:** GitHub CLI is installed but is not authenticated for `github.com`, or the doctor cannot reach `github.com` after an authentication-status failure.
 
-**Likely cause:** Interactive login has not completed, or the session has expired.
+**Likely cause:** Interactive login has not completed or the session has expired; alternatively, DNS, VPN, proxy, or network connectivity is preventing access to GitHub.
 
-**Diagnose:** Run `gh auth status --hostname github.com`.
+**Diagnose:** Run `gh auth status --hostname github.com`. The doctor suppresses all command output, then uses a bounded unauthenticated request to `https://api.github.com/` only when that status fails.
 
-**Remediate:** Run `gh auth login --hostname github.com --git-protocol https --web` and complete the browser flow. Rerun `./scripts/doctor --check github.auth`. Never print a token, paste one into a log, or commit credential material.
+**Remediate:** If the doctor reports that GitHub cannot be reached (or cannot verify connectivity because `curl` is missing), restore network access and ensure `curl` is available before retrying. Only if the doctor confirms connectivity should you run `gh auth login --hostname github.com --git-protocol https --web` and complete the browser flow. Rerun `./scripts/doctor --check github.auth`. Never print a token, paste one into a log, or commit credential material.
 
 <a id="repository-files"></a>
 

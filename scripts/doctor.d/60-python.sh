@@ -14,12 +14,12 @@ check_python_runtime() {
     return
   fi
 
-  python_path=$(UV_PYTHON_DOWNLOADS=never uv python find 3.14.7 2>/dev/null) || {
+  python_path=$(UV_PYTHON_DOWNLOADS=never uv python find --managed-python 3.14.7 2>/dev/null) || {
     doctor_fail 'uv-managed Python 3.14.7 is not installed; see troubleshooting#python-runtime.'
     return
   }
   case "$python_path" in
-    /usr/bin/*) doctor_fail 'project Python resolved to macOS system Python; see troubleshooting#python-runtime.' ;;
+    /usr/bin/*|/opt/homebrew/bin/*) doctor_fail 'project Python is not uv-managed; see troubleshooting#python-runtime.' ;;
     *) doctor_pass "uv-managed Python 3.14.7 at $python_path" ;;
   esac
 }

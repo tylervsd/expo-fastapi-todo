@@ -10,13 +10,15 @@ check_xcode_version() {
     return
   fi
 
-  version=$(xcodebuild -version 2>/dev/null) || {
+  version_output=$(xcodebuild -version 2>/dev/null) || {
     doctor_fail 'unable to determine Xcode version'
     return
   }
-  case "$version" in
-    'Xcode 26.6'*) doctor_pass 'Xcode 26.6 selected' ;;
-    *) doctor_fail 'requires Xcode 26.6' ;;
+  version_first_line=$(printf '%s\n' "$version_output" | sed -n '1p')
+  case "$version_first_line" in
+    'Xcode 26.6') doctor_pass 'Xcode 26.6 selected' ;;
+    '') doctor_fail 'requires Xcode 26.6; detected <no output>' ;;
+    *) doctor_fail "requires Xcode 26.6; detected $version_first_line" ;;
   esac
 }
 

@@ -1,11 +1,42 @@
 #!/usr/bin/env bats
 
-@test "repository pins the supported runtime versions" {
-  run grep -F '"node": "24.20.0"' package.json
-  [ "$status" -eq 0 ]
+@test "repository pins the supported package manager and Python versions" {
   run grep -F '"packageManager": "pnpm@11.25.0"' package.json
   [ "$status" -eq 0 ]
   run grep -Fx '3.14.7' .python-version
+  [ "$status" -eq 0 ]
+}
+
+@test "runtime pin contracts independently scope root, workflow, and doctor versions" {
+  run awk '
+    /"engines"[[:space:]]*:/ { in_block = 1; next }
+    in_block && /^[[:space:]]*}[[:space:]]*,?[[:space:]]*$/ { exit }
+    in_block && /"node"[[:space:]]*:[[:space:]]*"24.20.0"/ { found = 1 }
+    END { exit(found ? 0 : 1) }
+  ' package.json
+  [ "$status" -eq 0 ] || return 1
+
+  run awk '
+    /"volta"[[:space:]]*:/ { in_block = 1; next }
+    in_block && /^[[:space:]]*}[[:space:]]*,?[[:space:]]*$/ { exit }
+    in_block && /"node"[[:space:]]*:[[:space:]]*"24.20.0"/ { found = 1 }
+    END { exit(found ? 0 : 1) }
+  ' package.json
+  [ "$status" -eq 0 ] || return 1
+
+  run grep -Fx '  "packageManager": "pnpm@11.25.0",' package.json
+  [ "$status" -eq 0 ] || return 1
+  run grep -Fx '3.14.7' .python-version
+  [ "$status" -eq 0 ] || return 1
+  run grep -F 'node-version: 24.20.0' .github/workflows/quality.yml
+  [ "$status" -eq 0 ] || return 1
+  run grep -F 'corepack prepare pnpm@11.25.0 --activate' .github/workflows/quality.yml
+  [ "$status" -eq 0 ] || return 1
+  run grep -F "[ \"\$detected\" = 'v24.20.0' ]" scripts/doctor.d/50-javascript.sh
+  [ "$status" -eq 0 ] || return 1
+  run grep -F "[ \"\$detected\" = '11.25.0' ]" scripts/doctor.d/50-javascript.sh
+  [ "$status" -eq 0 ] || return 1
+  run grep -F 'uv python find --managed-python 3.14.7' scripts/doctor.d/60-python.sh
   [ "$status" -eq 0 ]
 }
 
@@ -54,4 +85,30 @@
     'Production hardening'; do
     grep -F "$heading" docs/curriculum-roadmap.md
   done
+}
+
+@test "publication plan protects the reviewed feature history from stale local main" {
+  plan=docs/superpowers/plans/2026-09-04-developer-environment.md
+
+  grep -F 'feature/phase-00-environment' "$plan" || return 1
+  grep -F 'git merge-base --is-ancestor "$reviewed_head" HEAD' "$plan" || return 1
+  grep -F 'git push --set-upstream origin HEAD:refs/heads/main' "$plan" || return 1
+  grep -F 'Never run `git push origin main`, `git push --set-upstream origin main`, or `git merge main`' "$plan"
+}
+
+@test "Python guidance requires an installed managed interpreter without downloads" {
+  command='UV_PYTHON_DOWNLOADS=never uv python find --managed-python 3.14.7'
+  for path in \
+    docs/setup/macos.md \
+    docs/setup/troubleshooting.md \
+    docs/superpowers/plans/2026-09-04-developer-environment.md; do
+    grep -F "$command" "$path" || return 1
+  done
+}
+
+@test "manual acceptance documents the disposable Docker smoke workload" {
+  guide=docs/setup/macos.md
+  grep -Fx 'docker run --rm hello-world' "$guide" || return 1
+  grep -F 'disposable smoke container exits successfully' "$guide" || return 1
+  grep -F 'Do not reset Docker or delete Docker data' "$guide"
 }

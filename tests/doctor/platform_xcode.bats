@@ -39,6 +39,44 @@ setup() {
   [[ "$output" == *"select /Applications/Xcode.app/Contents/Developer"* ]]
 }
 
+@test "Xcode 26.60 does not satisfy the exact Xcode 26.6 contract" {
+  fake_command xcode-select "printf '%s\\n' '/Applications/Xcode.app/Contents/Developer'"
+  fake_command xcodebuild "printf '%s\\n' 'Xcode 26.60' 'Build version 17G80'"
+  . "$PROJECT_ROOT/scripts/doctor.d/20-xcode.sh"
+  run doctor_run_registered xcode.version
+  [ "$status" -eq 1 ] || return 1
+  [[ "$output" == *"requires Xcode 26.6; detected Xcode 26.60"* ]]
+}
+
+@test "malformed Xcode version reports only its first line" {
+  fake_command xcode-select "printf '%s\\n' '/Applications/Xcode.app/Contents/Developer'"
+  fake_command xcodebuild "printf '%s\\n' 'unexpected version output' 'token=secret-value'"
+  . "$PROJECT_ROOT/scripts/doctor.d/20-xcode.sh"
+  run doctor_run_registered xcode.version
+  [ "$status" -eq 1 ] || return 1
+  [[ "$output" == *"requires Xcode 26.6; detected unexpected version output"* ]] || return 1
+  [[ "$output" != *"secret-value"* ]]
+}
+
+@test "Xcode version ignores a secret on the second line" {
+  fake_command xcode-select "printf '%s\\n' '/Applications/Xcode.app/Contents/Developer'"
+  fake_command xcodebuild "printf '%s\\n' 'Xcode 26.6' 'token=secret-value'"
+  . "$PROJECT_ROOT/scripts/doctor.d/20-xcode.sh"
+  run doctor_run_registered xcode.version
+  [ "$status" -eq 0 ] || return 1
+  [[ "$output" == *"PASS [xcode.version] Xcode 26.6 selected"* ]] || return 1
+  [[ "$output" != *"secret-value"* ]]
+}
+
+@test "empty Xcode version output uses a safe placeholder" {
+  fake_command xcode-select "printf '%s\\n' '/Applications/Xcode.app/Contents/Developer'"
+  fake_command xcodebuild 'exit 0'
+  . "$PROJECT_ROOT/scripts/doctor.d/20-xcode.sh"
+  run doctor_run_registered xcode.version
+  [ "$status" -eq 1 ] || return 1
+  [[ "$output" == *"requires Xcode 26.6; detected <no output>"* ]]
+}
+
 @test "available designated simulator passes without booting it" {
   fake_command xcode-select "printf '%s\\n' '/Applications/Xcode.app/Contents/Developer'"
   fake_command xcodebuild "exit 0"
