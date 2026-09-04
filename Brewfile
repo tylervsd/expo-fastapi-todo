@@ -1,0 +1,5 @@
+brew "bats-core"
+brew "gh"
+brew "shellcheck"
+brew "volta"
+cask "docker-desktop"
