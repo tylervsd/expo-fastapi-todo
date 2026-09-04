@@ -164,7 +164,7 @@ Modules under `scripts/doctor.d/` cover:
 
 - macOS version and Apple Silicon architecture
 - selected Xcode developer directory, license readiness, and command-line tools
-- presence of the designated iOS Simulator runtime and ability to boot a simulator
+- presence of the designated iOS Simulator runtime and an available simulator device; booting remains a manual acceptance action
 - Homebrew availability and required formulae
 - Git availability
 - Volta and the pinned Node version
