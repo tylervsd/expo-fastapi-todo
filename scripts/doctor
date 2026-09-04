@@ -1,0 +1,28 @@
+#!/bin/sh
+set -u
+
+PROJECT_ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+export PROJECT_ROOT
+
+. "$PROJECT_ROOT/scripts/doctor.d/00-core.sh"
+for module in "$PROJECT_ROOT"/scripts/doctor.d/[1-9][0-9]-*.sh; do
+  if [ -f "$module" ]; then
+    # shellcheck source=/dev/null
+    . "$module"
+  fi
+done
+
+case $# in
+  0) doctor_run_registered ;;
+  2)
+    if [ "$1" != '--check' ]; then
+      printf 'Usage: %s [--check CHECK_ID]\n' "$0" >&2
+      exit 64
+    fi
+    doctor_run_registered "$2"
+    ;;
+  *)
+    printf 'Usage: %s [--check CHECK_ID]\n' "$0" >&2
+    exit 64
+    ;;
+esac
