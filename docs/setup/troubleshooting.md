@@ -214,7 +214,7 @@ Use the stable check ID printed by `./scripts/doctor` to find a symptom, safe di
 
 **Likely cause:** Interactive login has not completed or the session has expired; alternatively, DNS, VPN, proxy, or network connectivity is preventing access to GitHub.
 
-**Diagnose:** Run `gh auth status --hostname github.com`. The doctor suppresses all command output, then uses a bounded unauthenticated request to `https://api.github.com/` only when that status fails.
+**Diagnose:** Run `gh auth status --hostname github.com`. The doctor suppresses all command output, then uses a bounded unauthenticated request to `https://api.github.com/` only when that status fails. The probe starts with curl's `--disable` option so user curl configuration cannot alter its arguments or behavior.
 
 **Remediate:** If the doctor reports that GitHub cannot be reached (or cannot verify connectivity because `curl` is missing), restore network access and ensure `curl` is available before retrying. Only if the doctor confirms connectivity should you run `gh auth login --hostname github.com --git-protocol https --web` and complete the browser flow. Rerun `./scripts/doctor --check github.auth`. Never print a token, paste one into a log, or commit credential material.
 

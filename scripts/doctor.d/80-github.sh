@@ -30,7 +30,7 @@ check_github_auth() {
     return
   fi
 
-  if curl --connect-timeout 5 --max-time 10 --silent --output /dev/null https://api.github.com/ >/dev/null 2>&1; then
+  if curl --disable --connect-timeout 5 --max-time 10 --silent --output /dev/null https://api.github.com/ >/dev/null 2>&1; then
     doctor_fail 'GitHub CLI is not authenticated; run gh auth login --hostname github.com; see troubleshooting#github-auth.'
   else
     doctor_fail 'cannot reach github.com; check network connectivity, DNS, VPN, or proxy settings; see troubleshooting#github-auth.'

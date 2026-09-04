@@ -273,7 +273,7 @@ teardown() {
 
 @test "GitHub auth failure with connectivity succeeds recommends login without exposing output" {
   fake_command gh 'printf "%s\n" "token=secret-value"; exit 1'
-  fake_command curl 'if [ "$#" -ne 8 ] || [ "$1" != --connect-timeout ] || [ "$2" != 5 ] || [ "$3" != --max-time ] || [ "$4" != 10 ] || [ "$5" != --silent ] || [ "$6" != --output ] || [ "$7" != /dev/null ] || [ "$8" != https://api.github.com/ ]; then exit 97; fi; : >"$BATS_TEST_TMPDIR/curl-called"; exit 0'
+  fake_command curl 'if [ "$#" -ne 9 ] || [ "$1" != --disable ] || [ "$2" != --connect-timeout ] || [ "$3" != 5 ] || [ "$4" != --max-time ] || [ "$5" != 10 ] || [ "$6" != --silent ] || [ "$7" != --output ] || [ "$8" != /dev/null ] || [ "$9" != https://api.github.com/ ]; then exit 97; fi; : >"$BATS_TEST_TMPDIR/curl-called"; exit 0'
   . "$PROJECT_ROOT/scripts/doctor.d/80-github.sh"
   run doctor_run_registered github.auth
   [ "$status" -eq 1 ] || return 1
@@ -284,7 +284,7 @@ teardown() {
 
 @test "GitHub connectivity failure recommends network recovery without exposing output" {
   fake_command gh 'printf "%s\n" "token=secret-value"; exit 1'
-  fake_command curl 'if [ "$#" -ne 8 ] || [ "$1" != --connect-timeout ] || [ "$2" != 5 ] || [ "$3" != --max-time ] || [ "$4" != 10 ] || [ "$5" != --silent ] || [ "$6" != --output ] || [ "$7" != /dev/null ] || [ "$8" != https://api.github.com/ ]; then exit 97; fi; printf "%s\n" "network-secret-value"; exit 1'
+  fake_command curl 'if [ "$#" -ne 9 ] || [ "$1" != --disable ] || [ "$2" != --connect-timeout ] || [ "$3" != 5 ] || [ "$4" != --max-time ] || [ "$5" != 10 ] || [ "$6" != --silent ] || [ "$7" != --output ] || [ "$8" != /dev/null ] || [ "$9" != https://api.github.com/ ]; then exit 97; fi; printf "%s\n" "network-secret-value"; exit 1'
   . "$PROJECT_ROOT/scripts/doctor.d/80-github.sh"
   run doctor_run_registered github.auth
   [ "$status" -eq 1 ] || return 1

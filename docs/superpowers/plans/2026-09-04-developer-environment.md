@@ -909,7 +909,7 @@ docker.cli: require command -v docker and report docker --version
 docker.daemon: run docker info with stdout and stderr redirected to /dev/null
 docker.compose: run docker compose version and report only its first line
 github.cli: require command -v gh and report gh --version first line
-github.auth: run gh auth status --hostname github.com with all output redirected to /dev/null; on failure, run a fully suppressed bounded unauthenticated curl probe to https://api.github.com/. Report network remediation if the probe fails, and login remediation only if it succeeds. A missing curl reports a safe connectivity remediation.
+github.auth: run gh auth status --hostname github.com with all output redirected to /dev/null; on failure, run a fully suppressed bounded unauthenticated curl probe beginning with `--disable` to https://api.github.com/ so curl configuration cannot alter the probe. Report network remediation if the probe fails, and login remediation only if it succeeds. A missing curl reports a safe connectivity remediation.
 ```
 
 No diagnostic output from `docker info`, `gh auth status`, or the GitHub connectivity probe may be copied into the doctor's messages.
@@ -1251,7 +1251,7 @@ git status --short
 pnpm quality
 ```
 
-Expected: authentication succeeds; the target repository does not already exist; the current branch is `feature/phase-00-environment`; the final review's recorded commit is the current reviewed HEAD and belongs to its ancestry; stale local `main` is not an ancestor; only the preserved `AGENTS.md` is untracked; quality passes.
+Expected: authentication succeeds; the target repository does not already exist; the current branch is `feature/phase-00-environment`; the final review's recorded commit is the current reviewed HEAD and belongs to its ancestry; stale local `main` is not an ancestor; `git status --short` is empty; quality passes.
 
 - [ ] **Step 2: Create the public repository without publishing Git objects**
 
@@ -1315,4 +1315,4 @@ git push origin phase-00-environment
 gh repo view tylervsd/expo-fastapi-todo --json nameWithOwner,visibility,defaultBranchRef
 ```
 
-Expected: only the preserved `AGENTS.md` is untracked before tagging; GitHub reports `tylervsd/expo-fastapi-todo`, `PUBLIC`, and default branch `main`; the annotated tag exists on the accepted commit.
+Expected: `git status --short` is empty before tagging; GitHub reports `tylervsd/expo-fastapi-todo`, `PUBLIC`, and default branch `main`; the annotated tag exists on the accepted commit.
