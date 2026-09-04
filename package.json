@@ -13,6 +13,7 @@
   },
   "scripts": {
     "doctor": "./scripts/doctor",
+    "quality": "pnpm lint && pnpm test",
     "lint": "pnpm lint:markdown && pnpm lint:links && shellcheck scripts/doctor scripts/check-doc-links scripts/doctor.d/*.sh",
     "lint:links": "./scripts/check-doc-links",
     "lint:markdown": "markdownlint-cli2 \"**/*.md\" \"#node_modules\" \"#.superpowers\"",
