@@ -33,19 +33,25 @@ teardown() {
 }
 
 @test "missing Homebrew is reported as a required command" {
-  PATH="$FAKE_BIN:/bin"
+  saved_path=$PATH
+  PATH="$FAKE_BIN"
   export PATH
   . "$PROJECT_ROOT/scripts/doctor.d/30-homebrew.sh"
   run doctor_run_registered brew.bundle
+  PATH=$saved_path
+  export PATH
   [ "$status" -eq 1 ]
   [[ "$output" == *"Homebrew is missing; install it before continuing; see troubleshooting#brew-bundle"* ]]
 }
 
 @test "missing Git is reported as a required command" {
-  PATH="$FAKE_BIN:/bin"
+  saved_path=$PATH
+  PATH="$FAKE_BIN"
   export PATH
   . "$PROJECT_ROOT/scripts/doctor.d/40-git.sh"
   run doctor_run_registered git.version
+  PATH=$saved_path
+  export PATH
   [ "$status" -eq 1 ]
   [[ "$output" == *"Git is missing; install it before continuing; see troubleshooting#git-version"* ]]
 }
@@ -68,19 +74,25 @@ teardown() {
 }
 
 @test "missing Volta is reported as a required command" {
-  PATH="$FAKE_BIN:/bin"
+  saved_path=$PATH
+  PATH="$FAKE_BIN"
   export PATH
   . "$PROJECT_ROOT/scripts/doctor.d/50-javascript.sh"
   run doctor_run_registered js.volta
+  PATH=$saved_path
+  export PATH
   [ "$status" -eq 1 ]
   [[ "$output" == *"Volta is missing; install it before continuing; see troubleshooting#js-volta"* ]]
 }
 
 @test "missing Node is reported as a required command" {
-  PATH="$FAKE_BIN:/bin"
+  saved_path=$PATH
+  PATH="$FAKE_BIN"
   export PATH
   . "$PROJECT_ROOT/scripts/doctor.d/50-javascript.sh"
   run doctor_run_registered js.node
+  PATH=$saved_path
+  export PATH
   [ "$status" -eq 1 ]
   [[ "$output" == *"Node.js is missing; install the pinned version; see troubleshooting#js-node"* ]]
 }
@@ -112,19 +124,25 @@ teardown() {
 }
 
 @test "missing Corepack is reported as a required command" {
-  PATH="$FAKE_BIN:/bin"
+  saved_path=$PATH
+  PATH="$FAKE_BIN"
   export PATH
   . "$PROJECT_ROOT/scripts/doctor.d/50-javascript.sh"
   run doctor_run_registered js.corepack
+  PATH=$saved_path
+  export PATH
   [ "$status" -eq 1 ]
   [[ "$output" == *"Corepack is missing; enable it with the pinned Node release; see troubleshooting#js-corepack"* ]]
 }
 
 @test "missing pnpm is reported as a required command" {
-  PATH="$FAKE_BIN:/bin"
+  saved_path=$PATH
+  PATH="$FAKE_BIN"
   export PATH
   . "$PROJECT_ROOT/scripts/doctor.d/50-javascript.sh"
   run doctor_run_registered js.pnpm
+  PATH=$saved_path
+  export PATH
   [ "$status" -eq 1 ]
   [[ "$output" == *"pnpm is missing; activate it through Corepack; see troubleshooting#js-pnpm"* ]]
 }
@@ -156,10 +174,13 @@ teardown() {
 }
 
 @test "missing uv is reported as a required command" {
-  PATH="$FAKE_BIN:/bin"
+  saved_path=$PATH
+  PATH="$FAKE_BIN"
   export PATH
   . "$PROJECT_ROOT/scripts/doctor.d/60-python.sh"
   run doctor_run_registered python.uv
+  PATH=$saved_path
+  export PATH
   [ "$status" -eq 1 ]
   [[ "$output" == *"uv is missing; install it before continuing; see troubleshooting#python-uv"* ]]
 }
@@ -197,10 +218,13 @@ teardown() {
 }
 
 @test "missing Docker is reported as a required command" {
-  PATH="$FAKE_BIN:/bin"
+  saved_path=$PATH
+  PATH="$FAKE_BIN"
   export PATH
   . "$PROJECT_ROOT/scripts/doctor.d/70-docker.sh"
   run doctor_run_registered docker.cli
+  PATH=$saved_path
+  export PATH
   [ "$status" -eq 1 ]
   [[ "$output" == *"Docker is missing; install Docker Desktop; see troubleshooting#docker-cli"* ]]
 }
@@ -255,10 +279,13 @@ teardown() {
 }
 
 @test "missing GitHub CLI is reported as a required command" {
-  PATH="$FAKE_BIN:/bin"
+  saved_path=$PATH
+  PATH="$FAKE_BIN"
   export PATH
   . "$PROJECT_ROOT/scripts/doctor.d/80-github.sh"
   run doctor_run_registered github.cli
+  PATH=$saved_path
+  export PATH
   [ "$status" -eq 1 ]
   [[ "$output" == *"GitHub CLI is missing; install it before continuing; see troubleshooting#github-cli"* ]]
 }
