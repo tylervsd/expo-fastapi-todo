@@ -1,0 +1,9 @@
+{
+  "retryOn429": true,
+  "retryCount": 3,
+  "fallbackRetryDelay": "5s",
+  "ignorePatterns": [
+    { "pattern": "^http://localhost" },
+    { "pattern": "^http://127\\.0\\.0\\.1" }
+  ]
+}

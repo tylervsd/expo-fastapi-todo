@@ -68,9 +68,11 @@
 ### Task 1: Install and verify the Apple development toolchain
 
 **Files:**
+
 - No repository files change.
 
 **Interfaces:**
+
 - Consumes: macOS 26.6.2 on Apple Silicon with Command Line Tools selected.
 - Produces: `/Applications/Xcode.app`, Xcode 26.6 selected at `/Applications/Xcode.app/Contents/Developer`, completed first-launch setup, and an available iPhone 17 Pro simulator on iOS 26.
 
@@ -123,10 +125,12 @@ Expected: Xcode reports `26.6`; an iOS 26 runtime and iPhone 17 Pro device are l
 ### Task 2: Install declared host tools and correct local Git identity
 
 **Files:**
+
 - Create: `Brewfile`
 - Existing: `docs/superpowers/plans/2026-09-04-developer-environment.md`
 
 **Interfaces:**
+
 - Consumes: working Xcode Command Line Tools from Task 1 and the approved plan/spec.
 - Produces: Homebrew, Bats Core, GitHub CLI, ShellCheck, Volta, Docker Desktop, uv-managed Python 3.14.7, Node 24.20.0, authenticated GitHub CLI, and a repository-local Git identity.
 
@@ -181,6 +185,7 @@ volta --version
 volta install node@24.20.0
 node --version
 corepack --version
+corepack enable --install-directory "$VOLTA_HOME/bin"
 ```
 
 Expected: Node reports `v24.20.0`; Corepack is available.
@@ -251,6 +256,7 @@ Expected: only the two named files are committed; `AGENTS.md` remains untracked.
 ### Task 3: Add repository metadata, tool pins, and contract tests
 
 **Files:**
+
 - Create: `.gitignore`
 - Create: `.python-version`
 - Create: `package.json`
@@ -263,6 +269,7 @@ Expected: only the two named files are committed; `AGENTS.md` remains untracked.
 - Create: `pnpm-lock.yaml`
 
 **Interfaces:**
+
 - Consumes: Bats, Volta Node 24.20.0, Corepack, and pnpm 11.25.0.
 - Produces: machine-readable tool pins; `pnpm lint:markdown`, `pnpm lint:links`, and `bats tests/repository_contract.bats` command contracts.
 
@@ -440,11 +447,13 @@ git commit -m "chore: pin phase 0 project toolchain"
 ### Task 4: Build the doctor runner through unit tests
 
 **Files:**
+
 - Create: `scripts/doctor`
 - Create: `scripts/doctor.d/00-core.sh`
 - Create: `tests/doctor/core.bats`
 
 **Interfaces:**
+
 - Consumes: POSIX `sh`; modules call `doctor_register ID required|optional FUNCTION` and set results with `doctor_pass`, `doctor_warn`, or `doctor_missing`.
 - Produces: `doctor_run_registered [CHECK_ID] -> exit 0|1|64` and CLI forms `scripts/doctor` and `scripts/doctor --check CHECK_ID`.
 
@@ -624,12 +633,14 @@ git commit -m "feat: add modular environment doctor runner"
 ### Task 5: Add platform and Xcode checks test-first
 
 **Files:**
+
 - Create: `scripts/doctor.d/10-platform.sh`
 - Create: `scripts/doctor.d/20-xcode.sh`
 - Create: `tests/doctor/test_helper.bash`
 - Create: `tests/doctor/platform_xcode.bats`
 
 **Interfaces:**
+
 - Consumes: the registration and result helpers from Task 4 and fake commands placed first on `PATH` by tests.
 - Produces: focused checks `platform.macos`, `platform.arch`, `xcode.version`, `xcode.first-launch`, and `xcode.simulator`.
 
@@ -766,6 +777,7 @@ git commit -m "feat: diagnose macOS and Xcode setup"
 ### Task 6: Add language, service, and repository checks test-first
 
 **Files:**
+
 - Create: `scripts/doctor.d/30-homebrew.sh`
 - Create: `scripts/doctor.d/40-git.sh`
 - Create: `scripts/doctor.d/50-javascript.sh`
@@ -776,6 +788,7 @@ git commit -m "feat: diagnose macOS and Xcode setup"
 - Create: `tests/doctor/tooling.bats`
 
 **Interfaces:**
+
 - Consumes: Task 4 result helpers, Task 5 fake-command helper, `package.json`, `.python-version`, and `Brewfile`.
 - Produces: checks `brew.bundle`, `git.version`, `js.volta`, `js.node`, `js.corepack`, `js.pnpm`, `python.uv`, `python.runtime`, `docker.cli`, `docker.daemon`, `docker.compose`, `github.cli`, `github.auth`, and `repository.files`.
 
@@ -932,6 +945,7 @@ git commit -m "feat: diagnose local development services"
 ### Task 7: Write the self-guided documentation and decision records
 
 **Files:**
+
 - Create: `README.md`
 - Create: `docs/setup/macos.md`
 - Create: `docs/setup/troubleshooting.md`
@@ -942,6 +956,7 @@ git commit -m "feat: diagnose local development services"
 - Modify: `tests/repository_contract.bats`
 
 **Interfaces:**
+
 - Consumes: all check IDs and exact remediation strings from Tasks 5 and 6.
 - Produces: a browser-accessible bootstrap, repository-driven setup, stable troubleshooting anchors, provisional roadmap, and ADR context for future phase authors.
 
@@ -1081,11 +1096,13 @@ git commit -m "docs: add self-guided mac setup curriculum"
 ### Task 8: Add the assembled-doctor integration test and CI workflow
 
 **Files:**
+
 - Create: `tests/doctor/integration.bats`
 - Create: `.github/workflows/quality.yml`
 - Modify: `package.json`
 
 **Interfaces:**
+
 - Consumes: root quality scripts, complete doctor, fake-command helper, and committed lockfile.
 - Produces: `pnpm quality`; GitHub checks named `static`, `doctor-unit`, and `doctor-macos-integration`.
 
@@ -1194,9 +1211,11 @@ git commit -m "ci: verify phase 0 quality pyramid"
 ### Task 9: Publish, run acceptance, and create the Phase 0 checkpoint
 
 **Files:**
+
 - No new files expected; update documentation only if acceptance exposes an inaccurate command or remediation.
 
 **Interfaces:**
+
 - Consumes: a clean, fully tested local `main`, authenticated GitHub CLI, and the prepared reference Mac.
 - Produces: public `https://github.com/tylervsd/expo-fastapi-todo`, passing GitHub Actions, a passing local doctor, and the pushed annotated tag `phase-00-environment`.
 

@@ -1,1 +1,10 @@
 .worktrees/
+.DS_Store
+.idea/
+.vscode/
+node_modules/
+.pnpm-store/
+.venv/
+coverage/
+dist/
+*.log

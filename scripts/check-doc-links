@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+
+find README.md docs -type f -name '*.md' -print0 \
+  | xargs -0 -n 1 pnpm exec markdown-link-check --quiet --config .markdown-link-check.json
