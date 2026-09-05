@@ -12,7 +12,7 @@ This tutorial is for developers who know basic Git and TypeScript or Python and 
 
 ## Current checkpoint
 
-The current checkpoint is **Phase 0 — developer environment**. There is intentionally no application code, Expo app, FastAPI service, database, or application package yet. The repository contains the setup contracts, a read-only doctor, tests for those contracts, and the curriculum that future phases will specify before implementation.
+The current checkpoint is **Phase 1 — project foundation**. The repository contains a runnable Expo web/iOS app, a FastAPI health boundary, separate host-process commands, and the quality checks for this first application slice. The Phase 0 setup contracts, read-only doctor, and reference-platform guidance remain the prerequisite foundation.
 
 ## Reference Mac
 
@@ -65,7 +65,7 @@ Only macOS 26.6.2 on Apple Silicon is supported by this Phase 0 guide. If a pref
 
 ## Continue the guided setup
 
-Clone the repository after the browser bootstrap, then follow [the linear macOS setup guide](docs/setup/macos.md). It installs the declared tools in ownership order, verifies each layer, and links every doctor failure to a stable [troubleshooting entry](docs/setup/troubleshooting.md).
+Clone the repository after the browser bootstrap, then follow [the linear macOS setup guide](docs/setup/macos.md). It installs the declared tools in ownership order, verifies each layer, and links every doctor failure to a stable [troubleshooting entry](docs/setup/troubleshooting.md). Once Phase 0 setup is complete, continue with the [Phase 1 project foundation guide](docs/guides/01-project-foundation.md) to run Expo and the FastAPI health boundary.
 
 The repository's `scripts/doctor` command is read-only. It inspects versions, paths, availability, and authenticated state; it does not install software, accept licenses, modify shell profiles, boot simulators, start Docker, or print credentials.
 
