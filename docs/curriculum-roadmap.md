@@ -32,7 +32,7 @@ This roadmap is provisional. Every phase receives its own approved spec before i
 - **Visible outcome:** The app creates and reads todos through FastAPI with generated OpenAPI documentation and clear errors.
 - **New technology/pattern:** REST semantics, Pydantic validation, OpenAPI generation, and a typed TypeScript client.
 - **Testing-pyramid layer introduced:** Contract and API integration tests, while keeping most behavior in unit/component tests.
-- **Spec gate:** Before implementation, this phase gets its own approved spec for endpoints, schemas, error responses, and client/server acceptance.
+- **Spec gate:** This phase received its approved spec before implementation.
 
 ## 5. Persistence
 
