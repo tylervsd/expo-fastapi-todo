@@ -68,10 +68,55 @@
   [ "$status" -eq 0 ]
 }
 
-@test "phase 0 contains no application workspaces" {
-  [ ! -d apps ]
-  [ ! -d services ]
-  [ ! -d packages ]
+@test "phase 1 exposes approved application boundaries and root command metadata" {
+  for path in apps/mobile/package.json apps/mobile/.env.example apps/api/pyproject.toml apps/api/uv.lock; do
+    [ -f "$path" ]
+  done
+
+  run node -e '
+    const pkg = require("./package.json");
+    const scripts = pkg.scripts;
+    const required = [
+      "dev:mobile",
+      "dev:api",
+      "lint:mobile",
+      "lint:api",
+      "typecheck",
+      "test:mobile",
+      "test:api",
+      "build:web",
+      "quality"
+    ];
+    for (const name of required) {
+      if (typeof scripts[name] !== "string" || scripts[name].trim() === "") {
+        throw new Error(`missing root script: ${name}`);
+      }
+    }
+
+    const mobile = scripts["dev:mobile"].split(/\s+/);
+    if (mobile.slice(0, 4).join(" ") !== "pnpm --dir apps/mobile start") {
+      throw new Error("mobile command must run Expo from apps/mobile");
+    }
+    if (mobile.slice(-2).join(" ") !== "--port 8081") {
+      throw new Error("mobile command must use the stable Expo port");
+    }
+
+    const api = scripts["dev:api"].split(/\s+/);
+    if (api.slice(0, 6).join(" ") !== "uv run --directory apps/api uvicorn app.main:app") {
+      throw new Error("API command must run uvicorn from apps/api");
+    }
+    if (!api.includes("app.main:app") || api.slice(-4).join(" ") !== "--host 127.0.0.1 --port 8000") {
+      throw new Error("API command must bind the stable localhost address");
+    }
+
+    const quality = scripts.quality.split(/\s+&&\s+/);
+    for (const name of ["lint", "test", "lint:mobile", "lint:api", "typecheck", "test:mobile", "test:api", "build:web"]) {
+      if (!quality.includes(`pnpm ${name}`)) {
+        throw new Error(`quality gate is missing: ${name}`);
+      }
+    }
+  '
+  [ "$status" -eq 0 ]
 }
 
 @test "required public repository files exist" {
