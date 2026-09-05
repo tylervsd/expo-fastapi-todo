@@ -69,7 +69,7 @@ The API explicitly grants CORS permission to `http://localhost:8081`, including 
 
 The shared web/iOS screen contains a project heading, a brief explanation, and the current API result. On mount it immediately shows **Connecting** and starts one request. It shows **Connected** only after HTTP `200` and JSON matching the health contract. A network error, five-second timeout, non-`200` response, invalid JSON, or unexpected body produces **Unavailable**, a short user-readable explanation, and a Retry button.
 
-Retry starts exactly one new attempt and returns the screen to Connecting. There is no polling, background retry, backoff, or periodic refresh.
+Retry is available from both Connected and Unavailable. It starts exactly one new attempt and returns the screen to Connecting, where Retry is disabled or hidden until the attempt settles. Connected describes the last successful check; stopping the API does not change the screen until the learner checks again. There is no polling, background retry, backoff, or periodic refresh.
 
 Each attempt has its own cancellation signal and identity. Unmounting cancels the active request. A newer attempt invalidates an older one, and an invalidated or cancelled completion cannot overwrite current state. The timeout is cleared when the attempt settles or is cancelled. User-facing errors never expose stack traces.
 
@@ -85,7 +85,7 @@ After Phase 0 setup, a learner installs root JavaScript dependencies, syncs the 
 
 FastAPI tests run in-process and prove that `/health` returns the exact status and JSON contract without database or authentication setup. They also prove that the configured Expo origin receives the expected CORS permission or preflight response and that an unlisted origin does not.
 
-Expo tests use controlled health-check outcomes and timers. They cover initial Connecting, Connected on a valid response, Unavailable for timeout/network/non-`200`/malformed or unexpected responses, Retry starting one new attempt, recovery after Retry, stale-response protection, and cancellation without a later state update on unmount. They do not use wall-clock waits or a live API.
+Expo tests use controlled health-check outcomes and timers. They cover initial Connecting, Connected on a valid response, Unavailable for timeout/network/non-`200`/malformed or unexpected responses, Retry from either Connected or Unavailable starting one new attempt, recovery after Retry, stale-response protection, and cancellation without a later state update on unmount. They do not use wall-clock waits or a live API.
 
 The existing Phase 0 workflow and all its checks remain active. CI adds mobile lint, TypeScript type checking, Expo component tests, API lint and tests, and a non-interactive Expo web export. The export is a build compatibility check, not E2E. CI does not require a simulator in this phase, and third-party Actions remain pinned by full commit SHA.
 
