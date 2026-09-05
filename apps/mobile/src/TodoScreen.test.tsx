@@ -5,16 +5,20 @@ import { TodoApiError, type Todo } from "./todos/todoApi";
 import { TodoScreen, type TodoScreenApi } from "./TodoScreen";
 
 const mockInputFocusEditable: (boolean | undefined)[] = [];
+const mockInputBlurEditable: (boolean | undefined)[] = [];
 let mockInputEditable: boolean | undefined;
 const mockInputFocus = jest.fn(() => {
   mockInputFocusEditable.push(mockInputEditable);
 });
+const mockInputBlur = jest.fn(() => {
+  mockInputBlurEditable.push(mockInputEditable);
+});
 
 jest.mock("react-native", () => {
   const actual = jest.requireActual("react-native");
-  const TestTextInput = mockReact.forwardRef((props: Record<string, unknown>, ref: mockReact.Ref<{ focus: () => void }>) => {
+  const TestTextInput = mockReact.forwardRef((props: Record<string, unknown>, ref: mockReact.Ref<{ focus: () => void; blur: () => void }>) => {
     mockInputEditable = props.editable as boolean | undefined;
-    mockReact.useImperativeHandle(ref, () => ({ focus: mockInputFocus }), []);
+    mockReact.useImperativeHandle(ref, () => ({ focus: mockInputFocus, blur: mockInputBlur }), []);
     return mockReact.createElement(actual.TextInput, props);
   });
   TestTextInput.displayName = "TestTextInput";
@@ -94,6 +98,8 @@ const load = async (api: MockTodoApi, rows: Todo[] = []) => {
 beforeEach(() => {
   mockInputFocus.mockClear();
   mockInputFocusEditable.length = 0;
+  mockInputBlur.mockClear();
+  mockInputBlurEditable.length = 0;
   mockInputEditable = undefined;
 });
 
@@ -232,6 +238,7 @@ it("gates rapid Add and submit handlers to one POST and refocuses only after suc
   expect(screen.queryByRole("checkbox", { name: "Buy milk" })).toBeNull();
   await waitFor(() => expect(screen.getByLabelText("Todo title")).toHaveProp("editable", false));
   expect(screen.getByLabelText("Todo title")).toHaveProp("value", "  Buy milk  ");
+  expect(mockInputBlurEditable).toEqual([true]);
   expect(mockInputFocus).not.toHaveBeenCalled();
   await act(async () => {
     creating.resolve(todo("server-id", "Canonical Buy milk", true));

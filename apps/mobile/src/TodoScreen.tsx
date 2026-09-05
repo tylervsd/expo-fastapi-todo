@@ -186,6 +186,7 @@ export function TodoScreen({ api = defaultApi }: { api?: TodoScreenApi } = {}): 
     const controller = new AbortController();
     active.current = controller;
     const draftAtSubmit = draft;
+    input.current?.blur();
     setOperation("creating");
     setError(null);
 
