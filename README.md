@@ -12,7 +12,7 @@ This tutorial is for developers who know basic Git and TypeScript or Python and 
 
 ## Current checkpoint
 
-The current checkpoint is **Phase 2 — local todo experience**. The Phase 2 implementation and local manual acceptance are complete as of 2026-09-05. The default app opens an in-memory todo screen on web and iOS without requiring FastAPI. Phase 1's health boundary source, tests, API, and guide remain preserved; its historical default app is available at the annotated `phase-01-foundation` tag. The Phase 2 release checkpoint is `phase-02-local-todo`; it is created only after integration, passing GitHub CI, and local acceptance. The Phase 0 setup contracts, read-only doctor, and reference-platform guidance remain the prerequisite foundation.
+The current implementation is **Phase 3 — API contract and vertical slice**. The default app loads, creates, completes, and reactivates todos through a process-local FastAPI service on web and iOS. Automated contract, client, component, and build checks are implemented; manual web and iOS acceptance remains recorded as pending in Guide 03. Phase 2 remains available at the annotated `phase-02-local-todo` checkpoint, and Phase 1's health boundary source, tests, API, and guide remain preserved. The Phase 3 release checkpoint is created only after integration, passing GitHub CI, and observed local acceptance. The Phase 0 setup contracts, read-only doctor, and reference-platform guidance remain the prerequisite foundation.
 
 ## Reference Mac
 
@@ -65,7 +65,7 @@ Only macOS 26.6.2 on Apple Silicon is supported by this Phase 0 guide. If a pref
 
 ## Continue the guided setup
 
-Clone the repository after the browser bootstrap, then follow [the linear macOS setup guide](docs/setup/macos.md). It installs the declared tools in ownership order, verifies each layer, and links every doctor failure to a stable [troubleshooting entry](docs/setup/troubleshooting.md). Once Phase 0 setup is complete, review the [Phase 1 project foundation guide](docs/guides/01-project-foundation.md) for the preserved health boundary, then continue with the [Phase 2 local todo guide](docs/guides/02-local-todo.md) to run the current app without FastAPI.
+Clone the repository after the browser bootstrap, then follow [the linear macOS setup guide](docs/setup/macos.md). It installs the declared tools in ownership order, verifies each layer, and links every doctor failure to a stable [troubleshooting entry](docs/setup/troubleshooting.md). Once Phase 0 setup is complete, review the [Phase 1 project foundation guide](docs/guides/01-project-foundation.md) and the [Phase 2 local todo guide](docs/guides/02-local-todo.md), then continue with the [Phase 3 API vertical slice guide](docs/guides/03-api-vertical-slice.md) to run the current two-process app.
 
 The repository's `scripts/doctor` command is read-only. It inspects versions, paths, availability, and authenticated state; it does not install software, accept licenses, modify shell profiles, boot simulators, start Docker, or print credentials.
 

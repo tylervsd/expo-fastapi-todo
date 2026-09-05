@@ -1,6 +1,6 @@
 # Phase 3 API Contract and Vertical Slice Implementation Plan
 
-**Status:** Proposed on 2026-09-05
+**Status:** Implemented on 2026-09-05; manual acceptance pending
 
 **Confirmed decision:** Keep completion and reactivation working through
 `PATCH /todos/{id}`, as confirmed by the user on 2026-09-05.
