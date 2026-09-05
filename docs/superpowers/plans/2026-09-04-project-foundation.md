@@ -681,7 +681,7 @@ Expected: all component and boundary tests pass; no live API or wall-clock delay
 - Modify: `package.json`
 - Modify: `.gitignore`
 - Modify: `tests/repository_contract.bats`
-- Modify: `pnpm-lock.yaml`
+- Verify: `pnpm-lock.yaml` (modify only if dependency resolution changes)
 
 **Interfaces:**
 

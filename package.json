@@ -24,7 +24,7 @@
     "quality": "pnpm lint && pnpm test && pnpm lint:mobile && pnpm lint:api && pnpm typecheck && pnpm test:mobile && pnpm test:api && pnpm build:web",
     "lint": "pnpm lint:markdown && pnpm lint:links && shellcheck scripts/doctor scripts/check-doc-links scripts/doctor.d/*.sh",
     "lint:links": "./scripts/check-doc-links",
-    "lint:markdown": "markdownlint-cli2 \"**/*.md\" \"#node_modules\" \"#.superpowers\" \"#apps/**/node_modules\" \"#apps/**/.venv\" \"#apps/**/.expo\" \"#apps/**/AGENTS.md\" \"#apps/**/CLAUDE.md\"",
+    "lint:markdown": "markdownlint-cli2 \"**/*.md\" \"#node_modules\" \"#.superpowers\" \"#apps/**/node_modules\" \"#apps/**/.venv\" \"#apps/**/.expo\"",
     "test": "pnpm test:contracts && pnpm test:doctor",
     "test:contracts": "bats tests/repository_contract.bats",
     "test:doctor": "bats tests/doctor"
