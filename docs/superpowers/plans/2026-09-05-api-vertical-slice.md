@@ -1,6 +1,6 @@
 # Phase 3 API Contract and Vertical Slice Implementation Plan
 
-**Status:** Implemented on 2026-09-05; manual acceptance pending
+**Status:** Implemented and locally accepted on 2026-09-05; release checkpoint pending
 
 **Confirmed decision:** Keep completion and reactivation working through
 `PATCH /todos/{id}`, as confirmed by the user on 2026-09-05.
@@ -60,7 +60,7 @@ React 19.2.3, TypeScript 6.0.3, Jest 29.7.0, pytest.
 **Produces:** `Todo`, `TodoCreate`, `TodoCompletedUpdate`,
 `create_app() -> FastAPI`, and exported `app = create_app()`.
 
-- [ ] **Write failing fresh-app tests.** A fixture creates
+- [x] **Write failing fresh-app tests.** A fixture creates
   `TestClient(create_app())`. Assert initial `200 []`; separate-app isolation;
   POST `201` canonical active todo with parseable UUID; duplicates in insertion
   order with distinct IDs; 120 emoji accepted and 121 rejected; and `422` for
@@ -72,11 +72,11 @@ React 19.2.3, TypeScript 6.0.3, Jest 29.7.0, pytest.
   origin/method/`Content-Type` preflight, and no allow-origin for an unlisted
   origin. Change health tests to use a fresh factory.
 
-- [ ] **Run the red test.** Run
+- [x] **Run the red test.** Run
   `uv run --directory apps/api python -m pytest tests/test_todos.py tests/test_health.py -v`;
   expect failure because the factory and todo contract do not exist.
 
-- [ ] **Implement the minimum direct routes.** Request models use strict field
+- [x] **Implement the minimum direct routes.** Request models use strict field
   types and `extra="forbid"`; a title validator applies the explicit ECMAScript
   trim set and surrogate check before the 1–120 constraint. Use `StrictBool` for
   PATCH. `create_app` closes over one insertion-ordered dict. Direct `async def`
@@ -87,7 +87,7 @@ React 19.2.3, TypeScript 6.0.3, Jest 29.7.0, pytest.
   [validators](https://pydantic.dev/docs/validation/latest/concepts/validators/),
   and [CORS](https://fastapi.tiangolo.com/tutorial/cors/).
 
-- [ ] **Verify and commit.** Run the focused pytest command above, then
+- [x] **Verify and commit.** Run the focused pytest command above, then
   `pnpm lint:api` and `git diff --check`. Stage the three listed API files and
   commit `feat: add in-memory todo API contract`.
 
@@ -106,7 +106,7 @@ setTodoCompleted(id: string, completed: boolean,
   options?: TodoRequestOptions): Promise<Todo>;
 ```
 
-- [ ] **Write failing injected-fetch tests.** Assert URL, method, JSON header/body,
+- [x] **Write failing injected-fetch tests.** Assert URL, method, JSON header/body,
   statuses, and result. Exact runtime guards reject malformed arrays, extra or
   wrong-type todo keys, UUID/title violations, invalid JSON, and wrong success
   status. Assert `422 -> validation` with **Check the todo title and try again.**,
@@ -117,17 +117,17 @@ setTodoCompleted(id: string, completed: boolean,
   `AbortError`, not `TodoApiError`; already-aborted input never fetches, and all
   paths remove timers/listeners.
 
-- [ ] **Run the red test.** Run
+- [x] **Run the red test.** Run
   `pnpm --dir apps/mobile test --runInBand src/todos/todoApi.test.ts`; expect a
   missing-module failure.
 
-- [ ] **Implement one private JSON request helper and three exports.** Follow
+- [x] **Implement one private JSON request helper and three exports.** Follow
   `health/checkHealth.ts` for validated base URL, relayed abort, timeout, and
   cleanup, while leaving health source unchanged. Keep the helper inside the
   todo module. Validate exact response keys, UUID, canonical trim, code-point
   length, and Boolean completion. Never expose exception/server prose.
 
-- [ ] **Verify and commit.** Run the focused Jest command above,
+- [x] **Verify and commit.** Run the focused Jest command above,
   `pnpm lint:mobile`, `pnpm typecheck`, and `git diff --check`. Stage
   `apps/mobile/src/todos` and commit `feat: add typed todo API client`.
 
@@ -139,7 +139,7 @@ setTodoCompleted(id: string, completed: boolean,
 **Consumes:** An injected API with `list({signal})`, `create(title, {signal})`,
 and `setCompleted(id, completed, {signal})`; defaults call Task 2 exports.
 
-- [ ] **Rewrite failing tests with deferred API promises.** Retain Phase 2
+- [x] **Rewrite failing tests with deferred API promises.** Retain Phase 2
   validation, duplicates, filters, keyboard/Space, empty states, checkbox,
   selected-state, and alert assertions. Add initial **Loading todos…** with no
   writes, one GET, success, initial **Could not load todos.**/Retry without empty
@@ -152,11 +152,11 @@ and `setCompleted(id, completed, {signal})`; defaults call Task 2 exports.
   the draft and current filter; remount resets All. Suppress stale/AbortError
   results and abort on unmount. Mock Task 2 in `App.test.tsx`.
 
-- [ ] **Run the red tests.** Run
+- [x] **Run the red tests.** Run
   `pnpm --dir apps/mobile test --runInBand src/TodoScreen.test.tsx App.test.tsx`;
   expect failure because the screen still owns mount-local mutations.
 
-- [ ] **Implement request state and reconciliation.** Keep one todo array and
+- [x] **Implement request state and reconciliation.** Keep one todo array and
   render-derived filters. A synchronous busy ref plus operation state accepts
   one remote action before rerender; attempt identity and AbortController block
   stale/unmounted updates. GET replaces, POST appends its canonical row, and
@@ -167,7 +167,7 @@ and `setCompleted(id, completed, {signal})`; defaults call Task 2 exports.
   Preserve SafeAreaView, keyboard ScrollView props, 44-point targets, ARIA state,
   and Space behavior.
 
-- [ ] **Verify and commit.** Run the focused Jest command above, then
+- [x] **Verify and commit.** Run the focused Jest command above, then
   `pnpm test:mobile`, `pnpm lint:mobile`, `pnpm typecheck`, `pnpm build:web`, and
   `git diff --check`. Stage the three listed files and commit
   `feat: connect todo screen to API`.
@@ -177,7 +177,7 @@ and `setCompleted(id, completed, {signal})`; defaults call Task 2 exports.
 **Files:** Create `docs/guides/03-api-vertical-slice.md`; modify `README.md` and
 `docs/curriculum-roadmap.md`.
 
-- [ ] **Write guide and entry points.** Explain endpoints/statuses, title rules,
+- [x] **Write guide and entry points.** Explain endpoints/statuses, title rules,
   app-local lifetime, `/docs`, handwritten type plus runtime guard, request
   states/cancellation, unknown-write reconciliation and possible duplicate after
   manual resubmit, CORS, two-terminal startup, focused checks, and `pnpm quality`.
@@ -186,13 +186,13 @@ and `setCompleted(id, completed, {signal})`; defaults call Task 2 exports.
   network recovery, and restart reset. Advance README to Phase 3 and Guide 03;
   mark only this roadmap spec gate complete.
 
-- [ ] **Lint, perform, and record manual acceptance.** Run `pnpm lint:markdown`
+- [x] **Lint, perform, and record manual acceptance.** Run `pnpm lint:markdown`
   and `pnpm lint:links`, then run `pnpm dev:api` and `pnpm dev:mobile` in
   separate terminals. Inspect `/docs`; execute the journey on localhost web and
   the reference iPhone 17 Pro Simulator. Stop the API before the failure case.
   Record only observed results, restarting the API for the final empty proof.
 
-- [ ] **Final gate and documentation commit.** Run `pnpm quality`,
+- [x] **Final gate and documentation commit.** Run `pnpm quality`,
   `git diff --check`, and `git status --short`. Stage the three listed docs and
   commit `docs: add API vertical slice guide`.
 

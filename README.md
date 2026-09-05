@@ -12,7 +12,7 @@ This tutorial is for developers who know basic Git and TypeScript or Python and 
 
 ## Current checkpoint
 
-The current implementation is **Phase 3 — API contract and vertical slice**. The default app loads, creates, completes, and reactivates todos through a process-local FastAPI service on web and iOS. Automated contract, client, component, and build checks are implemented; manual web and iOS acceptance remains recorded as pending in Guide 03. Phase 2 remains available at the annotated `phase-02-local-todo` checkpoint, and Phase 1's health boundary source, tests, API, and guide remain preserved. The Phase 3 release checkpoint is created only after integration, passing GitHub CI, and observed local acceptance. The Phase 0 setup contracts, read-only doctor, and reference-platform guidance remain the prerequisite foundation.
+The current implementation is **Phase 3 — API contract and vertical slice**. The default app loads, creates, completes, and reactivates todos through a process-local FastAPI service on web and iOS. Automated contract, client, component, and build checks pass; observed web and iOS acceptance is recorded in Guide 03. Phase 2 remains available at the annotated `phase-02-local-todo` checkpoint, and Phase 1's health boundary source, tests, API, and guide remain preserved. The Phase 3 release checkpoint is created only after integration, passing GitHub CI, and observed local acceptance. The Phase 0 setup contracts, read-only doctor, and reference-platform guidance remain the prerequisite foundation.
 
 ## Reference Mac
 

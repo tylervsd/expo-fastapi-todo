@@ -160,8 +160,8 @@ prove visible interaction.
 Use one fresh FastAPI process for both targets.
 
 1. Open `/docs` and confirm GET/POST `/todos` and PATCH `/todos/{id}` appear.
-2. On web, load the All empty state and reject whitespace, 121 code points, and
-   an unpaired surrogate title.
+2. On web, load the All empty state and reject whitespace and 121 code points.
+   Unpaired-surrogate rejection is covered by automated tests.
 3. Create two `Buy milk` todos and complete one. Confirm the duplicate rows are
    independent and the Active and Completed filters show the expected row.
 4. On iOS, refresh and confirm the same UUID-backed rows appear. Reactivate the
@@ -176,13 +176,21 @@ Use one fresh FastAPI process for both targets.
 
 Real HTTP checks on 2026-09-05 exercised health, list, canonical create,
 completion/reactivation, OpenAPI, CORS, and the actual TypeScript client against
-Uvicorn. Metro also compiled web and iOS bundles. Those checks are useful
-integration evidence but are not visual acceptance, so the target results stay
-unchecked until the journey is observed.
+Uvicorn. Metro also compiled web and iOS bundles. The visual journey was then
+observed on both targets on 2026-09-05: shared create and reversible completion,
+filter-preserving Refresh, All-on-remount with server data retained, outage
+errors with writes disabled, recovery with drafts retained, and empty state
+after API restart all passed. Web also rejected 121 emoji and accepted 120.
+
+iOS software-keyboard Done exposed a focus issue: disabling the input left
+React Native’s focus record stale. Blurring before the create request lets the
+success effect restore native focus after re-enabling the field. A full reload,
+Done submission, immediate typing without refocusing, and keyboard hide with
+correct safe-area layout passed after the fix. Web focus remained correct.
 
 ## Phase 3 acceptance record
 
 | Target | Date | Runtime | Shared create + toggle | Filter Refresh + All on remount | Network recovery | API restart resets |
 | --- | --- | --- | --- | --- | --- | --- |
-| Web | Pending | `http://localhost:8081` | ☐ | ☐ | ☐ | ☐ |
-| iOS Simulator | Pending | iPhone 17 Pro, iOS 26.5, Expo Go version pending | ☐ | ☐ | ☐ | ☐ |
+| Web | 2026-09-05 | `http://localhost:8081` | ☑ | ☑ | ☑ | ☑ |
+| iOS Simulator | 2026-09-05 | iPhone 17 Pro, iOS 26.5, Expo Go 57.0.9 | ☑ | ☑ | ☑ | ☑ |

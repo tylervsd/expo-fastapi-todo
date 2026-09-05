@@ -1,6 +1,6 @@
 # Phase 3 API Contract and Vertical Slice Design
 
-**Status:** Implemented on 2026-09-05; manual acceptance pending
+**Status:** Implemented and locally accepted on 2026-09-05; release checkpoint pending
 
 **Confirmed decision:** Completion and reactivation remain API-backed, as
 confirmed by the user on 2026-09-05.
