@@ -446,6 +446,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     justifyContent: "center",
     minHeight: 48,
+    minWidth: 44,
     paddingHorizontal: 16,
   },
   addButtonText: {
@@ -472,6 +473,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     justifyContent: "center",
     minHeight: 44,
+    minWidth: 44,
     paddingHorizontal: 16,
   },
   selectedFilter: {
@@ -493,6 +495,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     justifyContent: "center",
     minHeight: 44,
+    minWidth: 44,
     paddingHorizontal: 16,
   },
   refreshButtonText: {
@@ -513,6 +516,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 12,
     minHeight: 56,
+    minWidth: 44,
     paddingHorizontal: 14,
   },
   checkbox: {

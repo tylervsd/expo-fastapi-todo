@@ -517,11 +517,15 @@ it("preserves Phase 2 containers, keyboard props, target sizes, and pending disa
 
   expect(StyleSheet.flatten(input.props.style).minHeight).toBeGreaterThanOrEqual(44);
   expect(StyleSheet.flatten(addButton.props.style).minHeight).toBeGreaterThanOrEqual(44);
+  expect(StyleSheet.flatten(addButton.props.style).minWidth).toBeGreaterThanOrEqual(44);
   expect(StyleSheet.flatten(refreshButton.props.style).minHeight).toBeGreaterThanOrEqual(44);
+  expect(StyleSheet.flatten(refreshButton.props.style).minWidth).toBeGreaterThanOrEqual(44);
   for (const filterButton of filterButtons) {
     expect(StyleSheet.flatten(filterButton.props.style).minHeight).toBeGreaterThanOrEqual(44);
+    expect(StyleSheet.flatten(filterButton.props.style).minWidth).toBeGreaterThanOrEqual(44);
   }
   expect(StyleSheet.flatten(checkbox.props.style).minHeight).toBeGreaterThanOrEqual(44);
+  expect(StyleSheet.flatten(checkbox.props.style).minWidth).toBeGreaterThanOrEqual(44);
   expect(checkbox).toHaveProp("aria-checked", false);
 
   await fireEvent.changeText(input, "Pending create");
