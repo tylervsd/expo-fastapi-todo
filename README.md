@@ -4,7 +4,7 @@
 
 This is a production-shaped, local-first tutorial for building a todo application with Expo, React Native, FastAPI, and PostgreSQL. It teaches how a feature moves from an approved specification through implementation, tests, an explanatory guide, and an annotated Git checkpoint.
 
-Phase 0 is deliberately about the developer environment and the quality bar. Later phases will add the application one vertical slice at a time.
+Phase 0 establishes the developer environment and quality bar that Phase 1 uses as its prerequisite foundation. Phase 1 introduces the first runnable application boundary, and later phases add feature slices one vertical slice at a time.
 
 ## Who this is for
 
@@ -75,7 +75,7 @@ See the [provisional curriculum roadmap](docs/curriculum-roadmap.md) for the nin
 
 ## Testing strategy
 
-Phase 0 demonstrates the testing pyramid before application code exists:
+Phase 0 establishes the testing pyramid's foundation, and Phase 1 applies it to the first application boundary:
 
 - Static checks are broad and fast: Markdown, links, ShellCheck, and repository contracts.
 - Unit and component tests will be the largest application layer. They should cover parsing, state transitions, validation, accessibility behavior, and rendering without requiring external services.
