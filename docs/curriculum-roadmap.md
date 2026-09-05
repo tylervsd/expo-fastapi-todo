@@ -14,8 +14,8 @@ This roadmap is provisional. Every phase receives its own approved spec before i
 
 - **Learning goal:** Establish the monorepo shape, Expo targets, FastAPI service boundary, local orchestration, and baseline CI.
 - **Visible outcome:** A browser and iOS shell plus a FastAPI health endpoint run locally with a repeatable CI quality gate.
-- **New technology/pattern:** Expo web/iOS, FastAPI, Docker Compose service boundaries, and workflow checks.
-- **Testing-pyramid layer introduced:** First application unit/component tests and a service integration smoke test.
+- **New technology/pattern:** Expo web/iOS, FastAPI, separate host-process service boundaries, and workflow checks.
+- **Testing-pyramid layer introduced:** First application unit/component tests, in-process API contract tests, and mobile component tests.
 - **Spec gate:** Before implementation, this phase gets its own approved spec covering the app/service contracts and CI acceptance criteria.
 
 ## 3. Local todo experience

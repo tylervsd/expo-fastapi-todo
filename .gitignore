@@ -8,3 +8,10 @@ node_modules/
 coverage/
 dist/
 *.log
+.expo/
+apps/mobile/.env.local
+apps/mobile/dist/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.pyc
