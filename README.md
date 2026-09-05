@@ -12,7 +12,7 @@ This tutorial is for developers who know basic Git and TypeScript or Python and 
 
 ## Current checkpoint
 
-The current checkpoint is **Phase 2 — local todo experience**. The Phase 2 implementation and local manual acceptance are complete as of 2026-09-05. The default app opens an in-memory todo screen on web and iOS without requiring FastAPI. Phase 1's health boundary source, tests, API, and guide remain preserved; its historical default app is available at the annotated `phase-01-foundation` tag. The Phase 2 checkpoint tag and remote CI verification remain pending integration. The Phase 0 setup contracts, read-only doctor, and reference-platform guidance remain the prerequisite foundation.
+The current checkpoint is **Phase 2 — local todo experience**. The Phase 2 implementation and local manual acceptance are complete as of 2026-09-05. The default app opens an in-memory todo screen on web and iOS without requiring FastAPI. Phase 1's health boundary source, tests, API, and guide remain preserved; its historical default app is available at the annotated `phase-01-foundation` tag. The Phase 2 release checkpoint is `phase-02-local-todo`; it is created only after integration, passing GitHub CI, and local acceptance. The Phase 0 setup contracts, read-only doctor, and reference-platform guidance remain the prerequisite foundation.
 
 ## Reference Mac
 

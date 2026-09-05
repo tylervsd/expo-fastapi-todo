@@ -382,7 +382,7 @@ Expected: every check passes, both acceptance rows contain observed values, and 
 
 ## Implementation record
 
-Implementation and local manual acceptance were completed on 2026-09-05. The todo and App suites add six tests, with 24 mobile tests passing overall. React Native Web exposes checkbox `aria-checked` and filter `aria-pressed` state, with a Space-key handler for activation. A parent `SafeAreaView` provides keyboard-safe layout, and tests use the supported `toHaveProp` matcher. The final whole-branch Sol review passed with no actionable findings. `pnpm quality` passed all 62 repository/doctor checks, 24 mobile tests, 3 API tests, lint, typecheck, and web export. Remote CI verification and the `phase-02-local-todo` tag remain pending integration.
+Implementation and local manual acceptance were completed on 2026-09-05. The todo and App suites add six tests, with 24 mobile tests passing overall. React Native Web exposes checkbox `aria-checked` and filter `aria-pressed` state, with a Space-key handler for activation. A parent `SafeAreaView` provides keyboard-safe layout, and tests use the supported `toHaveProp` matcher. The final whole-branch Sol review passed with no actionable findings. `pnpm quality` passed all 62 repository/doctor checks, 24 mobile tests, 3 API tests, lint, typecheck, and web export. Release integration requires passing GitHub CI before the annotated `phase-02-local-todo` tag is created on the integrated commit.
 
 ## Spec coverage check
 
