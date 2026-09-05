@@ -124,6 +124,8 @@ describe("todo API client", () => {
     ["non-canonical title", [{ ...todo, title: " Buy milk" }]],
     ["empty title", [{ ...todo, title: "" }]],
     ["too many code points", [{ ...todo, title: "😀".repeat(121) }]],
+    ["trailing high surrogate", [{ ...todo, title: `Buy milk${String.fromCharCode(0xd800)}` }]],
+    ["lone low surrogate", [{ ...todo, title: `Buy milk${String.fromCharCode(0xdc00)}` }]],
   ])("rejects %s list data as invalid-data", async (_case, body) => {
     const fetchImpl = jest.fn().mockResolvedValue(response(200, body));
 
@@ -181,17 +183,62 @@ describe("todo API client", () => {
   });
 
   it.each([
-    ["success", response(200, [todo]), true],
-    ["status", response(503, {}), false],
-    ["invalid JSON", { status: 200, json: jest.fn().mockRejectedValue(new SyntaxError()) } as unknown as Response, false],
-  ])("removes listeners and timers after %s", async (_case, result, succeeds) => {
+    ["success", (controller: AbortController) => listTodos({
+      apiUrl,
+      signal: controller.signal,
+      fetchImpl: jest.fn().mockResolvedValue(response(200, [todo])),
+    }), "success"],
+    ["status", (controller: AbortController) => listTodos({
+      apiUrl,
+      signal: controller.signal,
+      fetchImpl: jest.fn().mockResolvedValue(response(503, {})),
+    }), "failure"],
+    ["invalid JSON", (controller: AbortController) => listTodos({
+      apiUrl,
+      signal: controller.signal,
+      fetchImpl: jest.fn().mockResolvedValue({
+        status: 200,
+        json: jest.fn().mockRejectedValue(new SyntaxError()),
+      } as unknown as Response),
+    }), "failure"],
+    ["timeout", (controller: AbortController) => listTodos({
+      apiUrl,
+      signal: controller.signal,
+      fetchImpl: jest.fn().mockResolvedValue({
+        status: 200,
+        json: jest.fn(() => new Promise<never>(() => undefined)),
+      } as unknown as Response),
+    }), "timeout"],
+    ["caller abort", (controller: AbortController) => listTodos({
+      apiUrl,
+      signal: controller.signal,
+      fetchImpl: jest.fn(() => new Promise<Response>(() => undefined)),
+    }), "abort"],
+    ["transport rejection", (controller: AbortController) => listTodos({
+      apiUrl,
+      signal: controller.signal,
+      fetchImpl: jest.fn().mockRejectedValue(new Error("offline")),
+    }), "failure"],
+    ["invalid URL", (controller: AbortController) => listTodos({
+      apiUrl: "ftp://127.0.0.1:8000",
+      signal: controller.signal,
+      fetchImpl: jest.fn(),
+    }), "failure"],
+    ["already aborted", (controller: AbortController) => {
+      controller.abort();
+      return listTodos({ apiUrl, signal: controller.signal, fetchImpl: jest.fn() });
+    }, "failure"],
+  ])("removes listeners and timers after %s", async (_case, run, mode) => {
     jest.useFakeTimers();
     try {
       const controller = new AbortController();
       const removed = jest.spyOn(controller.signal, "removeEventListener");
-      const fetchImpl = jest.fn().mockResolvedValue(result);
-      const pending = listTodos({ apiUrl, signal: controller.signal, fetchImpl });
-      if (succeeds) await expect(pending).resolves.toEqual([todo]);
+      const pending = run(controller);
+      const timeoutRejection = mode === "timeout" ? expect(pending).rejects.toBeDefined() : undefined;
+      if (mode === "timeout") await jest.advanceTimersByTimeAsync(5_000);
+      if (mode === "abort") controller.abort();
+      if (mode === "success") await expect(pending).resolves.toEqual([todo]);
+      else if (timeoutRejection) await timeoutRejection;
       else await expect(pending).rejects.toBeDefined();
       expect(jest.getTimerCount()).toBe(0);
       expect(removed).toHaveBeenCalledWith("abort", expect.any(Function));
