@@ -1,6 +1,41 @@
+import * as mockReact from "react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { StyleSheet } from "react-native";
 import { TodoApiError, type Todo } from "./todos/todoApi";
 import { TodoScreen, type TodoScreenApi } from "./TodoScreen";
+
+const mockInputFocusEditable: (boolean | undefined)[] = [];
+let mockInputEditable: boolean | undefined;
+const mockInputFocus = jest.fn(() => {
+  mockInputFocusEditable.push(mockInputEditable);
+});
+
+jest.mock("react-native", () => {
+  const actual = jest.requireActual("react-native");
+  const TestTextInput = mockReact.forwardRef((props: Record<string, unknown>, ref: mockReact.Ref<{ focus: () => void }>) => {
+    mockInputEditable = props.editable as boolean | undefined;
+    mockReact.useImperativeHandle(ref, () => ({ focus: mockInputFocus }), []);
+    return mockReact.createElement(actual.TextInput, props);
+  });
+  TestTextInput.displayName = "TestTextInput";
+  const TestPressable = (props: Record<string, unknown>) =>
+    mockReact.createElement("View", {
+      ...props,
+      accessible: true,
+      accessibilityState:
+        props.disabled === undefined
+          ? props.accessibilityState
+          : { ...(props.accessibilityState as Record<string, unknown>), disabled: props.disabled },
+    });
+  TestPressable.displayName = "TestPressable";
+  return new Proxy(actual, {
+    get(target, property, receiver) {
+      if (property === "TextInput") return TestTextInput;
+      if (property === "Pressable") return TestPressable;
+      return Reflect.get(target, property, receiver);
+    },
+  });
+});
 
 type MockTodoApi = {
   list: jest.MockedFunction<TodoScreenApi["list"]>;
@@ -30,11 +65,37 @@ const makeApi = (): MockTodoApi => ({
   setCompleted: jest.fn() as jest.MockedFunction<TodoScreenApi["setCompleted"]>,
 });
 
+type HostNode = {
+  type: string;
+  props: Record<string, unknown>;
+  children: (HostNode | string)[];
+};
+
+const findHost = (
+  node: HostNode,
+  predicate: (candidate: HostNode) => boolean,
+): HostNode | undefined => {
+  if (predicate(node)) return node;
+  for (const child of node.children) {
+    if (typeof child !== "string") {
+      const match = findHost(child, predicate);
+      if (match) return match;
+    }
+  }
+  return undefined;
+};
+
 const load = async (api: MockTodoApi, rows: Todo[] = []) => {
   api.list.mockResolvedValueOnce(rows);
   await render(<TodoScreen api={api} />);
   await waitFor(() => expect(screen.queryByText("Loading todos…")).toBeNull());
 };
+
+beforeEach(() => {
+  mockInputFocus.mockClear();
+  mockInputFocusEditable.length = 0;
+  mockInputEditable = undefined;
+});
 
 it("starts with Loading todos… and one GET without permitting writes", async () => {
   const pending = deferred<Todo[]>();
@@ -149,7 +210,7 @@ it("preserves rows on failed refresh and disables remote writes until recovery",
   expect(api.setCompleted).not.toHaveBeenCalled();
 });
 
-it("accepts one create before rerender, sends the title, and appends canonical data only on success", async () => {
+it("gates rapid Add and submit handlers to one POST and refocuses only after success commits", async () => {
   const creating = deferred<Todo>();
   const api = makeApi();
   await load(api);
@@ -157,8 +218,13 @@ it("accepts one create before rerender, sends the title, and appends canonical d
 
   const input = screen.getByLabelText("Todo title");
   await fireEvent.changeText(input, "  Buy milk  ");
-  await fireEvent.press(screen.getByRole("button", { name: "Add todo" }));
-  await fireEvent(input, "submitEditing");
+  const addButton = screen.getByRole("button", { name: "Add todo" });
+  const pressAdd = addButton.props.onPress as () => void;
+  const submitEditing = input.props.onSubmitEditing as () => void;
+  await act(async () => {
+    pressAdd();
+    submitEditing();
+  });
 
   expect(api.create).toHaveBeenCalledTimes(1);
   expect(api.create.mock.calls[0][0]).toBe("Buy milk");
@@ -166,16 +232,19 @@ it("accepts one create before rerender, sends the title, and appends canonical d
   expect(screen.queryByRole("checkbox", { name: "Buy milk" })).toBeNull();
   await waitFor(() => expect(screen.getByLabelText("Todo title")).toHaveProp("editable", false));
   expect(screen.getByLabelText("Todo title")).toHaveProp("value", "  Buy milk  ");
+  expect(mockInputFocus).not.toHaveBeenCalled();
   await act(async () => {
     creating.resolve(todo("server-id", "Canonical Buy milk", true));
-    await Promise.resolve();
-    await Promise.resolve();
   });
-  await waitFor(() => expect(screen.getByRole("checkbox", { name: "Canonical Buy milk" })).toHaveProp(
-    "accessibilityState",
-    expect.objectContaining({ checked: true }),
-  ));
+  await waitFor(() => {
+    expect(screen.getByRole("checkbox", { name: "Canonical Buy milk" })).toHaveProp(
+      "accessibilityState",
+      expect.objectContaining({ checked: true }),
+    );
+    expect(mockInputFocus).toHaveBeenCalledTimes(1);
+  });
   expect(screen.getByLabelText("Todo title")).toHaveProp("value", "");
+  expect(mockInputFocusEditable).toEqual([true]);
 });
 
 it("disables the draft while create is pending and clears it after success", async () => {
@@ -220,7 +289,13 @@ it("uses ECMAScript trimming, Unicode code-point limits, and rejects lone surrog
   await fireEvent.press(screen.getByRole("button", { name: "Add todo" }));
   expect(screen.getByRole("alert")).toHaveTextContent("Enter a todo title.");
 
-  await fireEvent.changeText(input, `${"😀".repeat(120)}\uD83D`);
+  await fireEvent.changeText(input, "under limit\uD83D");
+  await fireEvent.press(screen.getByRole("button", { name: "Add todo" }));
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "Todo titles must be 120 characters or fewer.",
+  );
+
+  await fireEvent.changeText(input, "under limit\uDC00");
   await fireEvent.press(screen.getByRole("button", { name: "Add todo" }));
   expect(screen.getByRole("alert")).toHaveTextContent(
     "Todo titles must be 120 characters or fewer.",
@@ -252,16 +327,25 @@ it("sends the desired Boolean and replaces a row only after canonical PATCH succ
   ));
 });
 
-it("gates rapid checkbox and Space events to one PATCH", async () => {
+it("gates rapid checkbox press and Space handlers to one PATCH", async () => {
   const updating = deferred<Todo>();
   const api = makeApi();
   await load(api, [todo("one", "Buy milk")]);
   api.setCompleted.mockReturnValueOnce(updating.promise);
 
   const checkbox = screen.getByRole("checkbox", { name: "Buy milk" });
-  await fireEvent.press(checkbox);
-  await fireEvent.press(checkbox);
+  const pressCheckbox = checkbox.props.onPress as () => void;
+  const onKeyDown = checkbox.props.onKeyDown as (event: {
+    nativeEvent: { key: string };
+    preventDefault: () => void;
+  }) => void;
+  const preventDefault = jest.fn();
+  await act(async () => {
+    pressCheckbox();
+    onKeyDown({ nativeEvent: { key: " " }, preventDefault });
+  });
 
+  expect(preventDefault).toHaveBeenCalled();
   expect(api.setCompleted).toHaveBeenCalledTimes(1);
   await act(async () => updating.resolve(todo("one", "Buy milk", true)));
   await waitFor(() => expect(screen.getByRole("checkbox", { name: "Buy milk" })).toHaveProp(
@@ -301,6 +385,30 @@ it("maps a missing PATCH target without changing the row", async () => {
   expect(screen.getByRole("checkbox", { name: "Buy milk" })).toHaveProp(
     "accessibilityState",
     expect.objectContaining({ checked: false }),
+  );
+});
+
+it("suppresses an AbortError without showing a mutation failure", async () => {
+  const updating = deferred<Todo>();
+  const api = makeApi();
+  await load(api, [todo("one", "Buy milk")]);
+  api.setCompleted.mockReturnValueOnce(updating.promise);
+
+  await fireEvent.press(screen.getByRole("checkbox", { name: "Buy milk" }));
+  await act(async () => {
+    const error = new Error("aborted");
+    error.name = "AbortError";
+    updating.reject(error);
+  });
+
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.getByRole("checkbox", { name: "Buy milk" })).toHaveProp(
+    "accessibilityState",
+    expect.objectContaining({ checked: false, disabled: false }),
+  );
+  expect(screen.getByRole("button", { name: "Add todo" })).toHaveProp(
+    "accessibilityState",
+    expect.objectContaining({ disabled: false }),
   );
 });
 
@@ -379,6 +487,62 @@ it("derives filters locally while a remote action is busy", async () => {
 
   await act(async () => updating.resolve(todo("one", "Buy milk", true)));
   await waitFor(() => expect(screen.getByRole("checkbox", { name: "Buy milk" })).toBeTruthy());
+});
+
+it("preserves Phase 2 containers, keyboard props, target sizes, and pending disabled states", async () => {
+  const creating = deferred<Todo>();
+  const api = makeApi();
+  api.list.mockResolvedValueOnce([todo("one", "Buy milk")]);
+  api.create.mockReturnValueOnce(creating.promise);
+
+  await render(<TodoScreen api={api} />);
+  await waitFor(() => expect(screen.queryByText("Loading todos…")).toBeNull());
+  const root = screen.root as unknown as HostNode;
+  expect(root.type).toBe("RCTSafeAreaView");
+  const scrollView = findHost(
+    root,
+    (node) => node.props.automaticallyAdjustKeyboardInsets === true,
+  );
+  if (!scrollView) throw new Error("ScrollView host was not rendered");
+  expect(scrollView.props.automaticallyAdjustKeyboardInsets).toBe(true);
+  expect(scrollView.props.keyboardShouldPersistTaps).toBe("handled");
+
+  const input = screen.getByLabelText("Todo title");
+  const addButton = screen.getByRole("button", { name: "Add todo" });
+  const refreshButton = screen.getByRole("button", { name: "Refresh" });
+  const checkbox = screen.getByRole("checkbox", { name: "Buy milk" });
+  const filterButtons = ["All", "Active", "Completed"].map((name) =>
+    screen.getByRole("button", { name }),
+  );
+
+  expect(StyleSheet.flatten(input.props.style).minHeight).toBeGreaterThanOrEqual(44);
+  expect(StyleSheet.flatten(addButton.props.style).minHeight).toBeGreaterThanOrEqual(44);
+  expect(StyleSheet.flatten(refreshButton.props.style).minHeight).toBeGreaterThanOrEqual(44);
+  for (const filterButton of filterButtons) {
+    expect(StyleSheet.flatten(filterButton.props.style).minHeight).toBeGreaterThanOrEqual(44);
+  }
+  expect(StyleSheet.flatten(checkbox.props.style).minHeight).toBeGreaterThanOrEqual(44);
+  expect(checkbox).toHaveProp("aria-checked", false);
+
+  await fireEvent.changeText(input, "Pending create");
+  await fireEvent.press(addButton);
+  await waitFor(() => expect(input).toHaveProp("editable", false));
+
+  expect(addButton).toHaveProp(
+    "accessibilityState",
+    expect.objectContaining({ disabled: true }),
+  );
+  expect(refreshButton).toHaveProp(
+    "accessibilityState",
+    expect.objectContaining({ disabled: true }),
+  );
+  expect(checkbox).toHaveProp(
+    "accessibilityState",
+    expect.objectContaining({ disabled: true }),
+  );
+  expect(checkbox).toHaveProp("disabled", true);
+
+  await act(async () => creating.resolve(todo("server", "Pending create")));
 });
 
 it("retains Phase 2 validation, duplicate rows, filters, accessibility, and empty states", async () => {

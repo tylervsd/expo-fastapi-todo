@@ -87,12 +87,14 @@ export function TodoScreen({ api = defaultApi }: { api?: TodoScreenApi } = {}): 
   const [operation, setOperation] = useState<Operation>("loading");
   const [error, setError] = useState<string | null>(null);
   const [writeLocked, setWriteLocked] = useState(false);
+  const [createFocusSignal, setCreateFocusSignal] = useState(0);
   const mounted = useRef(false);
   const attempt = useRef(0);
   const active = useRef<AbortController | null>(null);
   const busy = useRef(false);
   const loaded = useRef(false);
   const input = useRef<TextInput>(null);
+  const focusedCreateSignal = useRef(0);
 
   const abortActiveAttempt = useCallback(() => {
     active.current?.abort();
@@ -199,7 +201,7 @@ export function TodoScreen({ api = defaultApi }: { api?: TodoScreenApi } = {}): 
         setTodos((current) => [...current, created]);
         setDraft((current) => (current === draftAtSubmit ? "" : current));
         setError(null);
-        input.current?.focus();
+        setCreateFocusSignal((current) => current + 1);
       },
       (reason: unknown) => {
         if (
@@ -286,6 +288,12 @@ export function TodoScreen({ api = defaultApi }: { api?: TodoScreenApi } = {}): 
   const writesDisabled =
     !hasLoaded || loadState !== "ready" || writeLocked || operation !== null;
   const rowsDisabled = writesDisabled;
+
+  useEffect(() => {
+    if (createFocusSignal === focusedCreateSignal.current || writesDisabled) return;
+    input.current?.focus();
+    focusedCreateSignal.current = createFocusSignal;
+  }, [createFocusSignal, writesDisabled]);
 
   return (
     <SafeAreaView style={styles.safeArea}>
