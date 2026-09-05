@@ -24,7 +24,7 @@ This roadmap is provisional. Every phase receives its own approved spec before i
 - **Visible outcome:** A learner can view, add, complete, and filter local todos on web and iOS.
 - **New technology/pattern:** React Native components, local state, forms, validation, and accessibility semantics.
 - **Testing-pyramid layer introduced:** Many component and interaction tests around user-visible state transitions.
-- **Spec gate:** Before implementation, this phase gets its own approved spec with behavior, accessibility, and state acceptance criteria.
+- **Spec gate:** This phase received its approved spec before implementation.
 
 ## 4. API contract and vertical slice
 

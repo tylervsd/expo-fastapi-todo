@@ -1,5 +1,5 @@
-import { HealthScreen } from './src/HealthScreen';
+import { TodoScreen } from "./src/TodoScreen";
 
 export default function App() {
-  return <HealthScreen />;
+  return <TodoScreen />;
 }
