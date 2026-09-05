@@ -6,7 +6,7 @@
 
 **Architecture:** `apps/mobile` is an Expo SDK 57 pnpm workspace whose screen owns connection state while a focused health client owns URL construction, timeout, cancellation, parsing, and contract validation. `apps/api` is an independent uv project exposing one FastAPI route and exact localhost CORS policy; root scripts and CI compose both packages without supervising either development process.
 
-**Tech Stack:** Node.js 24.20.0, pnpm 11.25.0, Expo SDK 57.0.20, React Native 0.86.3, React 19.2.3, TypeScript, Jest 29.7.0, jest-expo 57.0.5, React Native Testing Library 14.0.1, test-renderer 1.2.0, Python 3.14.7, uv 0.12.1, FastAPI 0.141.1, Pytest, Ruff, GitHub Actions.
+**Tech Stack:** Node.js 24.20.0, pnpm 11.25.0, Expo SDK 57.0.19, React Native 0.86.3, React 19.2.3, TypeScript, Jest 29.7.0, jest-expo 57.0.5, React Native Testing Library 14.0.1, test-renderer 1.2.0, Python 3.14.7, uv 0.12.1, FastAPI 0.141.1, Pytest, Ruff, GitHub Actions.
 
 **Spec:** `docs/superpowers/specs/2026-09-04-project-foundation-design.md`
 
@@ -14,7 +14,7 @@
 
 - Start Phase 1 history from annotated tag `phase-00-environment` (`c95a9a14bdd18702fb07f06b08c075c669277a8f`) in an isolated `codex/phase-01-foundation` worktree; carry the approved Phase 1 spec commits `2893bab` and `81476cb` plus this plan, and do not recreate Phase 0.
 - Preserve Phase 0's Node.js `24.20.0`, pnpm `11.25.0`, Python `3.14.7`, doctor, setup documentation, repository contracts, and CI checks except for replacing the now-obsolete assertion that application workspaces do not exist.
-- Use Expo SDK `57.0.20`, React Native `0.86.3`, React `19.2.3`, and the verified `expo-template-blank-typescript@57.0.22`; SDK 57 requires Node `>=22.13`, Xcode `>=26.4`, and iOS `>=16.4`, so the Phase 0 reference environment satisfies it.
+- Use Expo SDK `57.0.19`, React Native `0.86.3`, React `19.2.3`, and the verified `expo-template-blank-typescript@57.0.22`; SDK 57 requires Node `>=22.13`, Xcode `>=26.4`, and iOS `>=16.4`, so the Phase 0 reference environment satisfies it. The 57.0.19 patch is pinned because its Expo CLI/core/JSI graph is eligible under the repository's minimum release-age policy.
 - Run Expo and FastAPI as two visible host processes: `pnpm dev:mobile` and `pnpm dev:api`. Do not add Docker, Compose, a supervisor, or a combined long-running command.
 - Expo uses stable web origin `http://localhost:8081`; the client API URL is `http://127.0.0.1:8000`; FastAPI binds to `127.0.0.1:8000` and grants CORS only to the Expo origin.
 - `GET /health` has no auth, parameters, request body, database, or side effects and returns HTTP `200` with exactly `{"status":"ok"}`.
@@ -263,7 +263,7 @@ pnpm --dir apps/mobile add --save-exact --save-dev jest@29.7.0 jest-expo@57.0.5 
 pnpm --dir apps/mobile exec expo install eslint eslint-config-expo -- --save-dev
 ```
 
-Expected: `apps/mobile/package.json` retains `expo~57.0.20`, `react-native0.86.3`, `react19.2.3`, and `expo-status-bar~57.0.1`; Expo selects compatible web packages; the root lockfile contains the complete resolved graph. Do not add `react-test-renderer` directly; the selected Jest preset may retain it transitively.
+Expected: `apps/mobile/package.json` retains `expo57.0.19`, `react-native0.86.3`, `react19.2.3`, and `expo-status-bar~57.0.1`; Expo selects compatible web packages; the root lockfile contains the complete resolved graph. Do not add `react-test-renderer` directly; the selected Jest preset may retain it transitively.
 
 Merge these entries into the scaffold's `scripts` object, retaining its existing startup commands:
 
