@@ -35,3 +35,25 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: brew install bats-core
       - run: bats tests/doctor/integration.bats
+
+  application:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.20.0
+      - run: corepack enable
+      - run: corepack prepare pnpm@11.25.0 --activate
+      - run: pnpm install --frozen-lockfile
+      - run: pipx install uv==0.12.1
+      - run: uv python install 3.14.7
+      - run: uv sync --project apps/api --frozen --python 3.14.7
+        env:
+          UV_PYTHON_DOWNLOADS: never
+      - run: pnpm lint:mobile
+      - run: pnpm typecheck
+      - run: pnpm test:mobile
+      - run: pnpm lint:api
+      - run: pnpm test:api
+      - run: pnpm build:web
