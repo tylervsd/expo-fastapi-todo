@@ -4,7 +4,7 @@
 
 This is a production-shaped, local-first tutorial for building a todo application with Expo, React Native, FastAPI, and PostgreSQL. It teaches how a feature moves from an approved specification through implementation, tests, an explanatory guide, and an annotated Git checkpoint.
 
-Phase 0 establishes the developer environment and quality bar that Phase 1 uses as its prerequisite foundation. Phase 1 introduces the first runnable application boundary, and later phases add feature slices one vertical slice at a time.
+Phase 0 establishes the developer environment and quality bar that Phase 1 uses as its prerequisite foundation. Phase 1 introduces the first runnable application boundary, and later phases add feature slices one vertical slice at a time. Phase 4 adds durable PostgreSQL persistence to the existing API contract.
 
 ## Who this is for
 
@@ -12,7 +12,7 @@ This tutorial is for developers who know basic Git and TypeScript or Python and 
 
 ## Current checkpoint
 
-The current implementation is **Phase 3 — API contract and vertical slice**. The default app loads, creates, completes, and reactivates todos through a process-local FastAPI service on web and iOS. Automated contract, client, component, and build checks pass; observed web and iOS acceptance is recorded in Guide 03. Phase 2 remains available at the annotated `phase-02-local-todo` checkpoint, and Phase 1's health boundary source, tests, API, and guide remain preserved. The Phase 3 release checkpoint is created only after integration, passing GitHub CI, and observed local acceptance. The Phase 0 setup contracts, read-only doctor, and reference-platform guidance remain the prerequisite foundation.
+The current implementation is **Phase 4 — PostgreSQL persistence**. The app loads, creates, completes, and reactivates todos through FastAPI on web and iOS, and committed rows survive API and PostgreSQL container restarts. Guide 04 explains the durable development database, disposable test database, migrations, transactions, recovery, and acceptance journey. Earlier annotated checkpoints and guides remain available. The Phase 4 release checkpoint is created only after integration, passing GitHub CI, and observed local acceptance.
 
 ## Reference Mac
 
@@ -65,7 +65,7 @@ Only macOS 26.6.2 on Apple Silicon is supported by this Phase 0 guide. If a pref
 
 ## Continue the guided setup
 
-Clone the repository after the browser bootstrap, then follow [the linear macOS setup guide](docs/setup/macos.md). It installs the declared tools in ownership order, verifies each layer, and links every doctor failure to a stable [troubleshooting entry](docs/setup/troubleshooting.md). Once Phase 0 setup is complete, review the [Phase 1 project foundation guide](docs/guides/01-project-foundation.md) and the [Phase 2 local todo guide](docs/guides/02-local-todo.md), then continue with the [Phase 3 API vertical slice guide](docs/guides/03-api-vertical-slice.md) to run the current two-process app.
+Clone the repository after the browser bootstrap, then follow [the linear macOS setup guide](docs/setup/macos.md). It installs the declared tools in ownership order, verifies each layer, and links every doctor failure to a stable [troubleshooting entry](docs/setup/troubleshooting.md). Once Phase 0 setup is complete, review the [Phase 1 project foundation guide](docs/guides/01-project-foundation.md), [Phase 2 local todo guide](docs/guides/02-local-todo.md), and [Phase 3 API vertical slice guide](docs/guides/03-api-vertical-slice.md), then continue with the [Phase 4 persistence guide](docs/guides/04-persistence.md) to run the current persisted application.
 
 The repository's `scripts/doctor` command is read-only. It inspects versions, paths, availability, and authenticated state; it does not install software, accept licenses, modify shell profiles, boot simulators, start Docker, or print credentials.
 
@@ -75,11 +75,11 @@ See the [provisional curriculum roadmap](docs/curriculum-roadmap.md) for the nin
 
 ## Testing strategy
 
-Phase 0 establishes the testing pyramid's foundation, and Phase 1 applies it to the first application boundary:
+Phase 0 establishes the testing pyramid's foundation, and later phases apply it across the application and database boundaries:
 
 - Static checks are broad and fast: Markdown, links, ShellCheck, and repository contracts.
 - Unit and component tests will be the largest application layer. They should cover parsing, state transitions, validation, accessibility behavior, and rendering without requiring external services.
-- Integration tests are fewer and verify boundaries such as API, database, and assembled doctor behavior.
+- Integration tests are fewer and verify the real PostgreSQL repository and API boundaries plus assembled doctor behavior.
 - End-to-end tests are thin and reserved for critical journeys. Once those suites exist, web E2E runs on pull requests and iOS Simulator E2E runs on `main`.
 
 The pyramid is a guide to feedback speed and confidence, not a ban on a useful test at another layer. Every later phase states its layer in its approved spec.

@@ -119,6 +119,34 @@
   [ "$status" -eq 0 ]
 }
 
+@test "persistence commands use the isolated PostgreSQL services and Alembic" {
+  run node -e '
+    const scripts = require("./package.json").scripts;
+    const required = {
+      "db:up": "docker compose up -d --wait db",
+      "db:test:up": "docker compose --profile test up -d --wait db-test",
+      "db:migrate": "uv run --directory apps/api alembic upgrade head",
+    };
+    for (const [name, command] of Object.entries(required)) {
+      if (scripts[name] !== command) {
+        throw new Error(`${name} must be ${command}`);
+      }
+    }
+  '
+  [ "$status" -eq 0 ] || return 1
+
+  run grep -F 'image: postgres:18.6' compose.yaml
+  [ "$status" -eq 0 ] || return 1
+  run grep -F '127.0.0.1:5432:5432' compose.yaml
+  [ "$status" -eq 0 ] || return 1
+  run grep -F '127.0.0.1:5433:5432' compose.yaml
+  [ "$status" -eq 0 ] || return 1
+  run grep -F 'profiles: [test]' compose.yaml
+  [ "$status" -eq 0 ] || return 1
+  run grep -F 'tmpfs:' compose.yaml
+  [ "$status" -eq 0 ]
+}
+
 @test "required public repository files exist" {
   for path in LICENSE pnpm-workspace.yaml Brewfile; do
     [ -f "$path" ]

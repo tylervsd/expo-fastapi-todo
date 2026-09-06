@@ -64,6 +64,7 @@ function isTodo(value: unknown): value is Todo {
     uuidPattern.test(id) &&
     typeof title === "string" &&
     title === title.trim() &&
+    !title.includes("\u0000") &&
     isValidTitle(title) &&
     typeof record.completed === "boolean"
   );

@@ -1,12 +1,27 @@
-from typing import Any
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
+from typing import Annotated, Any
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr, field_validator
+from sqlalchemy import Engine
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
+from sqlalchemy.orm import Session, sessionmaker
+
+from app.database import (
+    create_database_engine,
+    create_session_factory,
+    get_database_url,
+)
+from app.todo_repository import TodoRow, set_completed
+from app.todo_repository import create_todo as create_todo_row
+from app.todo_repository import list_todos as list_todo_rows
 
 EXPO_WEB_ORIGIN = "http://localhost:8081"
 ECMASCRIPT_TRIM_CHARS = (
@@ -31,6 +46,8 @@ class TodoCreate(BaseModel):
     @classmethod
     def canonical_title(cls, title: str) -> str:
         title = title.strip(ECMASCRIPT_TRIM_CHARS)
+        if "\x00" in title:
+            raise ValueError("title must not contain NUL")
         if any(0xD800 <= ord(character) <= 0xDFFF for character in title):
             raise ValueError("title must not contain an unpaired surrogate")
         if not 1 <= len(title) <= 120:
@@ -44,9 +61,31 @@ class TodoCompletedUpdate(BaseModel):
     completed: StrictBool
 
 
-def create_app() -> FastAPI:
-    todos: dict[UUID, Todo] = {}
-    app = FastAPI(title="Expo FastAPI Todo API")
+def create_app(session_factory: sessionmaker[Session] | None = None) -> FastAPI:
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        engine: Engine | None = None
+        factory = session_factory
+        if factory is None:
+            engine = create_database_engine(get_database_url())
+            factory = create_session_factory(engine)
+        app.state.session_factory = factory
+        try:
+            yield
+        finally:
+            if engine is not None:
+                engine.dispose()
+
+    app = FastAPI(title="Expo FastAPI Todo API", lifespan=lifespan)
+
+    def get_session() -> Iterator[Session]:
+        with app.state.session_factory() as session:
+            yield session
+
+    TodoSession = Annotated[Session, Depends(get_session)]
+
+    def as_todo(row: TodoRow) -> Todo:
+        return Todo(id=row.public_id, title=row.title, completed=row.completed)
 
     def escape_surrogates(value: Any) -> Any:
         if isinstance(value, str):
@@ -82,26 +121,42 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     @app.get("/todos", response_model=list[Todo])
-    async def list_todos() -> list[Todo]:
-        return list(todos.values())
+    def list_todos(session: TodoSession) -> list[Todo]:
+        try:
+            return [as_todo(row) for row in list_todo_rows(session)]
+        except (OperationalError, SQLAlchemyTimeoutError) as exc:
+            raise HTTPException(
+                status_code=503, detail="Database unavailable."
+            ) from exc
 
     @app.post("/todos", response_model=Todo, status_code=201)
-    async def create_todo(payload: TodoCreate) -> Todo:
-        todo = Todo(id=uuid4(), title=payload.title, completed=False)
-        todos[todo.id] = todo
-        return todo
+    def create_todo(payload: TodoCreate, session: TodoSession) -> Todo:
+        try:
+            with session.begin():
+                todo = as_todo(create_todo_row(session, uuid4(), payload.title))
+            return todo
+        except (OperationalError, SQLAlchemyTimeoutError) as exc:
+            raise HTTPException(
+                status_code=503, detail="Database unavailable."
+            ) from exc
 
     @app.patch("/todos/{todo_id}", response_model=Todo)
-    async def update_todo(
+    def update_todo(
         todo_id: UUID,
         payload: TodoCompletedUpdate,
+        session: TodoSession,
     ) -> Todo:
-        todo = todos.get(todo_id)
-        if todo is None:
-            raise HTTPException(status_code=404, detail="Todo not found.")
-        updated_todo = todo.model_copy(update={"completed": payload.completed})
-        todos[todo_id] = updated_todo
-        return updated_todo
+        try:
+            with session.begin():
+                todo = set_completed(session, todo_id, payload.completed)
+                if todo is None:
+                    raise HTTPException(status_code=404, detail="Todo not found.")
+                updated_todo = as_todo(todo)
+            return updated_todo
+        except (OperationalError, SQLAlchemyTimeoutError) as exc:
+            raise HTTPException(
+                status_code=503, detail="Database unavailable."
+            ) from exc
 
     return app
 

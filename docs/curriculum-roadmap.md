@@ -40,7 +40,7 @@ This roadmap is provisional. Every phase receives its own approved spec before i
 - **Visible outcome:** Todos survive service restarts in a local PostgreSQL database.
 - **New technology/pattern:** PostgreSQL, SQLAlchemy, Alembic migrations, transactions, and repository boundaries.
 - **Testing-pyramid layer introduced:** Focused database integration tests supporting a larger unit layer.
-- **Spec gate:** Before implementation, this phase gets its own approved spec for data models, migrations, transaction behavior, and recovery cases.
+- **Spec gate:** This phase received its approved spec before implementation.
 
 ## 6. Complete CRUD and resilient server state
 
