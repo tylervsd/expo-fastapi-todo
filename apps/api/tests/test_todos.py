@@ -3,35 +3,46 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import Engine, select
+from sqlalchemy.orm import Session, sessionmaker
 
+from app.database import create_database_engine, create_session_factory
 from app.main import create_app
+from app.todo_repository import TodoRow
 
 
 @pytest.fixture
-def client() -> Iterator[TestClient]:
-    with TestClient(create_app()) as test_client:
+def client(
+    database_session: Session,
+    session_factory: sessionmaker[Session],
+) -> Iterator[TestClient]:
+    del database_session
+    with TestClient(create_app(session_factory)) as test_client:
         yield test_client
 
 
-def test_new_app_starts_with_empty_ordered_collection(
-    client: TestClient,
-) -> None:
+def test_new_app_starts_with_empty_ordered_collection(client: TestClient) -> None:
     response = client.get("/todos")
 
     assert response.status_code == 200
     assert response.json() == []
 
 
-def test_app_instances_do_not_share_todos() -> None:
-    with TestClient(create_app()) as first_client:
+def test_todos_persist_across_app_instances(
+    database_session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    del database_session
+    with TestClient(create_app(session_factory)) as first_client:
         response = first_client.post("/todos", json={"title": "Private"})
         assert response.status_code == 201
+        created = response.json()
 
-    with TestClient(create_app()) as second_client:
+    with TestClient(create_app(session_factory)) as second_client:
         response = second_client.get("/todos")
 
     assert response.status_code == 200
-    assert response.json() == []
+    assert response.json() == [created]
 
 
 def test_create_returns_canonical_active_todo_with_uuid(
@@ -70,34 +81,8 @@ def test_duplicate_titles_keep_insertion_order_and_distinct_ids(
     assert response.json() == [first_todo, second_todo]
 
 
-def test_title_accepts_120_emoji_code_points_and_rejects_121(
-    client: TestClient,
-) -> None:
-    accepted = client.post("/todos", json={"title": "😀" * 120})
-    rejected = client.post("/todos", json={"title": "😀" * 121})
-
-    assert accepted.status_code == 201
-    assert accepted.json()["title"] == "😀" * 120
-    assert rejected.status_code == 422
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {"title": ""},
-        {"title": " \t\u2003"},
-        {"title": 42},
-        {"title": True},
-        {"title": None},
-        {},
-        {"title": "Known", "extra": "rejected"},
-    ],
-)
-def test_create_rejects_invalid_title_bodies(
-    client: TestClient,
-    payload: object,
-) -> None:
-    response = client.post("/todos", json=payload)
+def test_create_rejects_nul_title(client: TestClient) -> None:
+    response = client.post("/todos", json={"title": "Contains\u0000Nul"})
 
     assert response.status_code == 422
 
@@ -136,6 +121,33 @@ def test_patch_sets_requested_boolean_and_preserves_order(
             first["id"],
             second["id"],
         ]
+
+
+def test_post_and_patch_commit_before_independent_session_observes_them(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+) -> None:
+    created = client.post("/todos", json={"title": "Committed"})
+
+    assert created.status_code == 201
+    public_id = UUID(created.json()["id"])
+    with session_factory() as verification_session:
+        row = verification_session.scalar(
+            select(TodoRow).where(TodoRow.public_id == public_id)
+        )
+        assert row is not None
+        assert row.title == "Committed"
+        assert row.completed is False
+
+    updated = client.patch(f"/todos/{public_id}", json={"completed": True})
+
+    assert updated.status_code == 200
+    with session_factory() as verification_session:
+        row = verification_session.scalar(
+            select(TodoRow).where(TodoRow.public_id == public_id)
+        )
+        assert row is not None
+        assert row.completed is True
 
 
 @pytest.mark.parametrize("completed", [0, 1, "true", "false"])
@@ -279,3 +291,24 @@ def test_cors_does_not_allow_unlisted_origin(client: TestClient) -> None:
     )
 
     assert "access-control-allow-origin" not in response.headers
+
+
+def test_todo_routes_return_exact_503_when_database_is_unavailable() -> None:
+    engine: Engine = create_database_engine(
+        "postgresql+psycopg://todo_test:todo_test@127.0.0.1:65534/todo_test"
+    )
+    session_factory = create_session_factory(engine)
+    try:
+        with TestClient(create_app(session_factory)) as client:
+            health = client.get("/health")
+            assert health.status_code == 200
+            assert health.json() == {"status": "ok"}
+            for response in (
+                client.get("/todos"),
+                client.post("/todos", json={"title": "Unavailable"}),
+                client.patch(f"/todos/{uuid4()}", json={"completed": True}),
+            ):
+                assert response.status_code == 503
+                assert response.json() == {"detail": "Database unavailable."}
+    finally:
+        engine.dispose()

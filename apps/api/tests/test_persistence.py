@@ -116,12 +116,15 @@ def test_stale_session_patch_persists_requested_boolean(
     database_session.commit()
 
     with session_factory() as session_a:
-        assert session_a.scalar(
+        loaded_a = session_a.scalar(
             select(TodoRow).where(TodoRow.public_id == public_id)
-        ).completed is False
+        )
+        assert loaded_a is not None
+        assert loaded_a.completed is False
         with session_factory() as session_b:
             assert set_completed(session_b, public_id, True) is not None
             session_b.commit()
+        assert loaded_a.completed is False
         assert set_completed(session_a, public_id, False) is not None
         session_a.commit()
     with session_factory() as verification_session:

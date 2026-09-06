@@ -123,6 +123,7 @@ describe("todo API client", () => {
     ["invalid UUID", [{ ...todo, id: "not-a-uuid" }]],
     ["non-canonical title", [{ ...todo, title: " Buy milk" }]],
     ["empty title", [{ ...todo, title: "" }]],
+    ["NUL title", [{ ...todo, title: "Buy\u0000milk" }]],
     ["too many code points", [{ ...todo, title: "😀".repeat(121) }]],
     ["trailing high surrogate", [{ ...todo, title: `Buy milk${String.fromCharCode(0xd800)}` }]],
     ["lone low surrogate", [{ ...todo, title: `Buy milk${String.fromCharCode(0xdc00)}` }]],
