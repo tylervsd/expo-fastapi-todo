@@ -35,6 +35,41 @@ def test_todo_create_rejects_non_string_titles(title: object) -> None:
 
 
 @pytest.mark.parametrize("payload", [{}, {"title": "Known", "extra": "rejected"}])
-def test_todo_create_rejects_missing_or_extra_fields(payload: dict[str, object]) -> None:
+def test_todo_create_rejects_missing_or_extra_fields(
+    payload: dict[str, object],
+) -> None:
     with pytest.raises(ValidationError):
         TodoCreate.model_validate(payload)
+
+
+from app.main import TodoUpdate
+
+
+def test_todo_update_accepts_title_only() -> None:
+    assert TodoUpdate(title="Renamed").title == "Renamed"
+    assert TodoUpdate(title="  Renamed  ").title == "Renamed"
+
+
+def test_todo_update_accepts_completed_only() -> None:
+    assert TodoUpdate(completed=True).completed is True
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"title": "Both", "completed": True},
+        {"title": None},
+        {"completed": None},
+        {"title": None, "completed": None},
+        {"title": 42},
+        {"title": "Known", "extra": "rejected"},
+        {"completed": True, "extra": False},
+        {"completed": "true"},
+        {"title": ""},
+        {"title": "Contains\x00Nul"},
+    ],
+)
+def test_todo_update_rejects_non_exact_single_field(payload: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        TodoUpdate.model_validate(payload)

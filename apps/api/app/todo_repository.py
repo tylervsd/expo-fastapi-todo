@@ -7,6 +7,7 @@ from sqlalchemy import (
     CheckConstraint,
     Identity,
     Text,
+    delete,
     select,
     update,
 )
@@ -46,12 +47,30 @@ def create_todo(session: Session, public_id: UUID, title: str) -> TodoRow:
     return todo
 
 
-def set_completed(
-    session: Session, public_id: UUID, completed: bool
-) -> TodoRow | None:
+def set_completed(session: Session, public_id: UUID, completed: bool) -> TodoRow | None:
     return session.execute(
         update(TodoRow)
         .where(TodoRow.public_id == public_id)
         .values(completed=completed)
         .returning(TodoRow)
     ).scalar_one_or_none()
+
+
+def set_title(session: Session, public_id: UUID, title: str) -> TodoRow | None:
+    return session.execute(
+        update(TodoRow)
+        .where(TodoRow.public_id == public_id)
+        .values(title=title)
+        .returning(TodoRow)
+    ).scalar_one_or_none()
+
+
+def delete_todo(session: Session, public_id: UUID) -> bool:
+    return (
+        session.execute(
+            delete(TodoRow)
+            .where(TodoRow.public_id == public_id)
+            .returning(TodoRow.public_id)
+        ).scalar_one_or_none()
+        is not None
+    )

@@ -23,7 +23,7 @@ export type TodoRequestOptions = {
   fetchImpl?: typeof fetch;
 };
 
-type TodoOperation = "list" | "create" | "update";
+type TodoOperation = "list" | "create" | "update" | "delete";
 type RequestBody = { title: string } | { completed: boolean };
 
 const operationMessages: Record<TodoOperation, { unavailable: string; invalidData: string }> = {
@@ -39,9 +39,34 @@ const operationMessages: Record<TodoOperation, { unavailable: string; invalidDat
     unavailable: "Could not update todo.",
     invalidData: "The API returned invalid todo data while updating.",
   },
+  delete: {
+    unavailable: "Could not delete todo.",
+    invalidData: "Could not delete todo.",
+  },
 };
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function normalizeTodoTitle(input: string): string | null {
+  if (typeof input !== "string") return null;
+  const title = input.trim();
+  if (title.length === 0) return null;
+  if (title.includes("\u0000")) return null;
+  let codePoints = 0;
+  for (let index = 0; index < title.length; index += 1) {
+    const code = title.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = title.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return null;
+      index += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return null;
+    }
+    codePoints += 1;
+  }
+  if (codePoints > 120) return null;
+  return title;
+}
 
 function isTodo(value: unknown): value is Todo {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
@@ -63,31 +88,14 @@ function isTodo(value: unknown): value is Todo {
     typeof id === "string" &&
     uuidPattern.test(id) &&
     typeof title === "string" &&
-    title === title.trim() &&
-    !title.includes("\u0000") &&
-    isValidTitle(title) &&
+    normalizeTodoTitle(title) === title &&
     typeof record.completed === "boolean"
   );
 }
 
-function isValidTitle(title: string): boolean {
-  if (title.length === 0) return false;
-  for (let index = 0; index < title.length; index += 1) {
-    const code = title.charCodeAt(index);
-    if (code >= 0xd800 && code <= 0xdbff) {
-      const next = title.charCodeAt(index + 1);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
-      index += 1;
-    } else if (code >= 0xdc00 && code <= 0xdfff) {
-      return false;
-    }
-  }
-  return Array.from(title).length <= 120;
-}
-
 function requestJson(
   path: string,
-  method: "GET" | "POST" | "PATCH",
+  method: "GET" | "POST" | "PATCH" | "DELETE",
   expectedStatus: number,
   operation: TodoOperation,
   options: TodoRequestOptions,
@@ -149,11 +157,16 @@ function requestJson(
         if (result.status !== expectedStatus) {
           const error = result.status === 422
             ? new TodoApiError("validation", "Check the todo title and try again.")
-            : operation === "update" && result.status === 404
+            : (operation === "update" || operation === "delete") && result.status === 404
               ? new TodoApiError("not-found", "That todo no longer exists. Refresh the list.")
               : new TodoApiError("unavailable", operationMessages[operation].unavailable);
           finish(error);
           controller.abort();
+          return;
+        }
+
+        if (expectedStatus === 204) {
+          finish(undefined, undefined);
           return;
         }
 
@@ -192,14 +205,25 @@ export async function setTodoCompleted(
   completed: boolean,
   options: TodoRequestOptions = {},
 ): Promise<Todo> {
-  const body = await requestJson(
-    `/todos/${id}`,
-    "PATCH",
-    200,
-    "update",
-    options,
-    { completed },
-  );
+  const body = await requestJson(`/todos/${id}`, "PATCH", 200, "update", options, {
+    completed,
+  });
   if (!isTodo(body)) throw new TodoApiError("invalid-data", operationMessages.update.invalidData);
   return body;
+}
+
+export async function setTodoTitle(
+  id: string,
+  title: string,
+  options: TodoRequestOptions = {},
+): Promise<Todo> {
+  const body = await requestJson(`/todos/${id}`, "PATCH", 200, "update", options, {
+    title,
+  });
+  if (!isTodo(body)) throw new TodoApiError("invalid-data", operationMessages.update.invalidData);
+  return body;
+}
+
+export async function deleteTodo(id: string, options: TodoRequestOptions = {}): Promise<void> {
+  await requestJson(`/todos/${id}`, "DELETE", 204, "delete", options);
 }

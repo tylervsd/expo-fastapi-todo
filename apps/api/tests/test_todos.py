@@ -50,7 +50,7 @@ def test_create_returns_canonical_active_todo_with_uuid(
 ) -> None:
     response = client.post(
         "/todos",
-        json={"title": "\uFEFF\u2003Buy milk\u2029"},
+        json={"title": "\ufeff\u2003Buy milk\u2029"},
     )
 
     assert response.status_code == 201
@@ -203,29 +203,29 @@ def test_openapi_publishes_todo_paths_and_schema_references(
     todos_path = document["paths"]["/todos"]
     patch_path = document["paths"]["/todos/{todo_id}"]
     assert set(todos_path) == {"get", "post"}
-    assert set(patch_path) == {"patch"}
-    get_schema = todos_path["get"]["responses"]["200"]["content"][
-        "application/json"
-    ]["schema"]
+    assert set(patch_path) == {"patch", "delete"}
+    get_schema = todos_path["get"]["responses"]["200"]["content"]["application/json"][
+        "schema"
+    ]
     assert get_schema["type"] == "array"
     assert get_schema["items"] == {"$ref": "#/components/schemas/Todo"}
     assert (
-        todos_path["post"]["requestBody"]["content"]["application/json"][
-            "schema"
-        ]["$ref"]
+        todos_path["post"]["requestBody"]["content"]["application/json"]["schema"][
+            "$ref"
+        ]
         == "#/components/schemas/TodoCreate"
     )
     assert (
-        todos_path["post"]["responses"]["201"]["content"]["application/json"][
-            "schema"
-        ]["$ref"]
+        todos_path["post"]["responses"]["201"]["content"]["application/json"]["schema"][
+            "$ref"
+        ]
         == "#/components/schemas/Todo"
     )
     assert (
-        patch_path["patch"]["requestBody"]["content"]["application/json"][
-            "schema"
-        ]["$ref"]
-        == "#/components/schemas/TodoCompletedUpdate"
+        patch_path["patch"]["requestBody"]["content"]["application/json"]["schema"][
+            "$ref"
+        ]
+        == "#/components/schemas/TodoUpdate"
     )
     assert (
         patch_path["patch"]["responses"]["200"]["content"]["application/json"][
@@ -233,7 +233,8 @@ def test_openapi_publishes_todo_paths_and_schema_references(
         ]["$ref"]
         == "#/components/schemas/Todo"
     )
-    assert {"Todo", "TodoCreate", "TodoCompletedUpdate"} <= set(
+    assert patch_path["delete"]["responses"]["204"]["description"] is not None
+    assert {"Todo", "TodoCreate", "TodoUpdate"} <= set(
         document["components"]["schemas"]
     )
 
@@ -248,15 +249,17 @@ def test_cors_allows_health_get_preflight(client: TestClient) -> None:
     )
 
     assert response.status_code == 200
-    assert response.headers["access-control-allow-origin"] == (
-        "http://localhost:8081"
-    )
+    assert response.headers["access-control-allow-origin"] == ("http://localhost:8081")
     assert "GET" in response.headers["access-control-allow-methods"]
 
 
 @pytest.mark.parametrize(
     ("path", "method"),
-    [("/todos", "POST"), ("/todos/00000000-0000-0000-0000-000000000000", "PATCH")],
+    [
+        ("/todos", "POST"),
+        ("/todos/00000000-0000-0000-0000-000000000000", "PATCH"),
+        ("/todos/00000000-0000-0000-0000-000000000000", "DELETE"),
+    ],
 )
 def test_cors_allows_todo_mutation_preflight(
     client: TestClient,
@@ -273,9 +276,7 @@ def test_cors_allows_todo_mutation_preflight(
     )
 
     assert response.status_code == 200
-    assert response.headers["access-control-allow-origin"] == (
-        "http://localhost:8081"
-    )
+    assert response.headers["access-control-allow-origin"] == ("http://localhost:8081")
     assert method in response.headers["access-control-allow-methods"]
     assert "content-type" in response.headers["access-control-allow-headers"].lower()
 
@@ -307,8 +308,102 @@ def test_todo_routes_return_exact_503_when_database_is_unavailable() -> None:
                 client.get("/todos"),
                 client.post("/todos", json={"title": "Unavailable"}),
                 client.patch(f"/todos/{uuid4()}", json={"completed": True}),
+                client.patch(f"/todos/{uuid4()}", json={"title": "Unavailable"}),
+                client.delete(f"/todos/{uuid4()}"),
             ):
                 assert response.status_code == 503
                 assert response.json() == {"detail": "Database unavailable."}
     finally:
         engine.dispose()
+
+
+def test_patch_renames_title_and_preserves_order(client: TestClient) -> None:
+    first = client.post("/todos", json={"title": "First"}).json()
+    second = client.post("/todos", json={"title": "Second"}).json()
+
+    response = client.patch(f"/todos/{first['id']}", json={"title": "  Renamed  "})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": first["id"],
+        "title": "Renamed",
+        "completed": False,
+    }
+    assert [todo["id"] for todo in client.get("/todos").json()] == [
+        first["id"],
+        second["id"],
+    ]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"title": "Both", "completed": True},
+        {"title": None},
+        {"completed": None},
+        {"title": 42},
+        {"completed": "true"},
+        {"title": "Known", "extra": "rejected"},
+    ],
+)
+def test_patch_rejects_non_exact_single_field(
+    client: TestClient, payload: object
+) -> None:
+    todo = client.post("/todos", json={"title": "Strict"}).json()
+    response = client.patch(f"/todos/{todo['id']}", json=payload)
+
+    assert response.status_code == 422
+
+
+def test_delete_returns_empty_204_and_removes_row(client: TestClient) -> None:
+    created = client.post("/todos", json={"title": "Gone"}).json()
+
+    response = client.delete(f"/todos/{created['id']}")
+
+    assert response.status_code == 204
+    assert response.content == b""
+    assert client.get("/todos").json() == []
+
+
+def test_delete_returns_exact_not_found_for_absent_uuid(client: TestClient) -> None:
+    response = client.delete(f"/todos/{uuid4()}")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Todo not found."}
+
+
+def test_repeated_delete_returns_exact_not_found(client: TestClient) -> None:
+    created = client.post("/todos", json={"title": "Gone"}).json()
+
+    assert client.delete(f"/todos/{created['id']}").status_code == 204
+    repeated = client.delete(f"/todos/{created['id']}")
+
+    assert repeated.status_code == 404
+    assert repeated.json() == {"detail": "Todo not found."}
+
+
+def test_delete_rejects_malformed_uuid(client: TestClient) -> None:
+    response = client.delete("/todos/not-a-uuid")
+
+    assert response.status_code == 422
+
+
+def test_delete_commits_before_independent_session_observes_it(
+    client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    created = client.post("/todos", json={"title": "Committed"})
+
+    assert created.status_code == 201
+    public_id = UUID(created.json()["id"])
+
+    deleted = client.delete(f"/todos/{public_id}")
+
+    assert deleted.status_code == 204
+    with session_factory() as verification_session:
+        assert (
+            verification_session.scalar(
+                select(TodoRow).where(TodoRow.public_id == public_id)
+            )
+            is None
+        )
