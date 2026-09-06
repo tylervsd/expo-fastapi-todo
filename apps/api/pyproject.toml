@@ -3,7 +3,10 @@ name = "expo-fastapi-todo-api"
 version = "0.1.0"
 requires-python = "==3.14.*"
 dependencies = [
+  "alembic>=1.18,<1.19",
   "fastapi==0.141.1",
+  "psycopg[binary]>=3.3,<3.4",
+  "sqlalchemy>=2.0,<2.1",
   "uvicorn[standard]",
 ]
 
