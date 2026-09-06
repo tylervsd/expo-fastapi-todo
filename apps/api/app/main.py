@@ -82,8 +82,6 @@ def create_app(session_factory: sessionmaker[Session] | None = None) -> FastAPI:
         with app.state.session_factory() as session:
             yield session
 
-    TodoSession = Annotated[Session, Depends(get_session)]
-
     def as_todo(row: TodoRow) -> Todo:
         return Todo(id=row.public_id, title=row.title, completed=row.completed)
 
@@ -121,7 +119,7 @@ def create_app(session_factory: sessionmaker[Session] | None = None) -> FastAPI:
         return {"status": "ok"}
 
     @app.get("/todos", response_model=list[Todo])
-    def list_todos(session: TodoSession) -> list[Todo]:
+    def list_todos(session: Annotated[Session, Depends(get_session)]) -> list[Todo]:
         try:
             return [as_todo(row) for row in list_todo_rows(session)]
         except (OperationalError, SQLAlchemyTimeoutError) as exc:
@@ -130,7 +128,10 @@ def create_app(session_factory: sessionmaker[Session] | None = None) -> FastAPI:
             ) from exc
 
     @app.post("/todos", response_model=Todo, status_code=201)
-    def create_todo(payload: TodoCreate, session: TodoSession) -> Todo:
+    def create_todo(
+        payload: TodoCreate,
+        session: Annotated[Session, Depends(get_session)],
+    ) -> Todo:
         try:
             with session.begin():
                 todo = as_todo(create_todo_row(session, uuid4(), payload.title))
@@ -144,7 +145,7 @@ def create_app(session_factory: sessionmaker[Session] | None = None) -> FastAPI:
     def update_todo(
         todo_id: UUID,
         payload: TodoCompletedUpdate,
-        session: TodoSession,
+        session: Annotated[Session, Depends(get_session)],
     ) -> Todo:
         try:
             with session.begin():

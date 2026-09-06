@@ -146,7 +146,7 @@ rows remain easy to distinguish from existing data.
 | Target | Date/runtime | API restart persists | Database restart persists | Outage recovery |
 | --- | --- | --- | --- | --- |
 | Web | 2026-09-06 / `http://localhost:8081` | ☑ | ☑ | ☑ |
-| iOS Simulator | date/runtime | ☐ | ☐ | ☐ |
+| iOS Simulator | 2026-09-06 / iPhone 17, iOS 26.5, Expo SDK 57 | ☑ | ☑ | ☑ |
 
 Web acceptance used two `Phase 4 duplicate` rows. Restarting FastAPI and then
 the development database container preserved their exact UUIDs, order, and
@@ -155,8 +155,9 @@ completed/active states. With PostgreSQL stopped, `/health` remained exact
 unavailable."}`, and the browser kept its old rows with writes disabled. After
 `pnpm db:up`, **Refresh** restored the same rows and writes.
 
-iOS Simulator acceptance remains unobserved. On 2026-09-06, the local UI
-controller timed out three times with `-10005 timeoutReached` while selecting
-Simulator, although its inventory reported Simulator running and the Mac
-unlocked. No native acceptance action or cross-device toggle completed, so the
-row remains unchecked.
+iOS acceptance passed on retry after the user force-quit Simulator. Expo opened
+on iPhone 17 running iOS 26.5. Reactivating the first duplicate on iOS was
+observed on web after Refresh. The same rows and state survived an API restart.
+Stopping PostgreSQL produced the native refresh error with writes disabled;
+starting it again and selecting Refresh restored the saved rows and controls.
+The earlier Simulator controller timeouts are resolved.
