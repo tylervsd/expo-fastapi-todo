@@ -4,7 +4,7 @@
 
 This is a production-shaped, local-first tutorial for building a todo application with Expo, React Native, FastAPI, and PostgreSQL. It teaches how a feature moves from an approved specification through implementation, tests, an explanatory guide, and an annotated Git checkpoint.
 
-Phase 0 establishes the developer environment and quality bar that Phase 1 uses as its prerequisite foundation. Phase 1 introduces the first runnable application boundary, and later phases add feature slices one vertical slice at a time. Phase 4 adds durable PostgreSQL persistence to the existing API contract.
+Phase 0 establishes the developer environment and quality bar that Phase 1 uses as its prerequisite foundation. Phase 1 introduces the first runnable application boundary, and later phases add feature slices one vertical slice at a time. Phase 4 adds durable PostgreSQL persistence to the existing API contract, and Phase 5 completes CRUD with one resilient TanStack Query cache.
 
 ## Who this is for
 
@@ -12,7 +12,7 @@ This tutorial is for developers who know basic Git and TypeScript or Python and 
 
 ## Current checkpoint
 
-The current implementation is **Phase 4 — PostgreSQL persistence**. The app loads, creates, completes, and reactivates todos through FastAPI on web and iOS, and committed rows survive API and PostgreSQL container restarts. Guide 04 explains the durable development database, disposable test database, migrations, transactions, recovery, and acceptance journey. Earlier annotated checkpoints and guides remain available. The Phase 4 release checkpoint is created only after integration, passing GitHub CI, and observed local acceptance.
+The current implementation is **Phase 5 — Complete CRUD and resilient server state**. The app creates, renames, completes, reactivates, and deletes todos through FastAPI on web and iOS, with one GET-only retry, success invalidation, optimistic completion rollback, and a stale-cache write lock until a fresh GET succeeds. Guide 05 explains the CRUD contract, the single cache owner, freshness and retry policy, uncertain-write recovery, and acceptance journey. Earlier annotated checkpoints and guides remain available. The Phase 5 release checkpoint is created only after integration, passing GitHub CI, and observed local acceptance.
 
 ## Reference Mac
 
@@ -65,7 +65,7 @@ Only macOS 26.6.2 on Apple Silicon is supported by this Phase 0 guide. If a pref
 
 ## Continue the guided setup
 
-Clone the repository after the browser bootstrap, then follow [the linear macOS setup guide](docs/setup/macos.md). It installs the declared tools in ownership order, verifies each layer, and links every doctor failure to a stable [troubleshooting entry](docs/setup/troubleshooting.md). Once Phase 0 setup is complete, review the [Phase 1 project foundation guide](docs/guides/01-project-foundation.md), [Phase 2 local todo guide](docs/guides/02-local-todo.md), and [Phase 3 API vertical slice guide](docs/guides/03-api-vertical-slice.md), then continue with the [Phase 4 persistence guide](docs/guides/04-persistence.md) to run the current persisted application.
+Clone the repository after the browser bootstrap, then follow [the linear macOS setup guide](docs/setup/macos.md). It installs the declared tools in ownership order, verifies each layer, and links every doctor failure to a stable [troubleshooting entry](docs/setup/troubleshooting.md). Once Phase 0 setup is complete, review the [Phase 1 project foundation guide](docs/guides/01-project-foundation.md), [Phase 2 local todo guide](docs/guides/02-local-todo.md), and [Phase 3 API vertical slice guide](docs/guides/03-api-vertical-slice.md), then continue with the [Phase 4 persistence guide](docs/guides/04-persistence.md) and the [Phase 5 CRUD server-state guide](docs/guides/05-crud-server-state.md) to run the current complete application.
 
 The repository's `scripts/doctor` command is read-only. It inspects versions, paths, availability, and authenticated state; it does not install software, accept licenses, modify shell profiles, boot simulators, start Docker, or print credentials.
 
