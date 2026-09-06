@@ -11,7 +11,14 @@ from sqlalchemy import Engine, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.todo_repository import TodoRow, create_todo, list_todos, set_completed
+from app.todo_repository import (
+    TodoRow,
+    create_todo,
+    delete_todo,
+    list_todos,
+    set_completed,
+)
+from app.todo_repository import set_title as set_todo_title
 
 REVISION = "2026090601"
 
@@ -23,9 +30,8 @@ def test_alembic_cli_loads_api_package() -> None:
     completed = subprocess.run(
         [alembic, "upgrade", "head", "--sql"],
         cwd=Path(__file__).parents[1],
-        env=os.environ | {
-            "DATABASE_URL": "postgresql+psycopg://todo:todo@127.0.0.1:5432/todo"
-        },
+        env=os.environ
+        | {"DATABASE_URL": "postgresql+psycopg://todo:todo@127.0.0.1:5432/todo"},
         capture_output=True,
         check=False,
         text=True,
@@ -63,10 +69,17 @@ def test_migration_creates_expected_todos_shape(database_engine: Engine) -> None
         )
     ]
     with database_engine.connect() as connection:
-        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == REVISION
+        assert (
+            connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
+            == REVISION
+        )
 
 
-def test_list_todos_preserves_duplicate_creation_order(database_session: Session) -> None:
+def test_list_todos_preserves_duplicate_creation_order(
+    database_session: Session,
+) -> None:
     first = create_todo(database_session, uuid4(), "Repeat")
     second = create_todo(database_session, uuid4(), "Repeat")
     database_session.commit()
@@ -86,9 +99,12 @@ def test_create_todo_flushes_and_persists_across_sessions(
     assert created.id is not None
     database_session.commit()
     with session_factory() as verification_session:
-        assert verification_session.scalar(
-            select(TodoRow).where(TodoRow.public_id == public_id)
-        ).title == "Persisted"
+        assert (
+            verification_session.scalar(
+                select(TodoRow).where(TodoRow.public_id == public_id)
+            ).title
+            == "Persisted"
+        )
 
 
 def test_set_completed_updates_without_reordering(database_session: Session) -> None:
@@ -107,7 +123,9 @@ def test_set_completed_updates_without_reordering(database_session: Session) -> 
     ]
 
 
-def test_set_completed_returns_none_for_missing_public_id(database_session: Session) -> None:
+def test_set_completed_returns_none_for_missing_public_id(
+    database_session: Session,
+) -> None:
     assert set_completed(database_session, uuid4(), True) is None
 
 
@@ -126,9 +144,12 @@ def test_rollback_does_not_persist_flushed_todo(
 
     database_session.rollback()
     with session_factory() as verification_session:
-        assert verification_session.scalar(
-            select(TodoRow).where(TodoRow.public_id == public_id)
-        ) is None
+        assert (
+            verification_session.scalar(
+                select(TodoRow).where(TodoRow.public_id == public_id)
+            )
+            is None
+        )
 
 
 def test_stale_session_patch_persists_requested_boolean(
@@ -151,6 +172,88 @@ def test_stale_session_patch_persists_requested_boolean(
         assert set_completed(session_a, public_id, False) is not None
         session_a.commit()
     with session_factory() as verification_session:
-        assert verification_session.scalar(
-            select(TodoRow).where(TodoRow.public_id == public_id)
-        ).completed is False
+        assert (
+            verification_session.scalar(
+                select(TodoRow).where(TodoRow.public_id == public_id)
+            ).completed
+            is False
+        )
+
+
+def test_set_title_updates_without_reordering(database_session: Session) -> None:
+    first = create_todo(database_session, uuid4(), "First")
+    second = create_todo(database_session, uuid4(), "Second")
+    database_session.commit()
+
+    updated = set_todo_title(database_session, first.public_id, "Renamed")
+    database_session.commit()
+
+    assert updated is not None
+    assert updated.title == "Renamed"
+    assert [todo.public_id for todo in list_todos(database_session)] == [
+        first.public_id,
+        second.public_id,
+    ]
+
+
+def test_set_title_returns_none_for_missing_public_id(
+    database_session: Session,
+) -> None:
+    assert set_todo_title(database_session, uuid4(), "Absent") is None
+
+
+def test_set_title_persists_across_fresh_session(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    public_id = uuid4()
+    create_todo(database_session, public_id, "Before")
+    database_session.commit()
+
+    assert set_todo_title(database_session, public_id, "After") is not None
+    database_session.commit()
+    with session_factory() as verification_session:
+        assert (
+            verification_session.scalar(
+                select(TodoRow).where(TodoRow.public_id == public_id)
+            ).title
+            == "After"
+        )
+
+
+def test_delete_todo_removes_row_and_preserves_survivor_order(
+    database_session: Session,
+) -> None:
+    first = create_todo(database_session, uuid4(), "First")
+    second = create_todo(database_session, uuid4(), "Second")
+    database_session.commit()
+
+    assert delete_todo(database_session, first.public_id) is True
+    database_session.commit()
+
+    assert [todo.public_id for todo in list_todos(database_session)] == [
+        second.public_id
+    ]
+
+
+def test_delete_todo_returns_false_for_missing_public_id(
+    database_session: Session,
+) -> None:
+    assert delete_todo(database_session, uuid4()) is False
+
+
+def test_delete_todo_persists_across_fresh_session(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    public_id = uuid4()
+    create_todo(database_session, public_id, "Gone")
+    database_session.commit()
+
+    assert delete_todo(database_session, public_id) is True
+    database_session.commit()
+    with session_factory() as verification_session:
+        assert (
+            verification_session.scalar(
+                select(TodoRow).where(TodoRow.public_id == public_id)
+            )
+            is None
+        )

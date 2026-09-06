@@ -1,7 +1,10 @@
 import {
   createTodo,
+  deleteTodo,
   listTodos,
+  normalizeTodoTitle,
   setTodoCompleted,
+  setTodoTitle,
   TodoApiError,
 } from "./todoApi";
 
@@ -255,5 +258,78 @@ describe("todo API client", () => {
 
     await expect(listTodos({ apiUrl, signal: controller.signal, fetchImpl })).resolves.toEqual([todo]);
     expect(removed).toHaveBeenCalledWith("abort", expect.any(Function));
+  });
+});
+
+describe("CRUD extensions", () => {
+  it("normalizes canonical titles and rejects invalid input", async () => {
+    expect(normalizeTodoTitle("Buy milk")).toBe("Buy milk");
+    expect(normalizeTodoTitle("  Buy milk  ")).toBe("Buy milk");
+    expect(normalizeTodoTitle("")).toBeNull();
+    expect(normalizeTodoTitle("   ")).toBeNull();
+    expect(normalizeTodoTitle("Buy\u0000milk")).toBeNull();
+    expect(normalizeTodoTitle("\u{1F600}".repeat(121))).toBeNull();
+    expect(normalizeTodoTitle(`Buy milk${String.fromCharCode(0xd800)}`)).toBeNull();
+    expect(normalizeTodoTitle(`Buy milk${String.fromCharCode(0xdc00)}`)).toBeNull();
+  });
+
+  it("renames a todo with an exact PATCH title request", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(200, todo));
+
+    await expect(setTodoTitle(todo.id, "Renamed", { apiUrl, fetchImpl })).resolves.toEqual(todo);
+    expect(fetchImpl).toHaveBeenCalledWith(`${apiUrl}/todos/${todo.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "Renamed" }),
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it("maps rename 404 to safe not-found copy", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(404, { detail: "Todo not found." }));
+
+    await expect(setTodoTitle(todo.id, "Renamed", { apiUrl, fetchImpl })).rejects.toEqual(
+      new TodoApiError("not-found", "That todo no longer exists. Refresh the list."),
+    );
+  });
+
+  it("deletes with no body and accepts empty 204 without parsing", async () => {
+    const json = jest.fn();
+    const fetchImpl = jest.fn().mockResolvedValue({ status: 204, json } as unknown as Response);
+
+    await expect(deleteTodo(todo.id, { apiUrl, fetchImpl })).resolves.toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledWith(`${apiUrl}/todos/${todo.id}`, {
+      method: "DELETE",
+      signal: expect.any(AbortSignal),
+    });
+    expect(json).not.toHaveBeenCalled();
+  });
+
+  it("maps delete 404 to safe not-found copy", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(404, { detail: "Todo not found." }));
+
+    await expect(deleteTodo(todo.id, { apiUrl, fetchImpl })).rejects.toEqual(
+      new TodoApiError("not-found", "That todo no longer exists. Refresh the list."),
+    );
+  });
+
+  it.each([
+    ["status", response(503, { detail: "secret server" })],
+    ["wrong status", response(200, {})],
+  ])("maps delete %s failures to exact delete unavailable copy", async (_case, resp) => {
+    const fetchImpl = jest.fn().mockResolvedValue(resp);
+
+    await expect(deleteTodo(todo.id, { apiUrl, fetchImpl })).rejects.toEqual(
+      new TodoApiError("unavailable", "Could not delete todo."),
+    );
+  });
+
+  it("maps delete transport rejection to exact delete unavailable copy", async () => {
+    const fetchImpl = jest.fn().mockRejectedValue(new Error("secret transport"));
+
+    const pending = deleteTodo(todo.id, { apiUrl, fetchImpl });
+    await expect(pending).rejects.toEqual(
+      new TodoApiError("unavailable", "Could not delete todo."),
+    );
   });
 });

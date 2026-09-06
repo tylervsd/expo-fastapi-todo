@@ -1,4 +1,4 @@
-import { type ComponentProps, type ComponentType, useCallback, useEffect, useRef, useState } from "react";
+import { type ComponentProps, type ComponentType, useEffect, useRef, useState } from "react";
 import {
   type NativeSyntheticEvent,
   Pressable,
@@ -10,27 +10,38 @@ import {
   View,
 } from "react-native";
 import {
+  useIsMutating,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import {
   createTodo,
+  deleteTodo,
   listTodos,
+  normalizeTodoTitle,
   setTodoCompleted,
+  setTodoTitle,
   TodoApiError,
   type Todo,
 } from "./todos/todoApi";
 
 type TodoFilter = "all" | "active" | "completed";
-type LoadState = "loading" | "ready" | "initial-error" | "refreshing" | "refresh-error";
-type Operation = "loading" | "creating" | "updating" | null;
 
 export type TodoScreenApi = {
   list: (options: { signal: AbortSignal }) => Promise<Todo[]>;
-  create: (title: string, options: { signal: AbortSignal }) => Promise<Todo>;
-  setCompleted: (id: string, completed: boolean, options: { signal: AbortSignal }) => Promise<Todo>;
+  create: (title: string) => Promise<Todo>;
+  rename: (id: string, title: string) => Promise<Todo>;
+  setCompleted: (id: string, completed: boolean) => Promise<Todo>;
+  remove: (id: string) => Promise<void>;
 };
 
 const defaultApi: TodoScreenApi = {
   list: listTodos,
-  create: createTodo,
-  setCompleted: setTodoCompleted,
+  create: (title) => createTodo(title),
+  rename: (id, title) => setTodoTitle(id, title),
+  setCompleted: (id, completed) => setTodoCompleted(id, completed),
+  remove: (id) => deleteTodo(id),
 };
 
 const filters: { value: TodoFilter; label: string }[] = [
@@ -42,33 +53,14 @@ const filters: { value: TodoFilter; label: string }[] = [
 const UNKNOWN_MUTATION = "The result may be unknown. Refresh before making more changes.";
 const VALIDATION_ERROR = "Check the todo title and try again.";
 const NOT_FOUND_ERROR = "That todo no longer exists. Refresh the list.";
+const LOAD_ERROR = "Could not load todos.";
+const REFRESH_ERROR = "Could not refresh todos.";
 
 type PressableWithKeyDownProps = ComponentProps<typeof Pressable> & {
   onKeyDown?: (event: NativeSyntheticEvent<{ key: string }>) => void;
 };
 
 const PressableWithKeyDown = Pressable as ComponentType<PressableWithKeyDownProps>;
-
-function isValidTitle(title: string): boolean {
-  if (title.length === 0) return false;
-  let codePoints = 0;
-  for (let index = 0; index < title.length; index += 1) {
-    const code = title.charCodeAt(index);
-    if (code >= 0xd800 && code <= 0xdbff) {
-      const next = title.charCodeAt(index + 1);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
-      index += 1;
-    } else if (code >= 0xdc00 && code <= 0xdfff) {
-      return false;
-    }
-    codePoints += 1;
-  }
-  return codePoints <= 120;
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof Error && error.name === "AbortError";
-}
 
 function mutationError(error: unknown): string {
   if (error instanceof TodoApiError) {
@@ -79,206 +71,217 @@ function mutationError(error: unknown): string {
 }
 
 export function TodoScreen({ api = defaultApi }: { api?: TodoScreenApi } = {}): React.JSX.Element {
-  const [todos, setTodos] = useState<Todo[]>([]);
+  const queryClient = useQueryClient();
   const [draft, setDraft] = useState("");
   const [filter, setFilter] = useState<TodoFilter>("all");
-  const [loadState, setLoadState] = useState<LoadState>("loading");
-  const [hasLoaded, setHasLoaded] = useState(false);
-  const [operation, setOperation] = useState<Operation>("loading");
-  const [error, setError] = useState<string | null>(null);
-  const [writeLocked, setWriteLocked] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState("");
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const [writeError, setWriteError] = useState<{ message: string; atUpdatedAt: number } | null>(null);
   const [createFocusSignal, setCreateFocusSignal] = useState(0);
-  const mounted = useRef(false);
-  const attempt = useRef(0);
-  const active = useRef<AbortController | null>(null);
   const busy = useRef(false);
-  const loaded = useRef(false);
   const input = useRef<TextInput>(null);
   const focusedCreateSignal = useRef(0);
 
-  const abortActiveAttempt = useCallback(() => {
-    active.current?.abort();
-  }, []);
-  const invalidateAttempt = useCallback(() => {
-    ++attempt.current;
-  }, []);
+  const todosQuery = useQuery({
+    queryKey: ["todos"],
+    queryFn: ({ signal }) => api.list({ signal }),
+  });
+  const pendingWrites = useIsMutating({ mutationKey: ["todos", "write"] });
 
-  const runLoad = useCallback(() => {
-    if (!mounted.current || busy.current) return;
+  const todos = todosQuery.data ?? [];
+  const hasData = todosQuery.data !== undefined;
+  const isFetching = todosQuery.isFetching;
+  const isStale = todosQuery.isStale;
+  const fresh = hasData && !isStale;
+  const dataUpdatedAt = todosQuery.dataUpdatedAt;
+  const writesDisabled = !fresh || isFetching || pendingWrites > 0;
+  const visibleWriteError =
+    writeError && dataUpdatedAt <= writeError.atUpdatedAt ? writeError.message : null;
 
-    busy.current = true;
-    const id = ++attempt.current;
-    abortActiveAttempt();
-    const controller = new AbortController();
-    active.current = controller;
-    const isRefresh = loaded.current;
-    setOperation("loading");
-    setLoadState(isRefresh ? "refreshing" : "loading");
-    setError(null);
+  const handleMutationError = async (error: unknown): Promise<void> => {
+    const atUpdatedAt = queryClient.getQueryState(["todos"])?.dataUpdatedAt ?? 0;
+    setWriteError({ message: mutationError(error), atUpdatedAt });
+    if (!(error instanceof TodoApiError && error.kind === "validation")) {
+      await queryClient.invalidateQueries({ queryKey: ["todos"], refetchType: "none" });
+    }
+  };
 
-    void api.list({ signal: controller.signal }).then(
-      (next) => {
-        if (
-          !mounted.current ||
-          attempt.current !== id ||
-          controller.signal.aborted
-        ) {
-          return;
-        }
-        setTodos(next);
-        loaded.current = true;
-        setHasLoaded(true);
-        setWriteLocked(false);
-        setLoadState("ready");
-        setError(null);
-      },
-      (reason: unknown) => {
-        if (
-          !mounted.current ||
-          attempt.current !== id ||
-          controller.signal.aborted ||
-          isAbortError(reason)
-        ) {
-          return;
-        }
-        setLoadState(isRefresh ? "refresh-error" : "initial-error");
-        setError(isRefresh ? "Could not refresh todos." : "Could not load todos.");
-        if (isRefresh) setWriteLocked(true);
-      },
-    ).finally(() => {
-      if (attempt.current !== id) return;
+  const createMutation = useMutation({
+    mutationKey: ["todos", "write"],
+    mutationFn: (title: string) => api.create(title),
+    onMutate: async () => {
+      await queryClient.cancelQueries({ queryKey: ["todos"] });
+    },
+    onSuccess: async (created) => {
+      queryClient.setQueryData<Todo[]>(["todos"], (current) => [...(current ?? []), created]);
+      setDraft("");
+      setCreateFocusSignal((current) => current + 1);
+      await queryClient.invalidateQueries({ queryKey: ["todos"] });
+    },
+    onError: handleMutationError,
+    onSettled: () => {
       busy.current = false;
-      active.current = null;
-      setOperation(null);
-    });
-  }, [abortActiveAttempt, api]);
+    },
+  });
 
-  useEffect(() => {
-    mounted.current = true;
-    runLoad();
-
-    return () => {
-      mounted.current = false;
-      invalidateAttempt();
-      abortActiveAttempt();
-      active.current = null;
+  const renameMutation = useMutation({
+    mutationKey: ["todos", "write"],
+    mutationFn: ({ id, title }: { id: string; title: string }) => api.rename(id, title),
+    onMutate: async () => {
+      await queryClient.cancelQueries({ queryKey: ["todos"] });
+    },
+    onSuccess: async (renamed) => {
+      queryClient.setQueryData<Todo[]>(["todos"], (current) =>
+        (current ?? []).map((item) => (item.id === renamed.id ? renamed : item)),
+      );
+      setEditingId(null);
+      await queryClient.invalidateQueries({ queryKey: ["todos"] });
+    },
+    onError: handleMutationError,
+    onSettled: () => {
       busy.current = false;
-    };
-  }, [abortActiveAttempt, invalidateAttempt, runLoad]);
+    },
+  });
+
+  const completeMutation = useMutation({
+    mutationKey: ["todos", "write"],
+    mutationFn: ({ id, completed }: { id: string; completed: boolean }) =>
+      api.setCompleted(id, completed),
+    onMutate: async ({ id, completed }) => {
+      await queryClient.cancelQueries({ queryKey: ["todos"] });
+      const snapshot = queryClient.getQueryData<Todo[]>(["todos"]);
+      queryClient.setQueryData<Todo[]>(["todos"], (current) =>
+        (current ?? []).map((item) => (item.id === id ? { ...item, completed } : item)),
+      );
+      return { snapshot };
+    },
+    onSuccess: async (updated) => {
+      queryClient.setQueryData<Todo[]>(["todos"], (current) =>
+        (current ?? []).map((item) => (item.id === updated.id ? updated : item)),
+      );
+      await queryClient.invalidateQueries({ queryKey: ["todos"] });
+    },
+    onError: async (error, _variables, context) => {
+      if (context?.snapshot !== undefined) {
+        queryClient.setQueryData(["todos"], context.snapshot);
+      }
+      await handleMutationError(error);
+    },
+    onSettled: () => {
+      busy.current = false;
+    },
+  });
+
+  const removeMutation = useMutation({
+    mutationKey: ["todos", "write"],
+    mutationFn: (id: string) => api.remove(id),
+    onMutate: async () => {
+      await queryClient.cancelQueries({ queryKey: ["todos"] });
+    },
+    onSuccess: async (_value, id) => {
+      queryClient.setQueryData<Todo[]>(["todos"], (current) =>
+        (current ?? []).filter((item) => item.id !== id),
+      );
+      setConfirmingId(null);
+      await queryClient.invalidateQueries({ queryKey: ["todos"] });
+    },
+    onError: handleMutationError,
+    onSettled: () => {
+      busy.current = false;
+    },
+  });
+
+  const syncGuard = () => {
+    if (busy.current) return false;
+    if (queryClient.isMutating({ mutationKey: ["todos", "write"] }) !== 0) return false;
+    return true;
+  };
+
+  const refresh = () => {
+    if (isFetching || pendingWrites > 0) return;
+    if (!hasData) {
+      void todosQuery.refetch();
+      return;
+    }
+    void (async () => {
+      await queryClient.invalidateQueries({ queryKey: ["todos"], refetchType: "none" });
+      await todosQuery.refetch();
+    })();
+  };
 
   const startCreate = () => {
-    if (!mounted.current || !hasLoaded || loadState !== "ready" || writeLocked || busy.current) {
+    if (writesDisabled || !syncGuard()) return;
+    if (draft.trim() === "") {
+      setWriteError({ message: "Enter a todo title.", atUpdatedAt: dataUpdatedAt });
       return;
     }
-    const title = draft.trim();
-    if (!title) {
-      setError("Enter a todo title.");
+    const canonical = normalizeTodoTitle(draft);
+    if (canonical === null) {
+      setWriteError({ message: "Todo titles must be 120 characters or fewer.", atUpdatedAt: dataUpdatedAt });
       return;
     }
-    if (!isValidTitle(title)) {
-      setError("Todo titles must be 120 characters or fewer.");
-      return;
-    }
-
     busy.current = true;
-    const id = ++attempt.current;
-    active.current?.abort();
-    const controller = new AbortController();
-    active.current = controller;
-    const draftAtSubmit = draft;
     input.current?.blur();
-    setOperation("creating");
-    setError(null);
-
-    void api.create(title, { signal: controller.signal }).then(
-      (created) => {
-        if (
-          !mounted.current ||
-          attempt.current !== id ||
-          controller.signal.aborted
-        ) {
-          return;
-        }
-        setTodos((current) => [...current, created]);
-        setDraft((current) => (current === draftAtSubmit ? "" : current));
-        setError(null);
-        setCreateFocusSignal((current) => current + 1);
-      },
-      (reason: unknown) => {
-        if (
-          !mounted.current ||
-          attempt.current !== id ||
-          controller.signal.aborted ||
-          isAbortError(reason)
-        ) {
-          return;
-        }
-        const message = mutationError(reason);
-        setError(message);
-        if (message === UNKNOWN_MUTATION) setWriteLocked(true);
-      },
-    ).finally(() => {
-      if (attempt.current !== id) return;
-      busy.current = false;
-      active.current = null;
-      setOperation(null);
-    });
+    setWriteError(null);
+    createMutation.mutate(canonical);
   };
 
   const toggleTodo = (id: string) => {
-    if (!mounted.current || !hasLoaded || loadState !== "ready" || writeLocked || busy.current) {
+    if (writesDisabled || !syncGuard()) return;
+    const current = todos.find((item) => item.id === id);
+    if (!current) return;
+    busy.current = true;
+    setWriteError(null);
+    completeMutation.mutate({ id, completed: !current.completed });
+  };
+
+  const startEdit = (id: string) => {
+    if (writesDisabled || !syncGuard()) return;
+    const current = todos.find((item) => item.id === id);
+    if (!current) return;
+    setConfirmingId(null);
+    setEditingId(id);
+    setEditDraft(current.title);
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+  };
+
+  const saveEdit = () => {
+    if (writesDisabled || !syncGuard() || editingId === null) return;
+    const canonical = normalizeTodoTitle(editDraft);
+    if (canonical === null) {
+      setWriteError({ message: VALIDATION_ERROR, atUpdatedAt: dataUpdatedAt });
       return;
     }
-    const current = todos.find((todo) => todo.id === id);
-    if (!current) return;
-    const desired = !current.completed;
     busy.current = true;
-    const operationId = ++attempt.current;
-    active.current?.abort();
-    const controller = new AbortController();
-    active.current = controller;
-    setOperation("updating");
-    setError(null);
+    setWriteError(null);
+    renameMutation.mutate({ id: editingId, title: canonical });
+  };
 
-    void api.setCompleted(id, desired, { signal: controller.signal }).then(
-      (updated) => {
-        if (
-          !mounted.current ||
-          attempt.current !== operationId ||
-          controller.signal.aborted
-        ) {
-          return;
-        }
-        setTodos((currentTodos) =>
-          currentTodos.map((todo) => (todo.id === id ? updated : todo)),
-        );
-        setError(null);
-      },
-      (reason: unknown) => {
-        if (
-          !mounted.current ||
-          attempt.current !== operationId ||
-          controller.signal.aborted ||
-          isAbortError(reason)
-        ) {
-          return;
-        }
-        const message = mutationError(reason);
-        setError(message);
-        if (message === UNKNOWN_MUTATION) setWriteLocked(true);
-      },
-    ).finally(() => {
-      if (attempt.current !== operationId) return;
-      busy.current = false;
-      active.current = null;
-      setOperation(null);
-    });
+  const askDelete = (id: string) => {
+    if (writesDisabled || !syncGuard()) return;
+    setEditingId(null);
+    setConfirmingId(id);
+  };
+
+  const cancelDelete = () => {
+    setConfirmingId(null);
+  };
+
+  const confirmDelete = () => {
+    if (writesDisabled || !syncGuard() || confirmingId === null) return;
+    busy.current = true;
+    setWriteError(null);
+    removeMutation.mutate(confirmingId);
   };
 
   const visible = todos.filter(
-    (todo) =>
+    (item) =>
       filter === "all" ||
-      (filter === "completed" ? todo.completed : !todo.completed),
+      (filter === "completed" ? item.completed : !item.completed),
   );
   const empty =
     filter === "all"
@@ -286,9 +289,9 @@ export function TodoScreen({ api = defaultApi }: { api?: TodoScreenApi } = {}): 
       : filter === "active"
         ? "No active todos."
         : "No completed todos.";
-  const writesDisabled =
-    !hasLoaded || loadState !== "ready" || writeLocked || operation !== null;
-  const rowsDisabled = writesDisabled;
+
+  const initialError = !hasData && todosQuery.isError;
+  const alert = initialError ? LOAD_ERROR : (visibleWriteError ?? (hasData && isStale && !isFetching && todosQuery.error ? REFRESH_ERROR : null));
 
   useEffect(() => {
     if (createFocusSignal === focusedCreateSignal.current || writesDisabled) return;
@@ -330,13 +333,13 @@ export function TodoScreen({ api = defaultApi }: { api?: TodoScreenApi } = {}): 
             <Text style={styles.addButtonText}>Add todo</Text>
           </Pressable>
         </View>
-        {error && (
+        {alert && (
           <Text accessibilityRole="alert" style={styles.error}>
-            {error}
+            {alert}
           </Text>
         )}
-        {loadState === "loading" && <Text style={styles.status}>Loading todos…</Text>}
-        {loadState === "refreshing" && <Text style={styles.status}>Refreshing todos…</Text>}
+        {!hasData && todosQuery.isPending && <Text style={styles.status}>Loading todos…</Text>}
+        {hasData && isFetching && <Text style={styles.status}>Refreshing todos…</Text>}
         <View style={styles.filters}>
           {filters.map(({ value, label }) => (
             <Pressable
@@ -355,55 +358,124 @@ export function TodoScreen({ api = defaultApi }: { api?: TodoScreenApi } = {}): 
             </Pressable>
           ))}
         </View>
-        {loadState === "initial-error" && (
+        {initialError && (
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Retry"
-            disabled={operation !== null}
+            disabled={isFetching || pendingWrites > 0}
             style={styles.refreshButton}
-            onPress={runLoad}
+            onPress={refresh}
           >
             <Text style={styles.refreshButtonText}>Retry</Text>
           </Pressable>
         )}
-        {hasLoaded && (
+        {hasData && (
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Refresh"
-            disabled={operation !== null}
+            disabled={isFetching || pendingWrites > 0}
             style={styles.refreshButton}
-            onPress={runLoad}
+            onPress={refresh}
           >
             <Text style={styles.refreshButtonText}>Refresh</Text>
           </Pressable>
         )}
-        {hasLoaded && visible.length === 0 && <Text style={styles.empty}>{empty}</Text>}
-        {visible.map((todo) => (
-          <PressableWithKeyDown
-            key={todo.id}
-            accessibilityRole="checkbox"
-            accessibilityLabel={todo.title}
-            accessibilityState={{ checked: todo.completed }}
-            aria-checked={todo.completed}
-            disabled={rowsDisabled}
-            style={styles.todoRow}
-            onPress={() => toggleTodo(todo.id)}
-            onKeyDown={(event) => {
-              if (event.nativeEvent.key === " ") {
-                event.preventDefault();
-                toggleTodo(todo.id);
-              }
-            }}
-          >
-            <View style={[styles.checkbox, todo.completed && styles.checkedBox]}>
-              {todo.completed && <Text style={styles.checkmark}>✓</Text>}
-            </View>
-            <Text
-              style={[styles.todoTitle, todo.completed && styles.completedTitle]}
+        {hasData && visible.length === 0 && <Text style={styles.empty}>{empty}</Text>}
+        {visible.map((item) => (
+          <View key={item.id} style={styles.todoRow}>
+            <PressableWithKeyDown
+              accessibilityRole="checkbox"
+              accessibilityLabel={item.title}
+              accessibilityState={{ checked: item.completed }}
+              aria-checked={item.completed}
+              disabled={writesDisabled}
+              style={styles.checkboxHitbox}
+              onPress={() => toggleTodo(item.id)}
+              onKeyDown={(event) => {
+                if (event.nativeEvent.key === " ") {
+                  event.preventDefault();
+                  toggleTodo(item.id);
+                }
+              }}
             >
-              {todo.title}
+              <View style={[styles.checkbox, item.completed && styles.checkedBox]}>
+                {item.completed && <Text style={styles.checkmark}>✓</Text>}
+              </View>
+            </PressableWithKeyDown>
+            <Text
+              style={[styles.todoTitle, item.completed && styles.completedTitle]}
+            >
+              {item.title}
             </Text>
-          </PressableWithKeyDown>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Edit ${item.title}`}
+              disabled={writesDisabled}
+              style={styles.rowButton}
+              onPress={() => startEdit(item.id)}
+            >
+              <Text style={styles.rowButtonText}>Edit</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Delete ${item.title}`}
+              disabled={writesDisabled}
+              style={styles.rowButton}
+              onPress={() => askDelete(item.id)}
+            >
+              <Text style={styles.rowButtonText}>Delete</Text>
+            </Pressable>
+            {editingId === item.id && (
+              <View style={styles.inlineEditor}>
+                <TextInput
+                  accessibilityLabel="Edit todo title"
+                  editable={!writesDisabled}
+                  value={editDraft}
+                  onChangeText={setEditDraft}
+                  style={styles.input}
+                />
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Save changes"
+                  disabled={writesDisabled}
+                  style={styles.addButton}
+                  onPress={saveEdit}
+                >
+                  <Text style={styles.addButtonText}>Save changes</Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Cancel edit"
+                  style={styles.refreshButton}
+                  onPress={cancelEdit}
+                >
+                  <Text style={styles.refreshButtonText}>Cancel edit</Text>
+                </Pressable>
+              </View>
+            )}
+            {confirmingId === item.id && (
+              <View style={styles.inlineEditor}>
+                <Text style={styles.confirmText}>Delete &#8220;{item.title}&#8221;?</Text>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Confirm delete"
+                  disabled={writesDisabled}
+                  style={styles.addButton}
+                  onPress={confirmDelete}
+                >
+                  <Text style={styles.addButtonText}>Confirm delete</Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Cancel delete"
+                  style={styles.refreshButton}
+                  onPress={cancelDelete}
+                >
+                  <Text style={styles.refreshButtonText}>Cancel delete</Text>
+                </Pressable>
+              </View>
+            )}
+          </View>
         ))}
       </ScrollView>
     </SafeAreaView>
@@ -510,15 +582,21 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   todoRow: {
-    alignItems: "center",
     borderColor: "#d5dce6",
     borderRadius: 10,
     borderWidth: 1,
-    flexDirection: "row",
     gap: 12,
     minHeight: 56,
     minWidth: 44,
     paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  checkboxHitbox: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "center",
+    minHeight: 44,
+    minWidth: 44,
   },
   checkbox: {
     alignItems: "center",
@@ -546,5 +624,27 @@ const styles = StyleSheet.create({
   completedTitle: {
     color: "#66758a",
     textDecorationLine: "line-through",
+  },
+  rowButton: {
+    alignItems: "center",
+    borderColor: "#aeb9c9",
+    borderRadius: 10,
+    borderWidth: 1,
+    justifyContent: "center",
+    minHeight: 44,
+    minWidth: 44,
+    paddingHorizontal: 16,
+  },
+  rowButtonText: {
+    color: "#173da0",
+    fontSize: 16,
+    fontWeight: "700",
+  },
+  inlineEditor: {
+    gap: 10,
+  },
+  confirmText: {
+    color: "#172033",
+    fontSize: 16,
   },
 });

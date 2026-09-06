@@ -48,7 +48,7 @@ This roadmap is provisional. Every phase receives its own approved spec before i
 - **Visible outcome:** Users can edit and delete todos, with robust loading and error states and justified optimistic updates where useful.
 - **New technology/pattern:** Server-state caching, retries, invalidation, resilient UI state, and explicit consistency tradeoffs.
 - **Testing-pyramid layer introduced:** More component and integration coverage for failure states, with only critical journeys reserved for E2E.
-- **Spec gate:** Before implementation, this phase gets its own approved spec for CRUD semantics, cache policy, retries, and optimistic-update rollback behavior.
+- **Spec gate:** This phase received its approved spec before implementation, covering CRUD semantics, cache policy, retries, and optimistic-update rollback behavior.
 
 ## 7. Authentication and authorization
 
