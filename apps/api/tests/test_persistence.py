@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -10,6 +14,25 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.todo_repository import TodoRow, create_todo, list_todos, set_completed
 
 REVISION = "2026090601"
+
+
+def test_alembic_cli_loads_api_package() -> None:
+    alembic = shutil.which("alembic")
+    assert alembic is not None
+
+    completed = subprocess.run(
+        [alembic, "upgrade", "head", "--sql"],
+        cwd=Path(__file__).parents[1],
+        env=os.environ | {
+            "DATABASE_URL": "postgresql+psycopg://todo:todo@127.0.0.1:5432/todo"
+        },
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "CREATE TABLE todos" in completed.stdout
 
 
 def test_migration_creates_expected_todos_shape(database_engine: Engine) -> None:

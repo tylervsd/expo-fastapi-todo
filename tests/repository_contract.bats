@@ -147,14 +147,6 @@
   [ "$status" -eq 0 ]
 }
 
-@test "configured Alembic migration command loads the API package" {
-  run env \
-    DATABASE_URL='postgresql+psycopg://todo:todo@127.0.0.1:5432/todo' \
-    uv run --directory apps/api alembic upgrade head --sql
-  [ "$status" -eq 0 ] || return 1
-  [[ "$output" == *"CREATE TABLE todos"* ]]
-}
-
 @test "required public repository files exist" {
   for path in LICENSE pnpm-workspace.yaml Brewfile; do
     [ -f "$path" ]
