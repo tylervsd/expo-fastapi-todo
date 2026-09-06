@@ -12,6 +12,7 @@ import {
 import {
   useIsMutating,
   useMutation,
+  useMutationState,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
@@ -80,14 +81,28 @@ export function TodoScreen({ api = defaultApi }: { api?: TodoScreenApi } = {}): 
   const [writeError, setWriteError] = useState<{ message: string; atUpdatedAt: number } | null>(null);
   const [createFocusSignal, setCreateFocusSignal] = useState(0);
   const busy = useRef(false);
+  const syncing = useRef(false);
   const input = useRef<TextInput>(null);
   const focusedCreateSignal = useRef(0);
 
   const todosQuery = useQuery({
     queryKey: ["todos"],
-    queryFn: ({ signal }) => api.list({ signal }),
+    queryFn: async ({ signal }) => {
+      const todos = await api.list({ signal });
+      if (!signal.aborted) {
+        const mutationCache = queryClient.getMutationCache();
+        mutationCache
+          .findAll({ mutationKey: ["todos", "write"], exact: true, status: "error" })
+          .forEach((mutation) => mutationCache.remove(mutation));
+      }
+      return todos;
+    },
   });
   const pendingWrites = useIsMutating({ mutationKey: ["todos", "write"] });
+  const mutationErrors = useMutationState({
+    filters: { mutationKey: ["todos", "write"], exact: true, status: "error" },
+    select: (mutation) => ({ error: mutation.state.error }),
+  });
 
   const todos = todosQuery.data ?? [];
   const hasData = todosQuery.data !== undefined;
@@ -96,15 +111,23 @@ export function TodoScreen({ api = defaultApi }: { api?: TodoScreenApi } = {}): 
   const fresh = hasData && !isStale;
   const dataUpdatedAt = todosQuery.dataUpdatedAt;
   const writesDisabled = !fresh || isFetching || pendingWrites > 0;
+  const staleMutationError = mutationErrors.reduce<{ error: unknown } | undefined>(
+    (latest, { error }) =>
+      error instanceof TodoApiError && error.kind === "validation" ? latest : { error },
+    undefined,
+  );
   const visibleWriteError =
-    writeError && dataUpdatedAt <= writeError.atUpdatedAt ? writeError.message : null;
+    isStale && staleMutationError
+      ? mutationError(staleMutationError.error)
+      : writeError && dataUpdatedAt <= writeError.atUpdatedAt ? writeError.message : null;
 
   const handleMutationError = async (error: unknown): Promise<void> => {
-    const atUpdatedAt = queryClient.getQueryState(["todos"])?.dataUpdatedAt ?? 0;
-    setWriteError({ message: mutationError(error), atUpdatedAt });
-    if (!(error instanceof TodoApiError && error.kind === "validation")) {
-      await queryClient.invalidateQueries({ queryKey: ["todos"], refetchType: "none" });
+    if (error instanceof TodoApiError && error.kind === "validation") {
+      const atUpdatedAt = queryClient.getQueryState(["todos"])?.dataUpdatedAt ?? 0;
+      setWriteError({ message: mutationError(error), atUpdatedAt });
+      return;
     }
+    await queryClient.invalidateQueries({ queryKey: ["todos"], refetchType: "none" });
   };
 
   const createMutation = useMutation({
@@ -193,20 +216,26 @@ export function TodoScreen({ api = defaultApi }: { api?: TodoScreenApi } = {}): 
   });
 
   const syncGuard = () => {
+    if (syncing.current) return false;
     if (busy.current) return false;
     if (queryClient.isMutating({ mutationKey: ["todos", "write"] }) !== 0) return false;
     return true;
   };
 
   const refresh = () => {
-    if (isFetching || pendingWrites > 0) return;
-    if (!hasData) {
-      void todosQuery.refetch();
-      return;
-    }
+    if (isFetching || pendingWrites > 0 || !syncGuard()) return;
+    syncing.current = true;
     void (async () => {
-      await queryClient.invalidateQueries({ queryKey: ["todos"], refetchType: "none" });
-      await todosQuery.refetch();
+      try {
+        if (hasData) {
+          await queryClient.invalidateQueries({ queryKey: ["todos"], refetchType: "none" });
+        }
+        if (queryClient.isMutating({ mutationKey: ["todos", "write"] }) === 0) {
+          await todosQuery.refetch();
+        }
+      } finally {
+        syncing.current = false;
+      }
     })();
   };
 
@@ -246,6 +275,7 @@ export function TodoScreen({ api = defaultApi }: { api?: TodoScreenApi } = {}): 
   };
 
   const cancelEdit = () => {
+    if (writesDisabled || !syncGuard()) return;
     setEditingId(null);
   };
 
@@ -268,6 +298,7 @@ export function TodoScreen({ api = defaultApi }: { api?: TodoScreenApi } = {}): 
   };
 
   const cancelDelete = () => {
+    if (writesDisabled || !syncGuard()) return;
     setConfirmingId(null);
   };
 
@@ -446,6 +477,7 @@ export function TodoScreen({ api = defaultApi }: { api?: TodoScreenApi } = {}): 
                 <Pressable
                   accessibilityRole="button"
                   accessibilityLabel="Cancel edit"
+                  disabled={writesDisabled}
                   style={styles.refreshButton}
                   onPress={cancelEdit}
                 >
@@ -468,6 +500,7 @@ export function TodoScreen({ api = defaultApi }: { api?: TodoScreenApi } = {}): 
                 <Pressable
                   accessibilityRole="button"
                   accessibilityLabel="Cancel delete"
+                  disabled={writesDisabled}
                   style={styles.refreshButton}
                   onPress={cancelDelete}
                 >

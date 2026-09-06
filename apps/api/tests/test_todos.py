@@ -166,7 +166,14 @@ def test_patch_rejects_non_boolean_completed_values(
 
 @pytest.mark.parametrize(
     "payload",
-    [{}, {"completed": True, "extra": False}, {"completed": None}, []],
+    [
+        {},
+        {"completed": True, "extra": False},
+        {"completed": None},
+        {"title": "Known", "completed": None},
+        {"title": None, "completed": True},
+        [],
+    ],
 )
 def test_patch_rejects_malformed_bodies(
     client: TestClient,

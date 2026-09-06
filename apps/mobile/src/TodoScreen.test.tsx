@@ -343,6 +343,34 @@ it("preserves rows on failed refresh and disables remote writes until recovery",
   expect(api.setCompleted).not.toHaveBeenCalled();
 });
 
+it("does not start a write during the refresh handoff", async () => {
+  const api = makeApi();
+  await load(api, [todo("one", "Buy milk")]);
+  const refreshing = deferred<Todo[]>();
+  api.list.mockReturnValueOnce(refreshing.promise);
+
+  await fireEvent.changeText(screen.getByLabelText("Todo title"), "New todo");
+  const refresh = screen.getByRole("button", { name: "Refresh" }).props.onPress as () => void;
+  const add = screen.getByRole("button", { name: "Add todo" }).props.onPress as () => void;
+  await act(async () => {
+    refresh();
+    add();
+  });
+
+  await waitFor(() => expect(api.list).toHaveBeenCalledTimes(2));
+  expect(api.create).not.toHaveBeenCalled();
+  await waitFor(() => expect(screen.getByRole("button", { name: "Add todo" })).toHaveProp(
+    "accessibilityState",
+    expect.objectContaining({ disabled: true }),
+  ));
+
+  await act(async () => refreshing.resolve([todo("one", "Buy milk")]));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Add todo" })).toHaveProp(
+    "accessibilityState",
+    expect.objectContaining({ disabled: false }),
+  ));
+});
+
 it("creates pessimistically: unchanged until the response, then one confirming GET while locked", async () => {
   const creating = deferred<Todo>();
   const confirming = deferred<Todo[]>();
@@ -567,6 +595,51 @@ it("cancels a delete confirmation without a request", async () => {
   expect(screen.getByRole("checkbox", { name: "Buy milk" })).toBeTruthy();
 });
 
+it("keeps the editor open when Cancel edit races a pending save", async () => {
+  const renaming = deferred<Todo>();
+  const api = makeApi();
+  await load(api, [todo("one", "Buy milk")]);
+  api.rename.mockReturnValueOnce(renaming.promise);
+
+  await fireEvent.press(screen.getByRole("button", { name: "Edit Buy milk" }));
+  await fireEvent.changeText(screen.getByLabelText("Edit todo title"), "Renamed");
+  const save = screen.getByRole("button", { name: "Save changes" }).props.onPress as () => void;
+  const cancel = screen.getByRole("button", { name: "Cancel edit" }).props.onPress as () => void;
+  await act(async () => {
+    save();
+    cancel();
+  });
+
+  expect(api.rename).toHaveBeenCalledTimes(1);
+  expect(screen.getByLabelText("Edit todo title")).toHaveProp("value", "Renamed");
+  expect(screen.getByRole("button", { name: "Cancel edit" })).toHaveProp(
+    "accessibilityState",
+    expect.objectContaining({ disabled: true }),
+  );
+});
+
+it("keeps the delete confirmation open when Cancel delete races a pending delete", async () => {
+  const removing = deferred<void>();
+  const api = makeApi();
+  await load(api, [todo("one", "Buy milk")]);
+  api.remove.mockReturnValueOnce(removing.promise);
+
+  await fireEvent.press(screen.getByRole("button", { name: "Delete Buy milk" }));
+  const confirm = screen.getByRole("button", { name: "Confirm delete" }).props.onPress as () => void;
+  const cancel = screen.getByRole("button", { name: "Cancel delete" }).props.onPress as () => void;
+  await act(async () => {
+    confirm();
+    cancel();
+  });
+
+  expect(api.remove).toHaveBeenCalledTimes(1);
+  expect(screen.getByText("Delete \u201cBuy milk\u201d?")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Cancel delete" })).toHaveProp(
+    "accessibilityState",
+    expect.objectContaining({ disabled: true }),
+  );
+});
+
 it("maps a delete 404 to safe copy and keeps the row locked", async () => {
   const api = makeApi();
   await load(api, [todo("one", "Buy milk")]);
@@ -585,6 +658,64 @@ it("maps a delete 404 to safe copy and keeps the row locked", async () => {
   expect(screen.getByRole("button", { name: "Add todo" })).toHaveProp(
     "accessibilityState",
     expect.objectContaining({ disabled: true }),
+  );
+});
+
+it("shows an unknown create error after remount and unlocks only after a fresh GET", async () => {
+  const creating = deferred<Todo>();
+  const api = makeApi();
+  const { view, client } = await load(api);
+  api.create.mockReturnValueOnce(creating.promise);
+
+  await fireEvent.changeText(screen.getByLabelText("Todo title"), "Pending row");
+  await fireEvent.press(screen.getByRole("button", { name: "Add todo" }));
+  await view.unmount();
+  await renderScreen(api, client);
+
+  await act(async () => creating.reject(new Error("private detail")));
+  await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(
+    "The result may be unknown. Refresh before making more changes.",
+  ));
+  expect(screen.getByRole("button", { name: "Add todo" })).toHaveProp(
+    "accessibilityState",
+    expect.objectContaining({ disabled: true }),
+  );
+
+  api.list.mockResolvedValueOnce([]);
+  await fireEvent.press(screen.getByRole("button", { name: "Refresh" }));
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  expect(screen.getByRole("button", { name: "Add todo" })).toHaveProp(
+    "accessibilityState",
+    expect.objectContaining({ disabled: false }),
+  );
+});
+
+it("shows a delete 404 after remount and unlocks only after a fresh GET", async () => {
+  const removing = deferred<void>();
+  const api = makeApi();
+  const { view, client } = await load(api, [todo("one", "Buy milk")]);
+  api.remove.mockReturnValueOnce(removing.promise);
+
+  await fireEvent.press(screen.getByRole("button", { name: "Delete Buy milk" }));
+  await fireEvent.press(screen.getByRole("button", { name: "Confirm delete" }));
+  await view.unmount();
+  await renderScreen(api, client);
+
+  await act(async () => removing.reject(new TodoApiError("not-found", "gone")));
+  await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(
+    "That todo no longer exists. Refresh the list.",
+  ));
+  expect(screen.getByRole("button", { name: "Add todo" })).toHaveProp(
+    "accessibilityState",
+    expect.objectContaining({ disabled: true }),
+  );
+
+  api.list.mockResolvedValueOnce([todo("one", "Buy milk")]);
+  await fireEvent.press(screen.getByRole("button", { name: "Refresh" }));
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  expect(screen.getByRole("button", { name: "Add todo" })).toHaveProp(
+    "accessibilityState",
+    expect.objectContaining({ disabled: false }),
   );
 });
 
@@ -800,6 +931,45 @@ it("maps rename validation to exact copy and keeps the editor writable", async (
     "accessibilityState",
     expect.objectContaining({ disabled: false }),
   );
+});
+
+it("does not let an old rename validation mask a failed confirming GET", async () => {
+  const api = makeApi();
+  await load(api, [todo("one", "Buy milk")]);
+  api.rename.mockRejectedValueOnce(new TodoApiError("validation", "bad title"));
+
+  await fireEvent.press(screen.getByRole("button", { name: "Edit Buy milk" }));
+  await fireEvent.changeText(screen.getByLabelText("Edit todo title"), "Bad title");
+  await fireEvent.press(screen.getByRole("button", { name: "Save changes" }));
+  await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(
+    "Check the todo title and try again.",
+  ));
+  await fireEvent.press(screen.getByRole("button", { name: "Cancel edit" }));
+
+  api.create.mockResolvedValueOnce(todo("two", "Valid title"));
+  api.list.mockRejectedValueOnce(invalidData());
+  await fireEvent.changeText(screen.getByLabelText("Todo title"), "Valid title");
+  await fireEvent.press(screen.getByRole("button", { name: "Add todo" }));
+
+  await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Could not refresh todos."));
+});
+
+it("does not let an old rename validation mask a local blank-title error", async () => {
+  const api = makeApi();
+  await load(api, [todo("one", "Buy milk")]);
+  api.rename.mockRejectedValueOnce(new TodoApiError("validation", "bad title"));
+
+  await fireEvent.press(screen.getByRole("button", { name: "Edit Buy milk" }));
+  await fireEvent.changeText(screen.getByLabelText("Edit todo title"), "Bad title");
+  await fireEvent.press(screen.getByRole("button", { name: "Save changes" }));
+  await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(
+    "Check the todo title and try again.",
+  ));
+  await fireEvent.press(screen.getByRole("button", { name: "Cancel edit" }));
+
+  await fireEvent.press(screen.getByRole("button", { name: "Add todo" }));
+
+  expect(screen.getByRole("alert")).toHaveTextContent("Enter a todo title.");
 });
 
 it("maps create validation to the exact alert and keeps the draft writable", async () => {

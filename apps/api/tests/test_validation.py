@@ -62,6 +62,8 @@ def test_todo_update_accepts_completed_only() -> None:
         {"title": None},
         {"completed": None},
         {"title": None, "completed": None},
+        {"title": "Known", "completed": None},
+        {"title": None, "completed": True},
         {"title": 42},
         {"title": "Known", "extra": "rejected"},
         {"completed": True, "extra": False},

@@ -81,7 +81,8 @@ class TodoUpdate(BaseModel):
 
     @model_validator(mode="after")
     def require_exactly_one_field(self) -> TodoUpdate:
-        if (self.title is None) == (self.completed is None):
+        fields = self.model_fields_set
+        if len(fields) != 1 or getattr(self, next(iter(fields), ""), None) is None:
             raise ValueError("exactly one of title or completed is required")
         return self
 
