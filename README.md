@@ -71,7 +71,9 @@ The repository's `scripts/doctor` command is read-only. It inspects versions, pa
 
 ## Curriculum roadmap
 
-See the [provisional curriculum roadmap](docs/curriculum-roadmap.md) for the nine phases. Each phase gets an approved spec before implementation, so later details can be refined without hiding the boundary between decisions and code.
+See the [provisional curriculum roadmap](docs/curriculum-roadmap.md) for the twelve phases (0-11). Each phase gets an approved spec before implementation, so later details can be refined without hiding the boundary between decisions and code.
+
+The current implementation remains Phase 6. Planned Phases 7-9 add backend workflow modeling, server-directed screens, and reliable resumption through one guided-todo creation feature. Cross-platform E2E moves to Phase 10, followed by production hardening in Phase 11. The [workflow learning plan](docs/workflow-learning-plan.md) describes the proposed behavior and exercises; these are curriculum additions, not implemented functionality or completed guides.
 
 ## Testing strategy
 
