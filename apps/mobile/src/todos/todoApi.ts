@@ -4,7 +4,12 @@ export type Todo = {
   completed: boolean;
 };
 
-export type TodoApiErrorKind = "validation" | "not-found" | "unavailable" | "invalid-data";
+export type TodoApiErrorKind =
+  | "validation"
+  | "not-found"
+  | "unavailable"
+  | "invalid-data"
+  | "auth-required";
 
 export class TodoApiError extends Error {
   constructor(
@@ -21,27 +26,63 @@ export type TodoRequestOptions = {
   timeoutMs?: number;
   signal?: AbortSignal;
   fetchImpl?: typeof fetch;
+  token?: string;
 };
 
-type TodoOperation = "list" | "create" | "update" | "delete";
-type RequestBody = { title: string } | { completed: boolean };
+type TodoOperation = "list" | "create" | "update" | "delete" | "signup" | "login" | "logout" | "me";
+type RequestBody = { title: string } | { completed: boolean } | { username: string; password: string };
 
-const operationMessages: Record<TodoOperation, { unavailable: string; invalidData: string }> = {
+const operationMessages: Record<
+  TodoOperation,
+  { unavailable: string; invalidData: string; validation: string; authRequired: string }
+> = {
   list: {
     unavailable: "Could not load todos.",
     invalidData: "The API returned invalid todo data while loading.",
+    validation: "Check the todo title and try again.",
+    authRequired: "Please sign in again.",
   },
   create: {
     unavailable: "Could not create todo.",
     invalidData: "The API returned invalid todo data while creating.",
+    validation: "Check the todo title and try again.",
+    authRequired: "Please sign in again.",
   },
   update: {
     unavailable: "Could not update todo.",
     invalidData: "The API returned invalid todo data while updating.",
+    validation: "Check the todo title and try again.",
+    authRequired: "Please sign in again.",
   },
   delete: {
     unavailable: "Could not delete todo.",
     invalidData: "Could not delete todo.",
+    validation: "Check the todo title and try again.",
+    authRequired: "Please sign in again.",
+  },
+  signup: {
+    unavailable: "Could not create account.",
+    invalidData: "The API returned invalid account data.",
+    validation: "Check the username and password and try again.",
+    authRequired: "Please sign in again.",
+  },
+  login: {
+    unavailable: "Could not sign in.",
+    invalidData: "The API returned invalid session data.",
+    validation: "Check the username and password and try again.",
+    authRequired: "Invalid username or password.",
+  },
+  logout: {
+    unavailable: "Could not sign out.",
+    invalidData: "Could not sign out.",
+    validation: "Could not sign out.",
+    authRequired: "Could not sign out.",
+  },
+  me: {
+    unavailable: "Could not restore session.",
+    invalidData: "The API returned invalid session data.",
+    validation: "Please sign in again.",
+    authRequired: "Please sign in again.",
   },
 };
 
@@ -148,18 +189,27 @@ function requestJson(
     void (async () => {
       try {
         const request: RequestInit = { method, signal: controller.signal };
+        const headers: Record<string, string> = {};
         if (body !== undefined) {
-          request.headers = { "Content-Type": "application/json" };
+          headers["Content-Type"] = "application/json";
           request.body = JSON.stringify(body);
+        }
+        if (options.token !== undefined) {
+          headers["Authorization"] = `Bearer ${options.token}`;
+        }
+        if (Object.keys(headers).length > 0) {
+          request.headers = headers;
         }
         const result = await (options.fetchImpl ?? fetch)(url, request);
         if (settled) return;
         if (result.status !== expectedStatus) {
           const error = result.status === 422
-            ? new TodoApiError("validation", "Check the todo title and try again.")
-            : (operation === "update" || operation === "delete") && result.status === 404
-              ? new TodoApiError("not-found", "That todo no longer exists. Refresh the list.")
-              : new TodoApiError("unavailable", operationMessages[operation].unavailable);
+            ? new TodoApiError("validation", operationMessages[operation].validation)
+            : result.status === 401
+              ? new TodoApiError("auth-required", operationMessages[operation].authRequired)
+              : (operation === "update" || operation === "delete") && result.status === 404
+                ? new TodoApiError("not-found", "That todo no longer exists. Refresh the list.")
+                : new TodoApiError("unavailable", operationMessages[operation].unavailable);
           finish(error);
           controller.abort();
           return;
@@ -226,4 +276,82 @@ export async function setTodoTitle(
 
 export async function deleteTodo(id: string, options: TodoRequestOptions = {}): Promise<void> {
   await requestJson(`/todos/${id}`, "DELETE", 204, "delete", options);
+}
+
+export type AuthUser = {
+  id: string;
+  username: string;
+};
+
+export type Session = {
+  token: string;
+  expires_at: string;
+  user: AuthUser;
+};
+
+const usernamePattern = /^[A-Za-z0-9_-]{3,32}$/;
+
+function isAuthUser(value: unknown): value is AuthUser {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  const keys = Reflect.ownKeys(record);
+  return (
+    keys.length === 2 &&
+    keys.every((key) => typeof key === "string") &&
+    typeof record.id === "string" &&
+    uuidPattern.test(record.id) &&
+    typeof record.username === "string" &&
+    usernamePattern.test(record.username)
+  );
+}
+
+function isSession(value: unknown): value is Session {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  const keys = Reflect.ownKeys(record);
+  return (
+    keys.length === 3 &&
+    keys.every((key) => typeof key === "string") &&
+    typeof record.token === "string" &&
+    record.token.length > 0 &&
+    typeof record.expires_at === "string" &&
+    record.expires_at.length > 0 &&
+    isAuthUser(record.user)
+  );
+}
+
+export async function signup(
+  username: string,
+  password: string,
+  options: TodoRequestOptions = {},
+): Promise<AuthUser> {
+  const body = await requestJson("/auth/signup", "POST", 201, "signup", options, {
+    username,
+    password,
+  });
+  if (!isAuthUser(body)) throw new TodoApiError("invalid-data", operationMessages.signup.invalidData);
+  return body;
+}
+
+export async function login(
+  username: string,
+  password: string,
+  options: TodoRequestOptions = {},
+): Promise<Session> {
+  const body = await requestJson("/auth/login", "POST", 200, "login", options, {
+    username,
+    password,
+  });
+  if (!isSession(body)) throw new TodoApiError("invalid-data", operationMessages.login.invalidData);
+  return body;
+}
+
+export async function logout(options: TodoRequestOptions = {}): Promise<void> {
+  await requestJson("/auth/logout", "DELETE", 204, "logout", options);
+}
+
+export async function fetchMe(options: TodoRequestOptions = {}): Promise<AuthUser> {
+  const body = await requestJson("/auth/me", "GET", 200, "me", options);
+  if (!isAuthUser(body)) throw new TodoApiError("invalid-data", operationMessages.me.invalidData);
+  return body;
 }

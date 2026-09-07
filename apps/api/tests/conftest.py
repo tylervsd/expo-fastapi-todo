@@ -20,7 +20,7 @@ from app.database import (
 DEFAULT_TEST_DATABASE_URL = (
     "postgresql+psycopg://todo_test:todo_test@127.0.0.1:5433/todo_test"
 )
-REVISION = "2026090601"
+REVISION = "2026090701"
 
 
 def get_test_database_url() -> URL:
@@ -32,7 +32,9 @@ def get_test_database_url() -> URL:
         or url.database != "todo_test"
         or url == development_url
     ):
-        raise RuntimeError("TEST_DATABASE_URL must target the isolated todo_test database")
+        raise RuntimeError(
+            "TEST_DATABASE_URL must target the isolated todo_test database"
+        )
     return url
 
 
@@ -43,7 +45,10 @@ def database_engine() -> Iterator[Engine]:
     config = Config(Path(__file__).parents[1] / "alembic.ini")
     try:
         with engine.begin() as connection:
-            assert connection.execute(text("SELECT current_database()")).scalar_one() == "todo_test"
+            assert (
+                connection.execute(text("SELECT current_database()")).scalar_one()
+                == "todo_test"
+            )
             config.attributes["connection"] = connection
             command.upgrade(config, "head")
         yield engine
@@ -61,7 +66,9 @@ def database_session(
     database_engine: Engine, session_factory: sessionmaker[Session]
 ) -> Iterator[Session]:
     with database_engine.begin() as connection:
-        connection.execute(text("TRUNCATE todos RESTART IDENTITY"))
+        connection.execute(
+            text("TRUNCATE users, sessions, todos RESTART IDENTITY CASCADE")
+        )
     with session_factory() as session:
         yield session
         session.rollback()

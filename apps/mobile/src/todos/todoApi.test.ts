@@ -1,10 +1,14 @@
 import {
   createTodo,
   deleteTodo,
+  fetchMe,
   listTodos,
+  login,
+  logout,
   normalizeTodoTitle,
   setTodoCompleted,
   setTodoTitle,
+  signup,
   TodoApiError,
 } from "./todoApi";
 
@@ -331,5 +335,103 @@ describe("CRUD extensions", () => {
     await expect(pending).rejects.toEqual(
       new TodoApiError("unavailable", "Could not delete todo."),
     );
+  });
+});
+
+describe("auth transport", () => {
+  const user = { id: "6fc33b84-16a8-4d8e-ae94-fc50bb457d72", username: "alice" };
+  const session = { token: "tok-1", expires_at: "2026-10-07T00:00:00+00:00", user };
+
+  it("signs up with an exact POST JSON request", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(201, user));
+
+    await expect(signup("alice", "long-enough-password", { apiUrl, fetchImpl })).resolves.toEqual(user);
+    expect(fetchImpl).toHaveBeenCalledWith(`${apiUrl}/auth/signup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "alice", password: "long-enough-password" }),
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it("maps duplicate signup to the account validation copy", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(422, { detail: "Username is taken." }));
+
+    await expect(signup("alice", "long-enough-password", { apiUrl, fetchImpl })).rejects.toEqual(
+      new TodoApiError("validation", "Check the username and password and try again."),
+    );
+  });
+
+  it("logs in with an exact POST JSON request", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(200, session));
+
+    await expect(login("alice", "long-enough-password", { apiUrl, fetchImpl })).resolves.toEqual(session);
+    expect(fetchImpl).toHaveBeenCalledWith(`${apiUrl}/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "alice", password: "long-enough-password" }),
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it("maps bad credentials to auth-required with the server-safe copy", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(401, { detail: "Invalid username or password." }));
+
+    await expect(login("alice", "wrong-password-ok", { apiUrl, fetchImpl })).rejects.toEqual(
+      new TodoApiError("auth-required", "Invalid username or password."),
+    );
+  });
+
+  it("logs out with the bearer header, no body, and no JSON parse", async () => {
+    const json = jest.fn();
+    const fetchImpl = jest.fn().mockResolvedValue({ status: 204, json } as unknown as Response);
+
+    await expect(logout({ apiUrl, token: "tok-1", fetchImpl })).resolves.toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledWith(`${apiUrl}/auth/logout`, {
+      method: "DELETE",
+      headers: { Authorization: "Bearer tok-1" },
+      signal: expect.any(AbortSignal),
+    });
+    expect(json).not.toHaveBeenCalled();
+  });
+
+  it("fetches the session user with the bearer header", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(200, user));
+
+    await expect(fetchMe({ apiUrl, token: "tok-1", fetchImpl })).resolves.toEqual(user);
+    expect(fetchImpl).toHaveBeenCalledWith(`${apiUrl}/auth/me`, {
+      method: "GET",
+      headers: { Authorization: "Bearer tok-1" },
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it("maps a revoked session to auth-required restore copy", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(401, { detail: "Not authenticated." }));
+
+    await expect(fetchMe({ apiUrl, token: "tok-1", fetchImpl })).rejects.toEqual(
+      new TodoApiError("auth-required", "Please sign in again."),
+    );
+  });
+
+  it("maps a todo 401 with a bad token to auth-required", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(401, { detail: "Not authenticated." }));
+
+    await expect(listTodos({ apiUrl, token: "bogus", fetchImpl })).rejects.toEqual(
+      new TodoApiError("auth-required", "Please sign in again."),
+    );
+    expect(fetchImpl).toHaveBeenCalledWith(`${apiUrl}/todos`, {
+      method: "GET",
+      headers: { Authorization: "Bearer bogus" },
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it("maps malformed session JSON to invalid-data without leaking", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(200, { ...session, token: "" }));
+
+    const pending = login("alice", "long-enough-password", { apiUrl, fetchImpl });
+    await expect(pending).rejects.toMatchObject({ kind: "invalid-data" });
+    await expect(pending).rejects.not.toMatchObject({ message: expect.stringContaining("tok-1") });
   });
 });

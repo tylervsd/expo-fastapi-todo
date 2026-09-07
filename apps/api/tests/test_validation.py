@@ -1,7 +1,8 @@
 import pytest
 from pydantic import ValidationError
 
-from app.main import TodoCreate
+from app.main import TodoCreate, UserLogin, UserSignup
+from app.passwords import hash_password, verify_password
 
 
 def test_todo_create_canonicalizes_ecmascript_whitespace() -> None:
@@ -75,3 +76,64 @@ def test_todo_update_accepts_completed_only() -> None:
 def test_todo_update_rejects_non_exact_single_field(payload: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
         TodoUpdate.model_validate(payload)
+
+
+def test_password_hash_verifies_and_differs_per_user() -> None:
+    first = hash_password("correct horse battery staple")
+    second = hash_password("correct horse battery staple")
+
+    assert first != second
+    assert verify_password("correct horse battery staple", first) is True
+    assert verify_password("correct horse battery staple", second) is True
+
+
+def test_password_verify_rejects_wrong_password() -> None:
+    assert verify_password("wrong", hash_password("right")) is False
+
+
+@pytest.mark.parametrize(
+    "username",
+    ["ab", "x" * 33, "has space", "semi;colon", "unicodé", ""],
+)
+def test_user_signup_rejects_bad_usernames(username: str) -> None:
+    with pytest.raises(ValidationError):
+        UserSignup(username=username, password="long-enough-password")
+
+
+@pytest.mark.parametrize("username", ["abc", "alice_1", "BOB-2", "x" * 32])
+def test_user_signup_accepts_good_usernames(username: str) -> None:
+    assert (
+        UserSignup(username=username, password="long-enough-password").username
+        == username
+    )
+
+
+@pytest.mark.parametrize("password", ["short", "x" * 129, "contains\x00nul"])
+def test_user_signup_rejects_bad_passwords(password: str) -> None:
+    with pytest.raises(ValidationError):
+        UserSignup(username="alice", password=password)
+
+
+def test_user_signup_does_not_trim_password() -> None:
+    assert (
+        UserSignup(username="alice", password="  padded-password  ").password
+        == "  padded-password  "
+    )
+
+
+@pytest.mark.parametrize("model", [UserSignup, UserLogin])
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"username": "alice"},
+        {"password": "x" * 12},
+        {"username": "alice", "password": "x" * 12, "extra": 1},
+        {"username": 1, "password": "x" * 12},
+    ],
+)
+def test_auth_models_reject_malformed_bodies(
+    model: object, payload: dict[str, object]
+) -> None:
+    with pytest.raises(ValidationError):
+        model.model_validate(payload)
