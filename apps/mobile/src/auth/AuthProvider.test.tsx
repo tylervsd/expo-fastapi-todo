@@ -1,8 +1,8 @@
 import * as mockReact from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import { QueryClientProvider, timeoutManager, type QueryClient } from "@tanstack/react-query";
 import { createAppQueryClient } from "../../App";
-import { TodoApiError, type AuthUser } from "../todos/todoApi";
+import { TodoApiError, type AuthUser, type Todo } from "../todos/todoApi";
 import { AuthProvider } from "./AuthProvider";
 import { createMemoryTokenStorage, type TokenStorage } from "./tokenStorage";
 import type { TodoTransport } from "./authenticatedApi";
@@ -77,8 +77,13 @@ const makeTransport = (): TodoTransport & {
   listTodos: jest.fn(async () => []),
   createTodo: jest.fn(async () => ({ id: "1", title: "Hi", completed: false })),
   setTodoTitle: jest.fn(async () => ({ id: "1", title: "Hi", completed: false })),
-  setTodoCompleted: jest.fn(async () => ({ id: "1", title: "Hi", completed: false })),
+  setTodoCompleted: jest.fn(
+    async () => ({ id: "1", title: "Hi", completed: false })
+  ),
   deleteTodo: jest.fn(async () => undefined),
+  startTodoWorkflow: jest.fn(),
+  getTodoWorkflow: jest.fn(),
+  advanceTodoWorkflow: jest.fn(),
 });
 
 const renderProvider = async (options?: {
@@ -235,4 +240,227 @@ it("completes sign-in from the form and stores the session", async () => {
   await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
   expect(await storage.get()).toBe("tok-1");
   expect(authApi.login).toHaveBeenCalledWith("alice", "long-enough-password");
+});
+
+describe("session identity", () => {
+  const sessionA = {
+    token: "tok-A",
+    expires_at: "2026-10-07T00:00:00+00:00",
+    user: { id: "6fc33b84-16a8-4d8e-ae94-fc50bb457d72", username: "alice" },
+  };
+  const sessionB = {
+    token: "tok-B",
+    expires_at: "2026-10-07T00:00:00+00:00",
+    user: { id: "9ab4d5e6-16a8-4d8e-ae94-fc50bb457d72", username: "bob" },
+  };
+  const deferred = <T,>() => {
+    let resolve!: (value: T) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((onResolve, onReject) => {
+      resolve = onResolve;
+      reject = onReject;
+    });
+    return { promise, resolve, reject };
+  };
+
+  const signInThroughForm = async (username: string, password: string) => {
+    await fireEvent.changeText(screen.getByLabelText("Username"), username);
+    await fireEvent.changeText(screen.getByLabelText("Password"), password);
+    await fireEvent.press(screen.getByRole("button", { name: "Sign in" }));
+  };
+
+  it("ignores a stale-token 401 after signing in as someone else", async () => {
+    const authApi = makeAuthApi();
+    authApi.login.mockResolvedValueOnce(sessionA).mockResolvedValueOnce(sessionB);
+    const storage = createMemoryTokenStorage();
+    const transport = makeTransport();
+    const pendingList = deferred<Todo[]>();
+    transport.listTodos
+      .mockReturnValueOnce(pendingList.promise)
+      .mockResolvedValue([]);
+    await renderProvider({ authApi, storage, transport });
+
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    await signInThroughForm("alice", "long-enough-password");
+    await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
+
+    await fireEvent.press(screen.getByRole("button", { name: "Sign out" }));
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    await signInThroughForm("bob", "long-enough-password");
+    await waitFor(() => expect(screen.getByText("Signed in as bob")).toBeTruthy());
+
+    await act(async () => {
+      pendingList.reject(new TodoApiError("auth-required", "Please sign in again."));
+    });
+
+    expect(screen.getByText("Signed in as bob")).toBeTruthy();
+    expect(await storage.get()).toBe("tok-B");
+    expect(authApi.logout).toHaveBeenCalledTimes(1);
+    expect(authApi.logout).toHaveBeenCalledWith({ token: "tok-A" });
+  });
+
+  it("signs out on a current-token todo 401", async () => {
+    const authApi = makeAuthApi();
+    authApi.login.mockResolvedValueOnce(sessionA);
+    const storage = createMemoryTokenStorage();
+    await storage.set("tok-A");
+    const transport = makeTransport();
+    transport.listTodos.mockResolvedValue([
+      { id: "81b3c4d5-16a8-4d8e-ae94-fc50bb457d72", title: "Row", completed: false },
+    ]);
+    const pendingUpdate = deferred<Todo>();
+    transport.setTodoCompleted.mockReturnValueOnce(pendingUpdate.promise);
+    await renderProvider({ authApi, storage, transport });
+
+    await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByRole("checkbox", { name: "Row" })).toBeTruthy()
+    );
+    await fireEvent.press(screen.getByRole("checkbox", { name: "Row" }));
+    await act(async () => {
+      pendingUpdate.reject(new TodoApiError("auth-required", "Please sign in again."));
+    });
+
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    expect(await storage.get()).toBeNull();
+    expect(authApi.logout).toHaveBeenCalledWith({ token: "tok-A" });
+  });
+
+  it("withholds sign-in until a deferred sign-out cleanup finishes", async () => {
+    const authApi = makeAuthApi();
+    authApi.login.mockResolvedValueOnce(sessionA);
+    const storage = createMemoryTokenStorage();
+    await storage.set("tok-A");
+    const pendingLogout = deferred<void>();
+    authApi.logout.mockReturnValueOnce(pendingLogout.promise as Promise<undefined>);
+    await renderProvider({ authApi, storage });
+
+    await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
+    await fireEvent.press(screen.getByRole("button", { name: "Sign out" }));
+
+    expect(screen.queryByLabelText("Username")).toBeNull();
+    expect(await storage.get()).toBe("tok-A");
+    await act(async () => {
+      pendingLogout.resolve(undefined);
+    });
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    expect(await storage.get()).toBeNull();
+  });
+});
+
+describe("workflow shell integration", () => {
+  const WORKFLOW_ID = "6fc33b84-16a8-4d8e-ae94-fc50bb457d72";
+  const deferred = <T,>() => {
+    let resolve!: (value: T) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((onResolve, onReject) => {
+      resolve = onResolve;
+      reject = onReject;
+    });
+    return { promise, resolve, reject };
+  };
+  const assessWorkflow = {
+    workflow_id: WORKFLOW_ID,
+    state: "ASSESS_TASK",
+    title: "Plan birthday party",
+    context: { involves_multiple_steps: null, proposed_todo_titles: [] },
+    result: null,
+  };
+  const sessionA = {
+    token: "tok-A",
+    expires_at: "2026-10-07T00:00:00+00:00",
+    user: { id: "6fc33b84-16a8-4d8e-ae94-fc50bb457d72", username: "alice" },
+  };
+  const sessionB = {
+    token: "tok-B",
+    expires_at: "2026-10-07T00:00:00+00:00",
+    user: { id: "9ab4d5e6-16a8-4d8e-ae94-fc50bb457d72", username: "bob" },
+  };
+
+  const signInThroughForm = async (username: string, password: string) => {
+    await fireEvent.changeText(screen.getByLabelText("Username"), username);
+    await fireEvent.changeText(screen.getByLabelText("Password"), password);
+    await fireEvent.press(screen.getByRole("button", { name: "Sign in" }));
+  };
+
+  it("keys workflows by public user ID and sends the current token", async () => {
+    const authApi = makeAuthApi();
+    authApi.login.mockResolvedValueOnce(sessionA);
+    const storage = createMemoryTokenStorage();
+    const transport = makeTransport();
+    transport.startTodoWorkflow.mockResolvedValueOnce(assessWorkflow);
+    const { client } = await renderProvider({ authApi, storage, transport });
+
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    await signInThroughForm("alice", "long-enough-password");
+    await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
+    await fireEvent.press(screen.getByRole("button", { name: "Help me plan a task" }));
+    await fireEvent.changeText(screen.getByLabelText("Task title"), "Plan birthday party");
+    await fireEvent.press(screen.getByRole("button", { name: "Start planning" }));
+
+    await waitFor(() =>
+      expect(transport.startTodoWorkflow).toHaveBeenCalledWith("Plan birthday party", {
+        token: "tok-A",
+      })
+    );
+    await waitFor(() =>
+      expect(
+        client.getQueryData(["todo-workflow", sessionA.user.id, WORKFLOW_ID])
+      ).toEqual(assessWorkflow)
+    );
+  });
+
+  it("ignores a stale workflow 401 after switching users", async () => {
+    const authApi = makeAuthApi();
+    authApi.login.mockResolvedValueOnce(sessionA).mockResolvedValueOnce(sessionB);
+    const storage = createMemoryTokenStorage();
+    const transport = makeTransport();
+    const pendingStart = deferred<typeof assessWorkflow>();
+    transport.startTodoWorkflow.mockReturnValueOnce(pendingStart.promise);
+    await renderProvider({ authApi, storage, transport });
+
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    await signInThroughForm("alice", "long-enough-password");
+    await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
+    await fireEvent.press(screen.getByRole("button", { name: "Help me plan a task" }));
+    await fireEvent.changeText(screen.getByLabelText("Task title"), "Plan birthday party");
+    await fireEvent.press(screen.getByRole("button", { name: "Start planning" }));
+
+    await fireEvent.press(screen.getByRole("button", { name: "Sign out" }));
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    await signInThroughForm("bob", "long-enough-password");
+    await waitFor(() => expect(screen.getByText("Signed in as bob")).toBeTruthy());
+
+    await act(async () => {
+      pendingStart.reject(new TodoApiError("auth-required", "Please sign in again."));
+    });
+
+    expect(screen.getByText("Signed in as bob")).toBeTruthy();
+    expect(await storage.get()).toBe("tok-B");
+    expect(authApi.logout).toHaveBeenCalledTimes(1);
+  });
+
+  it("signs out on a current-token workflow 401", async () => {
+    const authApi = makeAuthApi();
+    authApi.login.mockResolvedValueOnce(sessionA);
+    const storage = createMemoryTokenStorage();
+    const transport = makeTransport();
+    const pendingStart = deferred<typeof assessWorkflow>();
+    transport.startTodoWorkflow.mockReturnValueOnce(pendingStart.promise);
+    await renderProvider({ authApi, storage, transport });
+
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    await signInThroughForm("alice", "long-enough-password");
+    await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
+    await fireEvent.press(screen.getByRole("button", { name: "Help me plan a task" }));
+    await fireEvent.changeText(screen.getByLabelText("Task title"), "Plan birthday party");
+    await fireEvent.press(screen.getByRole("button", { name: "Start planning" }));
+    await act(async () => {
+      pendingStart.reject(new TodoApiError("auth-required", "Please sign in again."));
+    });
+
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    expect(await storage.get()).toBeNull();
+    expect(authApi.logout).toHaveBeenCalledWith({ token: "tok-A" });
+  });
 });

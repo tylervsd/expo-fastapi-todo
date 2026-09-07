@@ -9,7 +9,8 @@ export type TodoApiErrorKind =
   | "not-found"
   | "unavailable"
   | "invalid-data"
-  | "auth-required";
+  | "auth-required"
+  | "conflict";
 
 export class TodoApiError extends Error {
   constructor(
@@ -29,8 +30,26 @@ export type TodoRequestOptions = {
   token?: string;
 };
 
-type TodoOperation = "list" | "create" | "update" | "delete" | "signup" | "login" | "logout" | "me";
-type RequestBody = { title: string } | { completed: boolean } | { username: string; password: string };
+type TodoOperation =
+  | "list"
+  | "create"
+  | "update"
+  | "delete"
+  | "signup"
+  | "login"
+  | "logout"
+  | "me"
+  | "start-workflow"
+  | "get-workflow"
+  | "advance-workflow";
+type RequestBody =
+  | { title: string }
+  | { completed: boolean }
+  | { username: string; password: string }
+  | { action: "answer_multiple_steps"; answer: boolean }
+  | { action: "submit_tasks"; titles: string[] }
+  | { action: "confirm" }
+  | { action: "cancel" };
 
 const operationMessages: Record<
   TodoOperation,
@@ -82,6 +101,24 @@ const operationMessages: Record<
     unavailable: "Could not restore session.",
     invalidData: "The API returned invalid session data.",
     validation: "Please sign in again.",
+    authRequired: "Please sign in again.",
+  },
+  "start-workflow": {
+    unavailable: "Could not start planning.",
+    invalidData: "The API returned invalid plan data.",
+    validation: "Check the plan details and try again.",
+    authRequired: "Please sign in again.",
+  },
+  "get-workflow": {
+    unavailable: "Could not reload the plan.",
+    invalidData: "The API returned invalid plan data.",
+    validation: "Check the plan details and try again.",
+    authRequired: "Please sign in again.",
+  },
+  "advance-workflow": {
+    unavailable: "Could not update the plan.",
+    invalidData: "The API returned invalid plan data.",
+    validation: "Check the plan details and try again.",
     authRequired: "Please sign in again.",
   },
 };
@@ -207,9 +244,11 @@ function requestJson(
             ? new TodoApiError("validation", operationMessages[operation].validation)
             : result.status === 401
               ? new TodoApiError("auth-required", operationMessages[operation].authRequired)
-              : (operation === "update" || operation === "delete") && result.status === 404
-                ? new TodoApiError("not-found", "That todo no longer exists. Refresh the list.")
-                : new TodoApiError("unavailable", operationMessages[operation].unavailable);
+              : result.status === 409
+                ? new TodoApiError("conflict", "The plan changed. Reload to continue.")
+                : (operation === "update" || operation === "delete") && result.status === 404
+                  ? new TodoApiError("not-found", "That todo no longer exists. Refresh the list.")
+                  : new TodoApiError("unavailable", operationMessages[operation].unavailable);
           finish(error);
           controller.abort();
           return;
@@ -353,5 +392,163 @@ export async function logout(options: TodoRequestOptions = {}): Promise<void> {
 export async function fetchMe(options: TodoRequestOptions = {}): Promise<AuthUser> {
   const body = await requestJson("/auth/me", "GET", 200, "me", options);
   if (!isAuthUser(body)) throw new TodoApiError("invalid-data", operationMessages.me.invalidData);
+  return body;
+}
+
+export type TodoWorkflowState =
+  | "ASSESS_TASK"
+  | "COLLECT_TASKS"
+  | "REVIEW"
+  | "COMPLETED"
+  | "CANCELLED";
+
+export type TodoWorkflow = {
+  workflow_id: string;
+  state: TodoWorkflowState;
+  title: string;
+  context: {
+    involves_multiple_steps: boolean | null;
+    proposed_todo_titles: string[];
+  };
+  result: { created_todos: Todo[] } | null;
+};
+
+export type TodoWorkflowAction =
+  | { action: "answer_multiple_steps"; answer: boolean }
+  | { action: "submit_tasks"; titles: string[] }
+  | { action: "confirm" }
+  | { action: "cancel" };
+
+const workflowStates: readonly string[] = [
+  "ASSESS_TASK",
+  "COLLECT_TASKS",
+  "REVIEW",
+  "COMPLETED",
+  "CANCELLED",
+];
+
+function isTodoWorkflow(value: unknown): value is TodoWorkflow {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  const keys = Reflect.ownKeys(record);
+  if (
+    keys.length !== 5 ||
+    !keys.every((key) => typeof key === "string") ||
+    !keys.includes("workflow_id") ||
+    !keys.includes("state") ||
+    !keys.includes("title") ||
+    !keys.includes("context") ||
+    !keys.includes("result")
+  ) {
+    return false;
+  }
+  if (
+    typeof record.workflow_id !== "string" ||
+    !uuidPattern.test(record.workflow_id) ||
+    typeof record.state !== "string" ||
+    !workflowStates.includes(record.state) ||
+    typeof record.title !== "string" ||
+    normalizeTodoTitle(record.title) !== record.title
+  ) {
+    return false;
+  }
+  const context = record.context;
+  if (
+    typeof context !== "object" ||
+    context === null ||
+    Array.isArray(context) ||
+    Reflect.ownKeys(context).length !== 2 ||
+    !(
+      (context as Record<string, unknown>).involves_multiple_steps === null ||
+      typeof (context as Record<string, unknown>).involves_multiple_steps === "boolean"
+    )
+  ) {
+    return false;
+  }
+  const proposals = (context as Record<string, unknown>).proposed_todo_titles;
+  if (
+    !Array.isArray(proposals) ||
+    !proposals.every(
+      (title): title is string =>
+        typeof title === "string" && normalizeTodoTitle(title) === title
+    )
+  ) {
+    return false;
+  }
+  const result = record.result;
+  const terminal = record.state === "COMPLETED" || record.state === "CANCELLED";
+  if (!terminal) {
+    return result === null;
+  }
+  if (
+    typeof result !== "object" ||
+    result === null ||
+    Array.isArray(result) ||
+    Reflect.ownKeys(result).length !== 1
+  ) {
+    return false;
+  }
+  const created = (result as Record<string, unknown>).created_todos;
+  return Array.isArray(created) && created.every(isTodo);
+}
+
+function workflowActionBody(action: TodoWorkflowAction): RequestBody {
+  switch (action.action) {
+    case "answer_multiple_steps":
+      return { action: "answer_multiple_steps", answer: action.answer };
+    case "submit_tasks":
+      return { action: "submit_tasks", titles: action.titles };
+    case "confirm":
+      return { action: "confirm" };
+    case "cancel":
+      return { action: "cancel" };
+  }
+}
+
+export async function startTodoWorkflow(
+  title: string,
+  options: TodoRequestOptions = {}
+): Promise<TodoWorkflow> {
+  const body = await requestJson(
+    "/todo-workflows",
+    "POST",
+    201,
+    "start-workflow",
+    options,
+    { title }
+  );
+  if (!isTodoWorkflow(body)) {
+    throw new TodoApiError("invalid-data", operationMessages["start-workflow"].invalidData);
+  }
+  return body;
+}
+
+export async function getTodoWorkflow(
+  id: string,
+  options: TodoRequestOptions = {}
+): Promise<TodoWorkflow> {
+  const body = await requestJson(`/todo-workflows/${id}`, "GET", 200, "get-workflow", options);
+  if (!isTodoWorkflow(body)) {
+    throw new TodoApiError("invalid-data", operationMessages["get-workflow"].invalidData);
+  }
+  return body;
+}
+
+export async function advanceTodoWorkflow(
+  id: string,
+  action: TodoWorkflowAction,
+  options: TodoRequestOptions = {}
+): Promise<TodoWorkflow> {
+  const body = await requestJson(
+    `/todo-workflows/${id}/actions`,
+    "POST",
+    200,
+    "advance-workflow",
+    options,
+    workflowActionBody(action)
+  );
+  if (!isTodoWorkflow(body)) {
+    throw new TodoApiError("invalid-data", operationMessages["advance-workflow"].invalidData);
+  }
   return body;
 }

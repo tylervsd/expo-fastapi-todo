@@ -71,7 +71,13 @@ function mutationError(error: unknown): string {
   return UNKNOWN_MUTATION;
 }
 
-export function TodoScreen({ api = defaultApi }: { api?: TodoScreenApi } = {}): React.JSX.Element {
+export function TodoScreen({
+  api = defaultApi,
+  onPlanTask,
+}: {
+  api?: TodoScreenApi;
+  onPlanTask?: () => void;
+} = {}): React.JSX.Element {
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState("");
   const [filter, setFilter] = useState<TodoFilter>("all");
@@ -409,6 +415,16 @@ export function TodoScreen({ api = defaultApi }: { api?: TodoScreenApi } = {}): 
             onPress={refresh}
           >
             <Text style={styles.refreshButtonText}>Refresh</Text>
+          </Pressable>
+        )}
+        {onPlanTask !== undefined && (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Help me plan a task"
+            style={styles.refreshButton}
+            onPress={onPlanTask}
+          >
+            <Text style={styles.refreshButtonText}>Help me plan a task</Text>
           </Pressable>
         )}
         {hasData && visible.length === 0 && <Text style={styles.empty}>{empty}</Text>}

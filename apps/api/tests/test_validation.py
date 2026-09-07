@@ -3,6 +3,34 @@ from pydantic import ValidationError
 
 from app.main import TodoCreate, UserLogin, UserSignup
 from app.passwords import hash_password, verify_password
+from app.title_validation import canonicalize_title
+
+
+@pytest.mark.parametrize(
+    ("raw", "canonical"),
+    [
+        ("  Plan birthday party  ", "Plan birthday party"),
+        ("😀" * 120, "😀" * 120),
+    ],
+)
+def test_shared_title_validation(raw: str, canonical: str) -> None:
+    assert canonicalize_title(raw) == canonical
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "",
+        " \t\u2003",
+        "😀" * 121,
+        "Contains\x00Nul",
+        pytest.param("\ud800", id="high-surrogate"),
+        pytest.param("\udc00", id="low-surrogate"),
+    ],
+)
+def test_shared_title_validation_rejects(raw: str) -> None:
+    with pytest.raises(ValueError):
+        canonicalize_title(raw)
 
 
 def test_todo_create_canonicalizes_ecmascript_whitespace() -> None:

@@ -1,11 +1,16 @@
 import {
+  advanceTodoWorkflow,
   createTodo,
   deleteTodo,
+  getTodoWorkflow,
   listTodos,
   setTodoCompleted,
   setTodoTitle,
+  startTodoWorkflow,
   TodoApiError,
   type TodoRequestOptions,
+  type TodoWorkflow,
+  type TodoWorkflowAction,
 } from "../todos/todoApi";
 import type { TodoScreenApi } from "../TodoScreen";
 
@@ -15,6 +20,9 @@ export type TodoTransport = {
   setTodoTitle: typeof setTodoTitle;
   setTodoCompleted: typeof setTodoCompleted;
   deleteTodo: typeof deleteTodo;
+  startTodoWorkflow: typeof startTodoWorkflow;
+  getTodoWorkflow: typeof getTodoWorkflow;
+  advanceTodoWorkflow: typeof advanceTodoWorkflow;
 };
 
 export const defaultTransport: TodoTransport = {
@@ -23,33 +31,68 @@ export const defaultTransport: TodoTransport = {
   setTodoTitle,
   setTodoCompleted,
   deleteTodo,
+  startTodoWorkflow,
+  getTodoWorkflow,
+  advanceTodoWorkflow,
 };
+
+export type TodoWorkflowScreenApi = {
+  startWorkflow: (title: string) => Promise<TodoWorkflow>;
+  getWorkflow: (
+    id: string,
+    options: { signal: AbortSignal }
+  ) => Promise<TodoWorkflow>;
+  advanceWorkflow: (
+    id: string,
+    action: TodoWorkflowAction
+  ) => Promise<TodoWorkflow>;
+};
+
+export type AuthenticatedApi = TodoScreenApi & TodoWorkflowScreenApi;
 
 export function createAuthenticatedApi(
   getToken: () => string | null,
-  onAuthRequired: () => void,
+  onAuthRequired: (requestToken: string | null) => void,
   transport: TodoTransport = defaultTransport,
-): TodoScreenApi {
-  const opts = (): TodoRequestOptions => {
-    const token = getToken();
-    return token === null ? {} : { token };
-  };
-  const guard = async <T>(run: () => Promise<T>): Promise<T> => {
+): AuthenticatedApi {
+  const guard = async <T>(
+    run: (requestToken: string | null) => Promise<T>
+  ): Promise<T> => {
+    const requestToken = getToken();
     try {
-      return await run();
+      return await run(requestToken);
     } catch (error) {
       if (error instanceof TodoApiError && error.kind === "auth-required") {
-        onAuthRequired();
+        onAuthRequired(requestToken);
       }
       throw error;
     }
   };
+  const opts = (requestToken: string | null): TodoRequestOptions =>
+    requestToken === null ? {} : { token: requestToken };
   return {
-    list: (options) => guard(() => transport.listTodos({ ...options, ...opts() })),
-    create: (title) => guard(() => transport.createTodo(title, opts())),
-    rename: (id, title) => guard(() => transport.setTodoTitle(id, title, opts())),
+    list: (options) =>
+      guard((requestToken) =>
+        transport.listTodos({ ...options, ...opts(requestToken) })
+      ),
+    create: (title) =>
+      guard((requestToken) => transport.createTodo(title, opts(requestToken))),
+    rename: (id, title) =>
+      guard((requestToken) => transport.setTodoTitle(id, title, opts(requestToken))),
     setCompleted: (id, completed) =>
-      guard(() => transport.setTodoCompleted(id, completed, opts())),
-    remove: (id) => guard(() => transport.deleteTodo(id, opts())),
+      guard((requestToken) =>
+        transport.setTodoCompleted(id, completed, opts(requestToken))
+      ),
+    remove: (id) => guard((requestToken) => transport.deleteTodo(id, opts(requestToken))),
+    startWorkflow: (title) =>
+      guard((requestToken) => transport.startTodoWorkflow(title, opts(requestToken))),
+    getWorkflow: (id, options) =>
+      guard((requestToken) =>
+        transport.getTodoWorkflow(id, { ...options, ...opts(requestToken) })
+      ),
+    advanceWorkflow: (id, action) =>
+      guard((requestToken) =>
+        transport.advanceTodoWorkflow(id, action, opts(requestToken))
+      ),
   };
 }

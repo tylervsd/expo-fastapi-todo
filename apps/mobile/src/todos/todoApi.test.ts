@@ -1,7 +1,9 @@
 import {
+  advanceTodoWorkflow,
   createTodo,
   deleteTodo,
   fetchMe,
+  getTodoWorkflow,
   listTodos,
   login,
   logout,
@@ -9,6 +11,7 @@ import {
   setTodoCompleted,
   setTodoTitle,
   signup,
+  startTodoWorkflow,
   TodoApiError,
 } from "./todoApi";
 
@@ -433,5 +436,165 @@ describe("auth transport", () => {
     const pending = login("alice", "long-enough-password", { apiUrl, fetchImpl });
     await expect(pending).rejects.toMatchObject({ kind: "invalid-data" });
     await expect(pending).rejects.not.toMatchObject({ message: expect.stringContaining("tok-1") });
+  });
+});
+
+describe("todo workflow transport", () => {
+  const workflowId = "6fc33b84-16a8-4d8e-ae94-fc50bb457d72";
+  const assessWorkflow = {
+    workflow_id: workflowId,
+    state: "ASSESS_TASK",
+    title: "Plan birthday party",
+    context: { involves_multiple_steps: null, proposed_todo_titles: [] },
+    result: null,
+  };
+  const completedWorkflow = {
+    workflow_id: workflowId,
+    state: "COMPLETED",
+    title: "Plan birthday party",
+    context: {
+      involves_multiple_steps: false,
+      proposed_todo_titles: ["Plan birthday party"],
+    },
+    result: {
+      created_todos: [
+        { id: "81b3c4d5-16a8-4d8e-ae94-fc50bb457d72", title: "Plan birthday party", completed: false },
+      ],
+    },
+  };
+
+  it("starts a workflow with an exact POST request", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(201, assessWorkflow));
+
+    await expect(
+      startTodoWorkflow("Plan birthday party", { apiUrl, token: "tok", fetchImpl })
+    ).resolves.toEqual(assessWorkflow);
+    expect(fetchImpl).toHaveBeenCalledWith(`${apiUrl}/todo-workflows`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer tok" },
+      body: JSON.stringify({ title: "Plan birthday party" }),
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it("fetches a workflow snapshot with an exact GET request", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(200, assessWorkflow));
+
+    await expect(
+      getTodoWorkflow(workflowId, { apiUrl, token: "tok", fetchImpl })
+    ).resolves.toEqual(assessWorkflow);
+    expect(fetchImpl).toHaveBeenCalledWith(`${apiUrl}/todo-workflows/${workflowId}`, {
+      method: "GET",
+      headers: { Authorization: "Bearer tok" },
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it("advances with exact action bodies", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(200, completedWorkflow));
+
+    await expect(
+      advanceTodoWorkflow(workflowId, { action: "confirm" }, { apiUrl, token: "tok", fetchImpl })
+    ).resolves.toEqual(completedWorkflow);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      `${apiUrl}/todo-workflows/${workflowId}/actions`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer tok" },
+        body: JSON.stringify({ action: "confirm" }),
+        signal: expect.any(AbortSignal),
+      }
+    );
+  });
+
+  it("relays caller cancellation on workflow GET", async () => {
+    const controller = new AbortController();
+    const fetchImpl = jest.fn(() => new Promise<Response>(() => undefined));
+    const pending = getTodoWorkflow(workflowId, {
+      apiUrl,
+      token: "tok",
+      signal: controller.signal,
+      fetchImpl,
+    });
+
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it.each([
+    ["extra key", { ...assessWorkflow, extra: true }],
+    ["missing key", { workflow_id: workflowId, state: "ASSESS_TASK" }],
+    ["unknown state", { ...assessWorkflow, state: "DREAMING" }],
+    ["malformed UUID", { ...assessWorkflow, workflow_id: "not-a-uuid" }],
+    ["noncanonical title", { ...assessWorkflow, title: "  Padded  " }],
+    ["bad context", { ...assessWorkflow, context: { involves_multiple_steps: "maybe" } }],
+    [
+      "non-null active result",
+      { ...assessWorkflow, result: { created_todos: [] } },
+    ],
+    ["null completed result", { ...completedWorkflow, result: null }],
+    [
+      "malformed created todo",
+      {
+        ...completedWorkflow,
+        result: { created_todos: [{ ...todo, id: "nope" }] },
+      },
+    ],
+  ])("rejects %s workflow bodies as invalid-data", async (_case, body) => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(200, body));
+
+    const pending = getTodoWorkflow(workflowId, { apiUrl, token: "tok", fetchImpl });
+    await expect(pending).rejects.toMatchObject({ kind: "invalid-data" });
+    await expect(pending).rejects.not.toMatchObject({
+      message: expect.stringContaining("birthday"),
+    });
+  });
+
+  it("maps workflow 401 to auth-required", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(401, { detail: "x" }));
+
+    await expect(
+      getTodoWorkflow(workflowId, { apiUrl, token: "tok", fetchImpl })
+    ).rejects.toEqual(new TodoApiError("auth-required", "Please sign in again."));
+  });
+
+  it("maps workflow 409 to conflict without leaking", async () => {
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValue(response(409, { detail: "Action is not valid here." }));
+
+    const pending = advanceTodoWorkflow(
+      workflowId,
+      { action: "confirm" },
+      { apiUrl, token: "tok", fetchImpl }
+    );
+    await expect(pending).rejects.toMatchObject({ kind: "conflict" });
+    await expect(pending).rejects.not.toMatchObject({
+      message: expect.stringContaining("not valid"),
+    });
+  });
+
+  it("maps workflow 422 to the safe validation copy", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(422, { detail: "x" }));
+
+    await expect(
+      startTodoWorkflow("", { apiUrl, token: "tok", fetchImpl })
+    ).rejects.toEqual(
+      new TodoApiError("validation", "Check the plan details and try again.")
+    );
+  });
+
+  it("maps workflow transport failures to unavailable", async () => {
+    const fetchImpl = jest.fn().mockRejectedValue(new Error("secret offline"));
+
+    const pending = advanceTodoWorkflow(
+      workflowId,
+      { action: "cancel" },
+      { apiUrl, token: "tok", fetchImpl }
+    );
+    await expect(pending).rejects.toMatchObject({ kind: "unavailable" });
+    await expect(pending).rejects.not.toMatchObject({
+      message: expect.stringContaining("secret"),
+    });
   });
 });

@@ -5,6 +5,9 @@ from sqlalchemy import engine_from_config, pool
 from alembic import context
 from app.database import get_database_url
 from app.todo_repository import TodoRow
+from app.workflow_repository import (
+    WorkflowRow,  # noqa: F401  # registers tables on shared metadata
+)
 
 config = context.config
 

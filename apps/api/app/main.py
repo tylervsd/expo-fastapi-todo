@@ -2,7 +2,7 @@ import re
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -14,6 +14,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Field,
     StrictBool,
     StrictStr,
     field_validator,
@@ -42,33 +43,30 @@ from app.database import (
     get_database_url,
 )
 from app.passwords import DUMMY_PASSWORD_HASH, hash_password, verify_password
+from app.title_validation import canonicalize_title
 from app.todo_repository import TodoRow, delete_todo, set_completed, set_title
 from app.todo_repository import create_todo as create_todo_row
 from app.todo_repository import list_todos as list_todo_rows
+from app.workflow_domain import (
+    AnswerMultipleSteps,
+    Cancel,
+    Confirm,
+    InvalidWorkflowAction,
+    SubmitTasks,
+    TerminalWorkflow,
+    WorkflowCommand,
+    WorkflowSnapshot,
+    create_submit_tasks,
+)
+from app.workflow_service import advance_workflow, get_workflow, start_workflow
 
 EXPO_WEB_ORIGIN = "http://localhost:8081"
-ECMASCRIPT_TRIM_CHARS = (
-    "\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680"
-    "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
-    "\u2028\u2029\u202f\u205f\u3000\ufeff"
-)
 
 
 class Todo(BaseModel):
     id: UUID
     title: str
     completed: bool
-
-
-def canonicalize_title(title: str) -> str:
-    title = title.strip(ECMASCRIPT_TRIM_CHARS)
-    if "\x00" in title:
-        raise ValueError("title must not contain NUL")
-    if any(0xD800 <= ord(character) <= 0xDFFF for character in title):
-        raise ValueError("title must not contain an unpaired surrogate")
-    if not 1 <= len(title) <= 120:
-        raise ValueError("title must contain 1 to 120 code points")
-    return title
 
 
 class TodoCreate(BaseModel):
@@ -141,6 +139,71 @@ class SessionResponse(BaseModel):
     token: str
     expires_at: datetime
     user: UserPublic
+
+
+class TodoWorkflowStart(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: StrictStr
+
+    @field_validator("title")
+    @classmethod
+    def canonical_title(cls, title: str) -> str:
+        return canonicalize_title(title)
+
+
+class AnswerMultipleStepsAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["answer_multiple_steps"]
+    answer: StrictBool
+
+
+class SubmitTasksAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["submit_tasks"]
+    titles: list[StrictStr]
+
+    @field_validator("titles")
+    @classmethod
+    def canonical_titles(cls, titles: list[str]) -> list[str]:
+        return list(create_submit_tasks(titles).titles)
+
+
+class ConfirmAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["confirm"]
+
+
+class CancelAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["cancel"]
+
+
+TodoWorkflowAction = Annotated[
+    AnswerMultipleStepsAction | SubmitTasksAction | ConfirmAction | CancelAction,
+    Field(discriminator="action"),
+]
+
+
+class TodoWorkflowContext(BaseModel):
+    involves_multiple_steps: StrictBool | None
+    proposed_todo_titles: list[str]
+
+
+class TodoWorkflowResult(BaseModel):
+    created_todos: list[Todo]
+
+
+class TodoWorkflowResponse(BaseModel):
+    workflow_id: UUID
+    state: str
+    title: str
+    context: TodoWorkflowContext
+    result: TodoWorkflowResult | None
 
 
 class TodoUpdate(BaseModel):
@@ -318,6 +381,113 @@ def create_app(session_factory: sessionmaker[Session] | None = None) -> FastAPI:
     @app.get("/auth/me", response_model=UserPublic)
     def read_me(user: Annotated[UserRow, Depends(get_current_user)]) -> UserPublic:
         return as_user(user)
+
+    def as_workflow_response(snapshot: WorkflowSnapshot) -> TodoWorkflowResponse:
+        return TodoWorkflowResponse(
+            workflow_id=snapshot.id,
+            state=snapshot.state.value,
+            title=snapshot.title,
+            context=TodoWorkflowContext(
+                involves_multiple_steps=snapshot.involves_multiple_steps,
+                proposed_todo_titles=list(snapshot.proposed_todo_titles),
+            ),
+            result=(
+                TodoWorkflowResult(
+                    created_todos=[
+                        Todo(
+                            id=item.id,
+                            title=item.title,
+                            completed=item.completed,
+                        )
+                        for item in snapshot.created_todos
+                    ]
+                )
+                if snapshot.created_todos is not None
+                else None
+            ),
+        )
+
+    def to_domain_command(
+        payload: AnswerMultipleStepsAction
+        | SubmitTasksAction
+        | ConfirmAction
+        | CancelAction,
+    ) -> WorkflowCommand:
+        if isinstance(payload, AnswerMultipleStepsAction):
+            return AnswerMultipleSteps(answer=payload.answer)
+        if isinstance(payload, SubmitTasksAction):
+            return SubmitTasks(titles=tuple(payload.titles))
+        if isinstance(payload, ConfirmAction):
+            return Confirm()
+        return Cancel()
+
+    def workflow_not_found() -> HTTPException:
+        return HTTPException(status_code=404, detail="Todo workflow not found.")
+
+    @app.post(
+        "/todo-workflows", response_model=TodoWorkflowResponse, status_code=201
+    )
+    def start_todo_workflow(
+        payload: TodoWorkflowStart,
+        user: Annotated[UserRow, Depends(get_current_user)],
+        session: Annotated[Session, Depends(get_session)],
+    ) -> TodoWorkflowResponse:
+        try:
+            return as_workflow_response(
+                start_workflow(session, user.id, payload.title)
+            )
+        except (OperationalError, SQLAlchemyTimeoutError) as exc:
+            raise HTTPException(
+                status_code=503, detail="Database unavailable."
+            ) from exc
+
+    @app.get(
+        "/todo-workflows/{workflow_id}", response_model=TodoWorkflowResponse
+    )
+    def get_todo_workflow(
+        workflow_id: UUID,
+        user: Annotated[UserRow, Depends(get_current_user)],
+        session: Annotated[Session, Depends(get_session)],
+    ) -> TodoWorkflowResponse:
+        try:
+            snapshot = get_workflow(session, user.id, workflow_id)
+        except (OperationalError, SQLAlchemyTimeoutError) as exc:
+            raise HTTPException(
+                status_code=503, detail="Database unavailable."
+            ) from exc
+        if snapshot is None:
+            raise workflow_not_found()
+        return as_workflow_response(snapshot)
+
+    @app.post(
+        "/todo-workflows/{workflow_id}/actions", response_model=TodoWorkflowResponse
+    )
+    def advance_todo_workflow(
+        workflow_id: UUID,
+        payload: TodoWorkflowAction,
+        user: Annotated[UserRow, Depends(get_current_user)],
+        session: Annotated[Session, Depends(get_session)],
+    ) -> TodoWorkflowResponse:
+        try:
+            snapshot = advance_workflow(
+                session, user.id, workflow_id, to_domain_command(payload)
+            )
+        except TerminalWorkflow as exc:
+            raise HTTPException(
+                status_code=409, detail="Todo workflow is already terminal."
+            ) from exc
+        except InvalidWorkflowAction as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="Action is not valid for the current workflow state.",
+            ) from exc
+        except (OperationalError, SQLAlchemyTimeoutError) as exc:
+            raise HTTPException(
+                status_code=503, detail="Database unavailable."
+            ) from exc
+        if snapshot is None:
+            raise workflow_not_found()
+        return as_workflow_response(snapshot)
 
     @app.get("/health")
     async def health() -> dict[str, str]:

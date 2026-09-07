@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useQueryClient } from "@tanstack/react-query";
-import { TodoScreen } from "../TodoScreen";
+import { TodoExperience } from "../TodoExperience";
 import {
   fetchMe,
   login,
@@ -27,6 +27,8 @@ const defaultAuthApi: ProviderAuthApi = { signup, login, logout, fetchMe };
 
 type Status = "unknown" | "signed-out" | "signed-in";
 
+type SessionIdentity = { token: string; userId: string };
+
 export function AuthProvider({
   authApi = defaultAuthApi,
   storage = tokenStorage,
@@ -39,8 +41,8 @@ export function AuthProvider({
   const queryClient = useQueryClient();
   const [status, setStatus] = useState<Status>("unknown");
   const [user, setUser] = useState<AuthUser | null>(null);
-  const [token, setToken] = useState<string | null>(null);
   const [signingOut, setSigningOut] = useState(false);
+  const liveRef = useRef<SessionIdentity | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -60,7 +62,7 @@ export function AuthProvider({
       try {
         const restored = await authApi.fetchMe({ token: stored });
         if (!mounted) return;
-        setToken(stored);
+        liveRef.current = { token: stored, userId: restored.id };
         setUser(restored);
         setStatus("signed-in");
       } catch (error) {
@@ -80,41 +82,60 @@ export function AuthProvider({
     };
   }, [authApi, storage]);
 
-  const signOut = useCallback(() => {
-    if (signingOut || token === null) return;
-    setSigningOut(true);
-    const current = token;
-    void (async () => {
+  const cleanupSession = useCallback(
+    async (captured: SessionIdentity) => {
       try {
-        await authApi.logout({ token: current });
+        await authApi.logout({ token: captured.token });
       } catch {
         // Best effort: local state clears regardless of server reachability.
-      } finally {
-        try {
-          await storage.clear();
-        } catch {
-          // Best effort: local state still settles below.
-        }
-        queryClient.clear();
-        setToken(null);
-        setUser(null);
-        setStatus("signed-out");
-        setSigningOut(false);
       }
-    })();
-  }, [signingOut, token, authApi, storage, queryClient]);
+      if (liveRef.current?.token !== captured.token) {
+        // Superseded: a newer session owns the state; leave it alone.
+        return;
+      }
+      liveRef.current = null;
+      try {
+        await storage.clear();
+      } catch {
+        // Best effort: local state still settles below.
+      }
+      queryClient.clear();
+      setUser(null);
+      setStatus("signed-out");
+    },
+    [authApi, storage, queryClient]
+  );
+
+  const signOut = useCallback(() => {
+    const live = liveRef.current;
+    if (signingOut || live === null) return;
+    setSigningOut(true);
+    void cleanupSession(live).finally(() => setSigningOut(false));
+  }, [signingOut, cleanupSession]);
+
+  const handleAuthRequired = useCallback(
+    (requestToken: string | null) => {
+      const live = liveRef.current;
+      if (signingOut || live === null || requestToken !== live.token) return;
+      setSigningOut(true);
+      void cleanupSession(live).finally(() => setSigningOut(false));
+    },
+    [signingOut, cleanupSession]
+  );
 
   const handleAuthenticated = (session: Session) => {
+    if (signingOut) return;
     void (async () => {
       await storage.set(session.token);
       queryClient.clear();
-      setToken(session.token);
+      liveRef.current = { token: session.token, userId: session.user.id };
       setUser(session.user);
       setStatus("signed-in");
     })();
   };
 
-  const todoApi = createAuthenticatedApi(() => token, signOut, transport);
+  // eslint-disable-next-line react-hooks/refs -- both closures read identity at call time (query/event), never during render
+  const todoApi = createAuthenticatedApi(() => liveRef.current?.token ?? null, handleAuthRequired, transport);
 
   if (status === "unknown") {
     return (
@@ -124,7 +145,7 @@ export function AuthProvider({
     );
   }
 
-  if (status === "signed-out") {
+  if (status === "signed-out" || user === null) {
     return (
       <AuthScreen
         signup={authApi.signup}
@@ -137,7 +158,7 @@ export function AuthProvider({
   return (
     <View style={styles.signedIn}>
       <View style={styles.header}>
-        <Text style={styles.username}>Signed in as {user?.username}</Text>
+        <Text style={styles.username}>Signed in as {user.username}</Text>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Sign out"
@@ -147,7 +168,7 @@ export function AuthProvider({
           <Text style={styles.signOutButtonText}>Sign out</Text>
         </Pressable>
       </View>
-      <TodoScreen api={todoApi} />
+      <TodoExperience userId={user.id} api={todoApi} />
     </View>
   );
 }
