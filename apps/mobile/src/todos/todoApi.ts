@@ -347,7 +347,7 @@ export async function login(
 }
 
 export async function logout(options: TodoRequestOptions = {}): Promise<void> {
-  await requestJson("/auth/logout", "DELETE", 204, "logout", options);
+  await requestJson("/auth/logout", "POST", 204, "logout", options);
 }
 
 export async function fetchMe(options: TodoRequestOptions = {}): Promise<AuthUser> {

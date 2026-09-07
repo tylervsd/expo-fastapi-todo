@@ -128,6 +128,15 @@ it("shows the sign-in form with no stored token and no probe request", async () 
   expect(authApi.fetchMe).not.toHaveBeenCalled();
 });
 
+it("shows sign-in when token storage restore rejects", async () => {
+  const storage = createMemoryTokenStorage();
+  jest.spyOn(storage, "get").mockRejectedValueOnce(new Error("storage unavailable"));
+
+  await renderProvider({ storage });
+
+  await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+});
+
 it("restores a stored session and shows the user with sign-out", async () => {
   const authApi = makeAuthApi();
   const storage = createMemoryTokenStorage();
@@ -166,6 +175,22 @@ it("signs out through logout, store, and cache", async () => {
   await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
   expect(authApi.logout).toHaveBeenCalledWith({ token: "tok-1" });
   expect(await storage.get()).toBeNull();
+  expect(client.getQueryData(["todos"])).toBeUndefined();
+});
+
+it("signs out and clears query data when token storage clear rejects", async () => {
+  const authApi = makeAuthApi();
+  const storage = createMemoryTokenStorage();
+  await storage.set("tok-1");
+  jest.spyOn(storage, "clear").mockRejectedValue(new Error("storage unavailable"));
+  const client = createAppQueryClient();
+  client.setQueryData(["todos"], [{ id: "1", title: "Hi", completed: false }]);
+  await renderProvider({ authApi, storage, client });
+
+  await waitFor(() => expect(screen.getByRole("button", { name: "Sign out" })).toBeTruthy());
+  await fireEvent.press(screen.getByRole("button", { name: "Sign out" }));
+
+  await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
   expect(client.getQueryData(["todos"])).toBeUndefined();
 });
 
