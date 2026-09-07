@@ -414,30 +414,32 @@ export function TodoScreen({ api = defaultApi }: { api?: TodoScreenApi } = {}): 
         {hasData && visible.length === 0 && <Text style={styles.empty}>{empty}</Text>}
         {visible.map((item) => (
           <View key={item.id} style={styles.todoRow}>
-            <PressableWithKeyDown
-              accessibilityRole="checkbox"
-              accessibilityLabel={item.title}
-              accessibilityState={{ checked: item.completed }}
-              aria-checked={item.completed}
-              disabled={writesDisabled}
-              style={styles.checkboxHitbox}
-              onPress={() => toggleTodo(item.id)}
-              onKeyDown={(event) => {
-                if (event.nativeEvent.key === " ") {
-                  event.preventDefault();
-                  toggleTodo(item.id);
-                }
-              }}
-            >
-              <View style={[styles.checkbox, item.completed && styles.checkedBox]}>
-                {item.completed && <Text style={styles.checkmark}>✓</Text>}
-              </View>
-            </PressableWithKeyDown>
-            <Text
-              style={[styles.todoTitle, item.completed && styles.completedTitle]}
-            >
-              {item.title}
-            </Text>
+            <View style={styles.todoSummary}>
+              <PressableWithKeyDown
+                accessibilityRole="checkbox"
+                accessibilityLabel={item.title}
+                accessibilityState={{ checked: item.completed }}
+                aria-checked={item.completed}
+                disabled={writesDisabled}
+                style={styles.checkboxHitbox}
+                onPress={() => toggleTodo(item.id)}
+                onKeyDown={(event) => {
+                  if (event.nativeEvent.key === " ") {
+                    event.preventDefault();
+                    toggleTodo(item.id);
+                  }
+                }}
+              >
+                <View style={[styles.checkbox, item.completed && styles.checkedBox]}>
+                  {item.completed && <Text style={styles.checkmark}>✓</Text>}
+                </View>
+              </PressableWithKeyDown>
+              <Text
+                style={[styles.todoTitle, item.completed && styles.completedTitle]}
+              >
+                {item.title}
+              </Text>
+            </View>
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={`Edit ${item.title}`}
@@ -623,6 +625,11 @@ const styles = StyleSheet.create({
     minWidth: 44,
     paddingHorizontal: 14,
     paddingVertical: 8,
+  },
+  todoSummary: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 12,
   },
   checkboxHitbox: {
     alignItems: "center",
