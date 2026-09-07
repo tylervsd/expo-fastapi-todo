@@ -5,6 +5,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    ForeignKey,
     Identity,
     Text,
     delete,
@@ -34,42 +35,53 @@ class TodoRow(Base):
     completed: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=false()
     )
+    owner_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
 
 
-def list_todos(session: Session) -> Sequence[TodoRow]:
-    return session.scalars(select(TodoRow).order_by(TodoRow.id)).all()
+def list_todos(session: Session, owner_id: int) -> Sequence[TodoRow]:
+    return session.scalars(
+        select(TodoRow).where(TodoRow.owner_id == owner_id).order_by(TodoRow.id)
+    ).all()
 
 
-def create_todo(session: Session, public_id: UUID, title: str) -> TodoRow:
-    todo = TodoRow(public_id=public_id, title=title, completed=False)
+def create_todo(
+    session: Session, public_id: UUID, title: str, owner_id: int
+) -> TodoRow:
+    todo = TodoRow(public_id=public_id, title=title, completed=False, owner_id=owner_id)
     session.add(todo)
     session.flush()
     return todo
 
 
-def set_completed(session: Session, public_id: UUID, completed: bool) -> TodoRow | None:
+def set_completed(
+    session: Session, public_id: UUID, completed: bool, owner_id: int
+) -> TodoRow | None:
     return session.execute(
         update(TodoRow)
-        .where(TodoRow.public_id == public_id)
+        .where(TodoRow.public_id == public_id, TodoRow.owner_id == owner_id)
         .values(completed=completed)
         .returning(TodoRow)
     ).scalar_one_or_none()
 
 
-def set_title(session: Session, public_id: UUID, title: str) -> TodoRow | None:
+def set_title(
+    session: Session, public_id: UUID, title: str, owner_id: int
+) -> TodoRow | None:
     return session.execute(
         update(TodoRow)
-        .where(TodoRow.public_id == public_id)
+        .where(TodoRow.public_id == public_id, TodoRow.owner_id == owner_id)
         .values(title=title)
         .returning(TodoRow)
     ).scalar_one_or_none()
 
 
-def delete_todo(session: Session, public_id: UUID) -> bool:
+def delete_todo(session: Session, public_id: UUID, owner_id: int) -> bool:
     return (
         session.execute(
             delete(TodoRow)
-            .where(TodoRow.public_id == public_id)
+            .where(TodoRow.public_id == public_id, TodoRow.owner_id == owner_id)
             .returning(TodoRow.public_id)
         ).scalar_one_or_none()
         is not None

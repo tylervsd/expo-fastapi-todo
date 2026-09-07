@@ -21,8 +21,24 @@ def client(
         yield test_client
 
 
-def test_new_app_starts_with_empty_ordered_collection(client: TestClient) -> None:
-    response = client.get("/todos")
+@pytest.fixture
+def auth_headers(client: TestClient) -> dict[str, str]:
+    client.post(
+        "/auth/signup",
+        json={"username": "alice", "password": "long-enough-password"},
+    )
+    login = client.post(
+        "/auth/login",
+        json={"username": "alice", "password": "long-enough-password"},
+    )
+    assert login.status_code == 200
+    return {"Authorization": f"Bearer {login.json()['token']}"}
+
+
+def test_new_app_starts_with_empty_ordered_collection(
+    client: TestClient, auth_headers: dict[str, str]
+) -> None:
+    response = client.get("/todos", headers=auth_headers)
 
     assert response.status_code == 200
     assert response.json() == []
@@ -34,23 +50,36 @@ def test_todos_persist_across_app_instances(
 ) -> None:
     del database_session
     with TestClient(create_app(session_factory)) as first_client:
-        response = first_client.post("/todos", json={"title": "Private"})
+        first_client.post(
+            "/auth/signup",
+            json={"username": "alice", "password": "long-enough-password"},
+        )
+        login = first_client.post(
+            "/auth/login",
+            json={"username": "alice", "password": "long-enough-password"},
+        )
+        assert login.status_code == 200
+        headers = {"Authorization": f"Bearer {login.json()['token']}"}
+        response = first_client.post(
+            "/todos", json={"title": "Private"}, headers=headers
+        )
         assert response.status_code == 201
         created = response.json()
 
     with TestClient(create_app(session_factory)) as second_client:
-        response = second_client.get("/todos")
+        response = second_client.get("/todos", headers=headers)
 
     assert response.status_code == 200
     assert response.json() == [created]
 
 
 def test_create_returns_canonical_active_todo_with_uuid(
-    client: TestClient,
+    client: TestClient, auth_headers: dict[str, str]
 ) -> None:
     response = client.post(
         "/todos",
         json={"title": "\ufeff\u2003Buy milk\u2029"},
+        headers=auth_headers,
     )
 
     assert response.status_code == 201
@@ -64,10 +93,10 @@ def test_create_returns_canonical_active_todo_with_uuid(
 
 
 def test_duplicate_titles_keep_insertion_order_and_distinct_ids(
-    client: TestClient,
+    client: TestClient, auth_headers: dict[str, str]
 ) -> None:
-    first = client.post("/todos", json={"title": "Repeat"})
-    second = client.post("/todos", json={"title": "Repeat"})
+    first = client.post("/todos", json={"title": "Repeat"}, headers=auth_headers)
+    second = client.post("/todos", json={"title": "Repeat"}, headers=auth_headers)
 
     assert first.status_code == 201
     assert second.status_code == 201
@@ -75,40 +104,47 @@ def test_duplicate_titles_keep_insertion_order_and_distinct_ids(
     second_todo = second.json()
     assert first_todo["id"] != second_todo["id"]
 
-    response = client.get("/todos")
+    response = client.get("/todos", headers=auth_headers)
 
     assert response.status_code == 200
     assert response.json() == [first_todo, second_todo]
 
 
-def test_create_rejects_nul_title(client: TestClient) -> None:
-    response = client.post("/todos", json={"title": "Contains\u0000Nul"})
+def test_create_rejects_nul_title(
+    client: TestClient, auth_headers: dict[str, str]
+) -> None:
+    response = client.post(
+        "/todos", json={"title": "Contains\u0000Nul"}, headers=auth_headers
+    )
 
     assert response.status_code == 422
 
 
 def test_create_rejects_unpaired_surrogate_without_encoding_failure(
-    client: TestClient,
+    client: TestClient, auth_headers: dict[str, str]
 ) -> None:
     response = client.post(
         "/todos",
         content=b'{"title":"\\ud800"}',
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", **auth_headers},
     )
 
     assert response.status_code == 422
 
 
 def test_patch_sets_requested_boolean_and_preserves_order(
-    client: TestClient,
+    client: TestClient, auth_headers: dict[str, str]
 ) -> None:
-    first = client.post("/todos", json={"title": "First"}).json()
-    second = client.post("/todos", json={"title": "Second"}).json()
+    first = client.post("/todos", json={"title": "First"}, headers=auth_headers).json()
+    second = client.post(
+        "/todos", json={"title": "Second"}, headers=auth_headers
+    ).json()
 
     for completed in (True, True, False):
         response = client.patch(
             f"/todos/{first['id']}",
             json={"completed": completed},
+            headers=auth_headers,
         )
 
         assert response.status_code == 200
@@ -117,7 +153,9 @@ def test_patch_sets_requested_boolean_and_preserves_order(
             "title": "First",
             "completed": completed,
         }
-        assert [todo["id"] for todo in client.get("/todos").json()] == [
+        assert [
+            todo["id"] for todo in client.get("/todos", headers=auth_headers).json()
+        ] == [
             first["id"],
             second["id"],
         ]
@@ -126,8 +164,9 @@ def test_patch_sets_requested_boolean_and_preserves_order(
 def test_post_and_patch_commit_before_independent_session_observes_them(
     client: TestClient,
     session_factory: sessionmaker[Session],
+    auth_headers: dict[str, str],
 ) -> None:
-    created = client.post("/todos", json={"title": "Committed"})
+    created = client.post("/todos", json={"title": "Committed"}, headers=auth_headers)
 
     assert created.status_code == 201
     public_id = UUID(created.json()["id"])
@@ -139,7 +178,9 @@ def test_post_and_patch_commit_before_independent_session_observes_them(
         assert row.title == "Committed"
         assert row.completed is False
 
-    updated = client.patch(f"/todos/{public_id}", json={"completed": True})
+    updated = client.patch(
+        f"/todos/{public_id}", json={"completed": True}, headers=auth_headers
+    )
 
     assert updated.status_code == 200
     with session_factory() as verification_session:
@@ -154,11 +195,13 @@ def test_post_and_patch_commit_before_independent_session_observes_them(
 def test_patch_rejects_non_boolean_completed_values(
     client: TestClient,
     completed: object,
+    auth_headers: dict[str, str],
 ) -> None:
-    todo = client.post("/todos", json={"title": "Strict"}).json()
+    todo = client.post("/todos", json={"title": "Strict"}, headers=auth_headers).json()
     response = client.patch(
         f"/todos/{todo['id']}",
         json={"completed": completed},
+        headers=auth_headers,
     )
 
     assert response.status_code == 422
@@ -178,23 +221,30 @@ def test_patch_rejects_non_boolean_completed_values(
 def test_patch_rejects_malformed_bodies(
     client: TestClient,
     payload: object,
+    auth_headers: dict[str, str],
 ) -> None:
-    todo = client.post("/todos", json={"title": "Strict"}).json()
-    response = client.patch(f"/todos/{todo['id']}", json=payload)
+    todo = client.post("/todos", json={"title": "Strict"}, headers=auth_headers).json()
+    response = client.patch(f"/todos/{todo['id']}", json=payload, headers=auth_headers)
 
     assert response.status_code == 422
 
 
-def test_patch_rejects_malformed_uuid(client: TestClient) -> None:
-    response = client.patch("/todos/not-a-uuid", json={"completed": True})
+def test_patch_rejects_malformed_uuid(
+    client: TestClient, auth_headers: dict[str, str]
+) -> None:
+    response = client.patch(
+        "/todos/not-a-uuid", json={"completed": True}, headers=auth_headers
+    )
 
     assert response.status_code == 422
 
 
 def test_patch_returns_exact_not_found_contract_for_absent_uuid(
-    client: TestClient,
+    client: TestClient, auth_headers: dict[str, str]
 ) -> None:
-    response = client.patch(f"/todos/{uuid4()}", json={"completed": True})
+    response = client.patch(
+        f"/todos/{uuid4()}", json={"completed": True}, headers=auth_headers
+    )
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Todo not found."}
@@ -207,6 +257,14 @@ def test_openapi_publishes_todo_paths_and_schema_references(
 
     assert response.status_code == 200
     document = response.json()
+    assert set(document["paths"]) >= {
+        "/todos",
+        "/todos/{todo_id}",
+        "/auth/signup",
+        "/auth/login",
+        "/auth/logout",
+        "/auth/me",
+    }
     todos_path = document["paths"]["/todos"]
     patch_path = document["paths"]["/todos/{todo_id}"]
     assert set(todos_path) == {"get", "post"}
@@ -244,6 +302,9 @@ def test_openapi_publishes_todo_paths_and_schema_references(
     assert {"Todo", "TodoCreate", "TodoUpdate"} <= set(
         document["components"]["schemas"]
     )
+    assert {"UserPublic", "UserSignup", "UserLogin", "SessionResponse"} <= set(
+        document["components"]["schemas"]
+    )
 
 
 def test_cors_allows_health_get_preflight(client: TestClient) -> None:
@@ -278,7 +339,7 @@ def test_cors_allows_todo_mutation_preflight(
         headers={
             "Origin": "http://localhost:8081",
             "Access-Control-Request-Method": method,
-            "Access-Control-Request-Headers": "Content-Type",
+            "Access-Control-Request-Headers": "Content-Type, Authorization",
         },
     )
 
@@ -286,6 +347,7 @@ def test_cors_allows_todo_mutation_preflight(
     assert response.headers["access-control-allow-origin"] == ("http://localhost:8081")
     assert method in response.headers["access-control-allow-methods"]
     assert "content-type" in response.headers["access-control-allow-headers"].lower()
+    assert "authorization" in response.headers["access-control-allow-headers"].lower()
 
 
 def test_cors_does_not_allow_unlisted_origin(client: TestClient) -> None:
@@ -312,23 +374,52 @@ def test_todo_routes_return_exact_503_when_database_is_unavailable() -> None:
             assert health.status_code == 200
             assert health.json() == {"status": "ok"}
             for response in (
-                client.get("/todos"),
-                client.post("/todos", json={"title": "Unavailable"}),
-                client.patch(f"/todos/{uuid4()}", json={"completed": True}),
-                client.patch(f"/todos/{uuid4()}", json={"title": "Unavailable"}),
-                client.delete(f"/todos/{uuid4()}"),
+                client.post(
+                    "/auth/signup",
+                    json={"username": "alice", "password": "long-enough-password"},
+                ),
+                client.post(
+                    "/auth/login",
+                    json={"username": "alice", "password": "long-enough-password"},
+                ),
+                client.get("/todos", headers={"Authorization": "Bearer " + "0" * 64}),
+                client.post(
+                    "/todos",
+                    json={"title": "Unavailable"},
+                    headers={"Authorization": "Bearer " + "0" * 64},
+                ),
+                client.delete(
+                    f"/todos/{uuid4()}",
+                    headers={"Authorization": "Bearer " + "0" * 64},
+                ),
+                client.get("/auth/me", headers={"Authorization": "Bearer " + "0" * 64}),
+                client.post(
+                    "/auth/logout", headers={"Authorization": "Bearer " + "0" * 64}
+                ),
             ):
                 assert response.status_code == 503
                 assert response.json() == {"detail": "Database unavailable."}
+            for response in (
+                client.get("/todos"),
+                client.post("/todos", json={"title": "Unavailable"}),
+            ):
+                assert response.status_code == 401
+                assert response.json() == {"detail": "Not authenticated."}
     finally:
         engine.dispose()
 
 
-def test_patch_renames_title_and_preserves_order(client: TestClient) -> None:
-    first = client.post("/todos", json={"title": "First"}).json()
-    second = client.post("/todos", json={"title": "Second"}).json()
+def test_patch_renames_title_and_preserves_order(
+    client: TestClient, auth_headers: dict[str, str]
+) -> None:
+    first = client.post("/todos", json={"title": "First"}, headers=auth_headers).json()
+    second = client.post(
+        "/todos", json={"title": "Second"}, headers=auth_headers
+    ).json()
 
-    response = client.patch(f"/todos/{first['id']}", json={"title": "  Renamed  "})
+    response = client.patch(
+        f"/todos/{first['id']}", json={"title": "  Renamed  "}, headers=auth_headers
+    )
 
     assert response.status_code == 200
     assert response.json() == {
@@ -336,7 +427,9 @@ def test_patch_renames_title_and_preserves_order(client: TestClient) -> None:
         "title": "Renamed",
         "completed": False,
     }
-    assert [todo["id"] for todo in client.get("/todos").json()] == [
+    assert [
+        todo["id"] for todo in client.get("/todos", headers=auth_headers).json()
+    ] == [
         first["id"],
         second["id"],
     ]
@@ -355,56 +448,69 @@ def test_patch_renames_title_and_preserves_order(client: TestClient) -> None:
     ],
 )
 def test_patch_rejects_non_exact_single_field(
-    client: TestClient, payload: object
+    client: TestClient, payload: object, auth_headers: dict[str, str]
 ) -> None:
-    todo = client.post("/todos", json={"title": "Strict"}).json()
-    response = client.patch(f"/todos/{todo['id']}", json=payload)
+    todo = client.post("/todos", json={"title": "Strict"}, headers=auth_headers).json()
+    response = client.patch(f"/todos/{todo['id']}", json=payload, headers=auth_headers)
 
     assert response.status_code == 422
 
 
-def test_delete_returns_empty_204_and_removes_row(client: TestClient) -> None:
-    created = client.post("/todos", json={"title": "Gone"}).json()
+def test_delete_returns_empty_204_and_removes_row(
+    client: TestClient, auth_headers: dict[str, str]
+) -> None:
+    created = client.post("/todos", json={"title": "Gone"}, headers=auth_headers).json()
 
-    response = client.delete(f"/todos/{created['id']}")
+    response = client.delete(f"/todos/{created['id']}", headers=auth_headers)
 
     assert response.status_code == 204
     assert response.content == b""
-    assert client.get("/todos").json() == []
+    assert client.get("/todos", headers=auth_headers).json() == []
 
 
-def test_delete_returns_exact_not_found_for_absent_uuid(client: TestClient) -> None:
-    response = client.delete(f"/todos/{uuid4()}")
+def test_delete_returns_exact_not_found_for_absent_uuid(
+    client: TestClient, auth_headers: dict[str, str]
+) -> None:
+    response = client.delete(f"/todos/{uuid4()}", headers=auth_headers)
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Todo not found."}
 
 
-def test_repeated_delete_returns_exact_not_found(client: TestClient) -> None:
-    created = client.post("/todos", json={"title": "Gone"}).json()
+def test_repeated_delete_returns_exact_not_found(
+    client: TestClient, auth_headers: dict[str, str]
+) -> None:
+    created = client.post("/todos", json={"title": "Gone"}, headers=auth_headers).json()
 
-    assert client.delete(f"/todos/{created['id']}").status_code == 204
-    repeated = client.delete(f"/todos/{created['id']}")
+    assert (
+        client.delete(f"/todos/{created['id']}", headers=auth_headers).status_code
+        == 204
+    )
+    repeated = client.delete(f"/todos/{created['id']}", headers=auth_headers)
 
     assert repeated.status_code == 404
     assert repeated.json() == {"detail": "Todo not found."}
 
 
-def test_delete_rejects_malformed_uuid(client: TestClient) -> None:
-    response = client.delete("/todos/not-a-uuid")
+def test_delete_rejects_malformed_uuid(
+    client: TestClient, auth_headers: dict[str, str]
+) -> None:
+    response = client.delete("/todos/not-a-uuid", headers=auth_headers)
 
     assert response.status_code == 422
 
 
 def test_delete_commits_before_independent_session_observes_it(
-    client: TestClient, session_factory: sessionmaker[Session]
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+    auth_headers: dict[str, str],
 ) -> None:
-    created = client.post("/todos", json={"title": "Committed"})
+    created = client.post("/todos", json={"title": "Committed"}, headers=auth_headers)
 
     assert created.status_code == 201
     public_id = UUID(created.json()["id"])
 
-    deleted = client.delete(f"/todos/{public_id}")
+    deleted = client.delete(f"/todos/{public_id}", headers=auth_headers)
 
     assert deleted.status_code == 204
     with session_factory() as verification_session:

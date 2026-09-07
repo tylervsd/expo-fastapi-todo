@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { TodoScreen } from "./src/TodoScreen";
+import { AuthProvider } from "./src/auth/AuthProvider";
 import { TodoApiError } from "./src/todos/todoApi";
 
 export function createAppQueryClient(): QueryClient {
@@ -29,7 +29,7 @@ export default function App() {
   const [queryClient] = useState(createAppQueryClient);
   return (
     <QueryClientProvider client={queryClient}>
-      <TodoScreen />
+      <AuthProvider />
     </QueryClientProvider>
   );
 }
