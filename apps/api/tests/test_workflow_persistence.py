@@ -1,10 +1,18 @@
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.auth_repository import create_user
+from app.workflow_domain import (
+    AnswerMultipleSteps,
+    Cancel,
+    Confirm,
+    InvalidWorkflowAction,
+    WorkflowState,
+    create_submit_tasks,
+)
 from app.workflow_repository import (
     create_workflow,
     find_workflow,
@@ -189,3 +197,328 @@ def test_deleting_owner_cascades_to_workflow(
 
     with session_factory() as verification_session:
         assert find_workflow(verification_session, public_id, owner_id) is None
+
+
+def setup_owner(session_factory: sessionmaker[Session], username: str = "owner") -> int:
+    with session_factory() as setup_session:
+        owner = create_user(setup_session, uuid4(), username, "hash")
+        setup_session.commit()
+        return owner.id
+
+
+def todo_titles(session_factory: sessionmaker[Session], owner_id: int) -> list[str]:
+    from app.todo_repository import TodoRow
+
+    with session_factory() as verification_session:
+        rows = verification_session.scalars(
+            select(TodoRow)
+            .where(TodoRow.owner_id == owner_id)
+            .order_by(TodoRow.id)
+        ).all()
+        return [row.title for row in rows]
+
+
+def test_start_commits_assess_task_with_zero_todos(
+    database_session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    del database_session
+    from app.workflow_service import get_workflow, start_workflow
+
+    owner_id = setup_owner(session_factory)
+    with session_factory() as write_session:
+        snapshot = start_workflow(write_session, owner_id, "Plan birthday party")
+
+    assert snapshot.state == WorkflowState.ASSESS_TASK
+    assert snapshot.title == "Plan birthday party"
+    assert snapshot.involves_multiple_steps is None
+    assert snapshot.proposed_todo_titles == ()
+    assert snapshot.created_todos is None
+    with session_factory() as verification_session:
+        reread = get_workflow(verification_session, owner_id, snapshot.id)
+        assert reread == snapshot
+    assert todo_titles(session_factory, owner_id) == []
+
+
+def test_yes_then_submit_persists_review_with_zero_todos(
+    database_session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    del database_session
+    from app.workflow_service import advance_workflow, start_workflow
+
+    owner_id = setup_owner(session_factory)
+    with session_factory() as write_session:
+        snapshot = start_workflow(write_session, owner_id, "Plan birthday party")
+    with session_factory() as write_session:
+        collecting = advance_workflow(
+            write_session, owner_id, snapshot.id, AnswerMultipleSteps(answer=True)
+        )
+    assert collecting is not None
+    assert collecting.state == WorkflowState.COLLECT_TASKS
+    with session_factory() as write_session:
+        review = advance_workflow(
+            write_session,
+            owner_id,
+            snapshot.id,
+            create_submit_tasks(("Send invitations", "Buy decorations")),
+        )
+    assert review is not None
+    assert review.state == WorkflowState.REVIEW
+    assert review.proposed_todo_titles == ("Send invitations", "Buy decorations")
+    assert todo_titles(session_factory, owner_id) == []
+
+
+def test_no_persists_review_with_original_title(
+    database_session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    del database_session
+    from app.workflow_service import advance_workflow, start_workflow
+
+    owner_id = setup_owner(session_factory)
+    with session_factory() as write_session:
+        snapshot = start_workflow(write_session, owner_id, "Plan birthday party")
+    with session_factory() as write_session:
+        review = advance_workflow(
+            write_session, owner_id, snapshot.id, AnswerMultipleSteps(answer=False)
+        )
+
+    assert review is not None
+    assert review.state == WorkflowState.REVIEW
+    assert review.involves_multiple_steps is False
+    assert review.proposed_todo_titles == ("Plan birthday party",)
+    assert todo_titles(session_factory, owner_id) == []
+
+
+def test_cancel_from_each_active_state_persists_cancelled(
+    database_session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    del database_session
+    from app.workflow_service import advance_workflow, start_workflow
+
+    owner_id = setup_owner(session_factory)
+    workflow_ids = []
+    for index in range(3):
+        with session_factory() as write_session:
+            snapshot = start_workflow(
+                write_session, owner_id, f"Plan birthday party {index}"
+            )
+            workflow_ids.append(snapshot.id)
+    with session_factory() as write_session:
+        collecting = advance_workflow(
+            write_session, owner_id, workflow_ids[1], AnswerMultipleSteps(answer=True)
+        )
+        assert collecting is not None
+    with session_factory() as write_session:
+        review = advance_workflow(
+            write_session,
+            owner_id,
+            workflow_ids[2],
+            AnswerMultipleSteps(answer=True),
+        )
+        assert review is not None
+        review = advance_workflow(
+            write_session,
+            owner_id,
+            workflow_ids[2],
+            create_submit_tasks(("Send invitations", "Buy decorations")),
+        )
+        assert review is not None
+
+    for workflow_id in workflow_ids:
+        with session_factory() as write_session:
+            result = advance_workflow(write_session, owner_id, workflow_id, Cancel())
+        assert result is not None
+        assert result.state == WorkflowState.CANCELLED
+        assert result.created_todos is None
+    assert todo_titles(session_factory, owner_id) == []
+
+
+def test_confirm_simple_path_creates_one_ordinary_todo(
+    database_session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    del database_session
+    from app.workflow_service import advance_workflow, start_workflow
+
+    owner_id = setup_owner(session_factory)
+    with session_factory() as write_session:
+        snapshot = start_workflow(write_session, owner_id, "Plan birthday party")
+    with session_factory() as write_session:
+        advance_workflow(
+            write_session, owner_id, snapshot.id, AnswerMultipleSteps(answer=False)
+        )
+    with session_factory() as write_session:
+        completed = advance_workflow(write_session, owner_id, snapshot.id, Confirm())
+
+    assert completed is not None
+    assert completed.state == WorkflowState.COMPLETED
+    assert completed.created_todos is not None
+    assert [todo.title for todo in completed.created_todos] == ["Plan birthday party"]
+    assert [todo.completed for todo in completed.created_todos] == [False]
+    assert todo_titles(session_factory, owner_id) == ["Plan birthday party"]
+
+
+def test_confirm_breakdown_path_creates_exact_ordered_todos(
+    database_session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    del database_session
+    from app.workflow_service import advance_workflow, start_workflow
+
+    owner_id = setup_owner(session_factory)
+    with session_factory() as write_session:
+        snapshot = start_workflow(write_session, owner_id, "Plan birthday party")
+    with session_factory() as write_session:
+        advance_workflow(
+            write_session, owner_id, snapshot.id, AnswerMultipleSteps(answer=True)
+        )
+    with session_factory() as write_session:
+        advance_workflow(
+            write_session,
+            owner_id,
+            snapshot.id,
+            create_submit_tasks(
+                ("Buy decorations", "Send invitations", "Buy decorations")
+            ),
+        )
+    with session_factory() as write_session:
+        completed = advance_workflow(write_session, owner_id, snapshot.id, Confirm())
+
+    assert completed is not None
+    assert completed.state == WorkflowState.COMPLETED
+    assert completed.created_todos is not None
+    assert [todo.title for todo in completed.created_todos] == [
+        "Buy decorations",
+        "Send invitations",
+        "Buy decorations",
+    ]
+    assert todo_titles(session_factory, owner_id) == [
+        "Buy decorations",
+        "Send invitations",
+        "Buy decorations",
+    ]
+
+
+def test_other_owner_gets_none_without_changing_row(
+    database_session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    del database_session
+    from app.workflow_service import advance_workflow, get_workflow, start_workflow
+
+    owner_id = setup_owner(session_factory, "owner")
+    other_id = setup_owner(session_factory, "other")
+    with session_factory() as write_session:
+        snapshot = start_workflow(write_session, owner_id, "Plan birthday party")
+
+    with session_factory() as strangers_session:
+        assert get_workflow(strangers_session, other_id, snapshot.id) is None
+    with session_factory() as strangers_session:
+        assert (
+            advance_workflow(
+                strangers_session, other_id, snapshot.id, AnswerMultipleSteps(answer=True)
+            )
+            is None
+        )
+
+    with session_factory() as verification_session:
+        reread = get_workflow(verification_session, owner_id, snapshot.id)
+        assert reread is not None
+        assert reread.state == WorkflowState.ASSESS_TASK
+
+
+def test_confirm_rollback_leaves_review_and_zero_todos(
+    database_session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    del database_session
+    from app import workflow_service
+    from app.workflow_service import advance_workflow, start_workflow
+
+    owner_id = setup_owner(session_factory)
+    with session_factory() as write_session:
+        snapshot = start_workflow(write_session, owner_id, "Plan birthday party")
+    with session_factory() as write_session:
+        advance_workflow(
+            write_session, owner_id, snapshot.id, AnswerMultipleSteps(answer=True)
+        )
+    with session_factory() as write_session:
+        advance_workflow(
+            write_session,
+            owner_id,
+            snapshot.id,
+            create_submit_tasks(("Send invitations", "Buy decorations")),
+        )
+
+    real_create = workflow_service.create_todo
+    calls = 0
+
+    def fail_after_one(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("forced completion failure")
+        return real_create(*args, **kwargs)
+
+    workflow_service.create_todo = fail_after_one
+    try:
+        with (
+            session_factory() as write_session,
+            pytest.raises(RuntimeError, match="forced completion failure"),
+        ):
+            advance_workflow(write_session, owner_id, snapshot.id, Confirm())
+    finally:
+        workflow_service.create_todo = real_create
+
+    assert calls == 2
+    assert todo_titles(session_factory, owner_id) == []
+    with session_factory() as verification_session:
+        reread = workflow_service.get_workflow(
+            verification_session, owner_id, snapshot.id
+        )
+        assert reread is not None
+        assert reread.state == WorkflowState.REVIEW
+        assert reread.proposed_todo_titles == ("Send invitations", "Buy decorations")
+        assert reread.created_todos is None
+
+
+def test_confirm_in_assess_task_rejects_without_mutation(
+    database_session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    del database_session
+    from app.workflow_service import advance_workflow, get_workflow, start_workflow
+
+    owner_id = setup_owner(session_factory)
+    with session_factory() as write_session:
+        snapshot = start_workflow(write_session, owner_id, "Plan birthday party")
+
+    with session_factory() as verification_session:
+        before_row = verification_session.execute(
+            text(
+                "SELECT state, title, involves_multiple_steps, "
+                "proposed_todo_titles::text, completion_result::text "
+                "FROM todo_workflows WHERE public_id = :public_id"
+            ),
+            {"public_id": str(snapshot.id)},
+        ).one()
+        before_todos = todo_titles(session_factory, owner_id)
+
+    with session_factory() as write_session, pytest.raises(InvalidWorkflowAction):
+        advance_workflow(write_session, owner_id, snapshot.id, Confirm())
+
+    with session_factory() as verification_session:
+        after_row = verification_session.execute(
+            text(
+                "SELECT state, title, involves_multiple_steps, "
+                "proposed_todo_titles::text, completion_result::text "
+                "FROM todo_workflows WHERE public_id = :public_id"
+            ),
+            {"public_id": str(snapshot.id)},
+        ).one()
+        assert after_row == before_row
+        assert todo_titles(session_factory, owner_id) == before_todos
+        assert get_workflow(verification_session, owner_id, snapshot.id) == snapshot
