@@ -166,13 +166,13 @@ export function TodoWorkflowScreen({
       titleInput.current?.focus();
       return;
     }
-    const step = {
+    const step: string = {
       ASSESS_TASK: "Does this task involve multiple steps?",
       COLLECT_TASKS: "Break it into smaller todos",
       REVIEW: "Review your plan",
       COMPLETED: "Plan complete",
       CANCELLED: "Plan cancelled",
-    }[snapshot.state];
+    }[snapshot.state] ?? snapshot.state;
     AccessibilityInfo.announceForAccessibility(step);
     const focusButton = (ref: ControlRef) => {
       const control = ref.current as unknown as { focus?: () => void } | null;
