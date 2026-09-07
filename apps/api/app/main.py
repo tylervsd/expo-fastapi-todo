@@ -40,7 +40,7 @@ from app.database import (
     create_session_factory,
     get_database_url,
 )
-from app.passwords import hash_password, verify_password
+from app.passwords import DUMMY_PASSWORD_HASH, hash_password, verify_password
 from app.todo_repository import TodoRow, delete_todo, set_completed, set_title
 from app.todo_repository import create_todo as create_todo_row
 from app.todo_repository import list_todos as list_todo_rows
@@ -269,9 +269,10 @@ def create_app(session_factory: sessionmaker[Session] | None = None) -> FastAPI:
         try:
             with session.begin():
                 user = find_user_by_username(session, payload.username)
-                if user is None or not verify_password(
-                    payload.password, user.password_hash
-                ):
+                password_hash = (
+                    user.password_hash if user is not None else DUMMY_PASSWORD_HASH
+                )
+                if user is None or not verify_password(payload.password, password_hash):
                     raise HTTPException(
                         status_code=401, detail="Invalid username or password."
                     )
