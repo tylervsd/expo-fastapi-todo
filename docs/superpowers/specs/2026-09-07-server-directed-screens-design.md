@@ -16,9 +16,9 @@ The phase teaches an explicit presentation boundary: domain logic determines
 valid actions and the next business state; a backend presentation mapper
 converts the current workflow into a supported view description; the API
 returns that description; the frontend selects a known native component using
-the view's type and submits the selected action with user input. The frontend
-never branches on business state, and the domain never names components,
-routes, or layouts.
+the view's type and submits that template's fixed command with user input. The
+frontend never branches on business state, and the domain never names
+components, routes, or layouts.
 
 For the teaching example, `Plan birthday party` now has three paths: No at
 the first question reviews the single original todo; Yes then No reviews the
@@ -128,6 +128,10 @@ No new command type is added. `AnswerMultipleSteps(answer: bool)` is reused:
 the current state disambiguates its meaning, so the action union, request
 schemas for actions, and all client submission code stay stable. New commands
 for yes/no answers would duplicate a distinction the state already carries.
+The persisted `involves_multiple_steps` value continues to mean only the
+answer to the first question. In `OFFER_BREAKDOWN`, the Boolean selects the
+next transition but is not persisted as a second fact; the resulting state and
+proposed titles already encode the choice, so another column is unnecessary.
 
 ## Transition table
 
@@ -135,9 +139,9 @@ Only these rows change; every Phase 7 row not listed here is unchanged.
 
 | Current state | Submitted action | Result |
 | --- | --- | --- |
-| `ASSESS_TASK` | `answer_multiple_steps`, `true` | Save answer; enter `OFFER_BREAKDOWN` (changed from `COLLECT_TASKS`) |
-| `OFFER_BREAKDOWN` | `answer_multiple_steps`, `true` | Save answer; enter `COLLECT_TASKS` |
-| `OFFER_BREAKDOWN` | `answer_multiple_steps`, `false` | Save answer and original title; enter `REVIEW` |
+| `ASSESS_TASK` | `answer_multiple_steps`, `true` | Save `involves_multiple_steps=true`; enter `OFFER_BREAKDOWN` (changed from `COLLECT_TASKS`) |
+| `OFFER_BREAKDOWN` | `answer_multiple_steps`, `true` | Preserve `involves_multiple_steps=true`; enter `COLLECT_TASKS` |
+| `OFFER_BREAKDOWN` | `answer_multiple_steps`, `false` | Preserve `involves_multiple_steps=true`, save the original title, and enter `REVIEW` |
 
 `OFFER_BREAKDOWN` accepts `cancel` like every other nonterminal state.
 `submit_tasks`, `confirm`, and any other well-formed action there return the
@@ -152,11 +156,19 @@ Title rules, the 2–10 breakdown count, strict discriminators and Booleans,
 and unknown-field rejection are unchanged. The multiline frontend remains an
 input convenience sending an explicit JSON array.
 
+Context invariants widen for the new declined-breakdown path. `REVIEW` and
+`COMPLETED` accept the original title with either
+`involves_multiple_steps=false` (the first question was declined) or
+`involves_multiple_steps=true` (breakdown was declined), while two to ten
+proposed titles still require `involves_multiple_steps=true`. Domain and API
+tests pin these semantic combinations; the TypeScript transport validates the
+envelope structurally and uses only the view to select a component.
+
 The `task_breakdown` view carries `min_titles: 2` and `max_titles: 10` so the
 limits live in exactly one place — the backend that enforces them — instead
 of being duplicated as a client constant. The client still validates locally
-for fast feedback using the supplied bounds and keeps the backend
-authoritative on disagreement.
+for fast feedback and formats its count error using the supplied bounds,
+keeping the backend authoritative on disagreement.
 
 ## Responsibilities and boundaries
 
@@ -177,7 +189,8 @@ present_workflow(snapshot: WorkflowSnapshot) -> WorkflowView
 It converts an authoritative domain snapshot into a supported view
 description. It performs no I/O, owns no transactions, and references no
 React component names, navigation routes, or layout details — only template
-types, content strings, limits, and action identifiers with display labels.
+types, content strings, limits, and, for choice templates, choice identifiers
+with display labels.
 
 ### Service
 
@@ -188,8 +201,11 @@ new use cases and no signature changes.
 ### Persistence
 
 One migration widens the state check to admit `OFFER_BREAKDOWN` (drop and
-re-add the named constraint). All existing rows satisfy the wider set, so no
-data migration occurs and downgrade simply restores the narrower check. No
+re-add the named constraint). All existing rows satisfy the wider set, so the
+upgrade requires no data migration. Before restoring the narrower check, the
+downgrade rewinds any `OFFER_BREAKDOWN` row to `ASSESS_TASK`, resets
+`involves_multiple_steps` to null, and clears proposed titles. This discards
+only an accepted answer from an unfinished workflow; no todo exists yet. No
 columns, indexes, or tables are added: step identity is derived, not stored.
 
 ### HTTP
@@ -220,15 +236,18 @@ requirements with no migration:
   shared yes/no component never confuses the two questions;
 - re-fetching the same current step recomputes the identical string;
 - every advance changes state and therefore identity;
-- the template host uses `key={view.step_id}`, so React remounts on step
-  change and discards the previous question's draft, selection, and error.
+- the template host uses `key={view.step_id}` to remount template-local state,
+  and its step-change handler clears host-owned drafts and errors and triggers
+  focus only when the identity changes. A same-identity refetch does neither.
 
 The derivation rests on one documented assumption: the state graph is
 acyclic — no transition re-enters a state — which holds for all six states
-and is pinned by a domain unit test enumerating that no decision returns
-its origin state. If a future phase ever adds cycles, identity must be
-revisited then; step identity is a rendering correctness tool and is never
-used in cache keys, nor claimed as concurrency control or idempotency.
+and is pinned by a domain unit test enumerating every valid transition path
+and asserting that no path repeats a state. A no-self-loop assertion is not
+sufficient because it would miss a multi-state cycle. If a future phase ever
+adds cycles, identity must be revisited then; step identity is a rendering
+correctness tool and is never used in cache keys, nor claimed as concurrency
+control or idempotency.
 
 ## HTTP contract
 
@@ -286,7 +305,8 @@ Answering Yes in `ASSESS_TASK` now returns `OFFER_BREAKDOWN` with the same
 ```
 
 Answering Yes here enters `COLLECT_TASKS`; answering No enters `REVIEW`
-with `["Plan birthday party"]`.
+with `["Plan birthday party"]`. Both paths preserve
+`"involves_multiple_steps": true`.
 
 ### Task breakdown response
 
@@ -351,8 +371,12 @@ Unchanged from Phase 7 for every template:
 ```
 
 The yes/no template maps its selected action id (`yes`/`no`) to the
-`answer` Boolean; all other templates submit their fixed command shapes.
-Clients submit actions and input, never a desired next state.
+`answer` Boolean. Template types define the remaining fixed controls:
+`task_breakdown` submits `submit_tasks`, `review` submits `confirm`, and the
+host offers `cancel` on every nonterminal template. Thus `actions[]` describes
+the yes/no choices, not every domain-valid command. The backend remains
+authoritative and rejects a well-formed command in the wrong state. Clients
+submit actions and input, never a desired next state.
 
 ### Error contract
 
@@ -375,14 +399,17 @@ every lookup stays `(public_id, owner_id)`; cross-owner UUIDs read as
 absent. The TanStack key `["todo-workflow", userPublicId, workflowId]`
 is unchanged — step identity is deliberately excluded from cache keys —
 and existing clearing on authentication transitions stays mandatory.
-Completion still invalidates `['todos']`.
+The frontend invalidates `['todos']` when a `completion` view has
+`outcome="completed"`; it does not inspect the business state.
 
 ## Frontend state and components
 
 The host owns the workflow ID, drafts, focus signals, error copy, and the
-Busy-gated pessimistic mutation pattern exactly as in Phase 7. The only
-structural change is selection: `snapshot.view.type` through the registry
-instead of `snapshot.state` through a state switch.
+Busy-gated pessimistic mutation pattern exactly as in Phase 7. It tracks the
+last rendered `step_id`: a changed identity clears step-local drafts and
+errors and triggers the next template's announcement and focus, while an
+identical identity preserves them. Selection uses `snapshot.view.type`
+through the registry instead of `snapshot.state` through a state switch.
 
 | Template | Component | Content source |
 | --- | --- | --- |
@@ -403,10 +430,19 @@ accepts the response into a fallback view object instead of failing the
 whole snapshot as invalid data, and the registry renders a fallback
 screen: an understandable message plus **Back to todos** and **Reload
 plan**. It never crashes, guesses a component, or submits an action.
-Genuinely malformed responses (bad UUID, missing keys, mistyped fields)
-keep the existing invalid-data path. The fallback is forward
-compatibility, not a license for servers to invent UI: only supported
-native components and known action types may be used.
+
+The TypeScript transport treats the envelope's `state` as an opaque,
+non-empty string and validates `context` structurally rather than using
+business-state branches. Known views retain exact-key validation. An unknown
+view is accepted only when it is an object with a non-empty string `type` and
+a `step_id` equal to `"{workflow_id}:{state}"` from the validated envelope;
+its other fields are ignored by the fallback.
+Bad workflow UUIDs, missing envelope or base-view keys, mistyped base fields,
+and malformed known views keep the existing invalid-data path. This lets a
+future state with a future template reach the fallback without making the
+current client interpret either one. The fallback is forward compatibility,
+not a license for servers to invent UI: only supported native components and
+known action types may be used.
 
 ## Submission and recovery behavior
 
@@ -430,14 +466,14 @@ focus, and fallback semantics.
 
 | Layer | Required coverage |
 | --- | --- |
-| Domain unit | The two changed/new transition rows; acyclicity pin (no decision returns its origin state); all Phase 7 rows unchanged |
+| Domain unit | The two changed/new transition rows; first-answer preservation in both OFFER branches; all valid paths contain no repeated state; all Phase 7 rows unchanged |
 | Presentation unit | Exact view per state for all six states; both yes/no views share type with distinct content and identities; identity stability across repeated mapping; terminal outcome mapping |
 | Validation unit | Discriminated view union, unknown-field rejection, title/limit rules |
-| PostgreSQL repository | CHECK widening (OFFER rows persist, old rows valid); existing constraints untouched |
+| PostgreSQL repository | CHECK widening (OFFER rows persist, old rows valid); downgrade rewinds OFFER rows before narrowing; existing constraints untouched |
 | PostgreSQL service | Full three-path journeys through the service; saved OFFER progress across sessions |
 | API integration | Exact view envelopes for both yes/no responses, breakdown/review/terminal views, action submissions per template, invalid actions in OFFER, cancellation from OFFER, ownership, side-effect-free GET, `503`, OpenAPI with the view union, CORS |
 | Learning experiment | Backend-only OFFER addition: domain row, mapper case, migration, contract tests — with zero new components and zero frontend branching, plus a component test proving the OFFER view renders through the shared yes/no template |
-| TypeScript transport | View runtime validation per template, unknown-type fallback acceptance, malformed-body rejection, Bearer/401/409/422/timeout behavior preserved |
+| TypeScript transport | View runtime validation per template, opaque state and structural context handling, unknown state/type fallback acceptance, malformed-body rejection, declined-breakdown context, and Bearer/401/409/422/timeout behavior preserved |
 | Component | Both questions through one component with reset between them, correct content/labels/submission per question, stable-identity refetch without reset, fallback screen, preserved transaction/todo/focus/a11y behavior |
 | Full regression | Existing auth, CRUD, workflow, API, database, mobile, lint, typecheck, and web-export checks, including all unmodified Phase 7 suites |
 
@@ -451,6 +487,8 @@ Phase 8 is acceptable when:
 1. Quick-add, existing `/todos` contracts, and all Phase 7 suites pass
    unmodified except where the new state and contract require additions.
 2. All three birthday-party paths work for arbitrary valid titles.
+   The two paths that answer Yes first retain
+   `involves_multiple_steps=true`, including when breakdown is declined.
 3. Both yes/no questions render through one shared component with distinct
    content, labels, and step identities.
 4. No selection, draft, or error survives moving between the two questions.
