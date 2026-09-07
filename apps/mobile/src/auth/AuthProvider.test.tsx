@@ -373,6 +373,16 @@ describe("workflow shell integration", () => {
     title: "Plan birthday party",
     context: { involves_multiple_steps: null, proposed_todo_titles: [] },
     result: null,
+    view: {
+      type: "yes_no",
+      step_id: `${WORKFLOW_ID}:ASSESS_TASK`,
+      title: "Plan birthday party",
+      question: "Does this task involve multiple steps?",
+      actions: [
+        { id: "yes", label: "Yes" },
+        { id: "no", label: "No" },
+      ],
+    },
   };
   const sessionA = {
     token: "tok-A",
