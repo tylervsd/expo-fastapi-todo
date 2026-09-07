@@ -32,6 +32,14 @@ jest.mock("react-native", () => {
     get(target, property, receiver) {
       if (property === "TextInput") return TestTextInput;
       if (property === "Pressable") return TestPressable;
+      if (property === "findNodeHandle") return () => 123;
+      if (property === "AccessibilityInfo") {
+        return {
+          ...actual.AccessibilityInfo,
+          announceForAccessibility: () => undefined,
+          setAccessibilityFocus: () => undefined,
+        };
+      }
       return Reflect.get(target, property, receiver);
     },
   });

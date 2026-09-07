@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import {
+  AccessibilityInfo,
+  Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -7,6 +9,7 @@ import {
   Text,
   TextInput,
   View,
+  findNodeHandle,
 } from "react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -14,6 +17,7 @@ import {
   TodoApiError,
   type TodoWorkflow,
   type TodoWorkflowAction,
+  type TodoWorkflowState,
 } from "../todos/todoApi";
 
 export type TodoWorkflowScreenApi = {
@@ -33,8 +37,8 @@ const EMPTY_TITLE = "Enter a task title.";
 const INVALID_TITLE = "Check the plan title and try again.";
 const INVALID_TASKS = "Enter 2 to 10 todo titles, one per line.";
 const SERVER_INVALID = "Check the plan details and try again.";
-const LOST_START = "Starting may not have finished. Start again to retry.";
-const UNCERTAIN = "The result may be unknown. Reload the plan to recover.";
+const LOST_START = "The result may be unknown. Starting again may create another draft.";
+const UNCERTAIN = "The result may be unknown. Reload this plan before trying again.";
 
 function serverCopy(error: unknown, uncertain: string): { message: string; lock: boolean } {
   if (error instanceof TodoApiError) {
@@ -90,7 +94,6 @@ export function TodoWorkflowScreen({
     setWorkflowId(workflow.workflow_id);
     setLocalError(null);
     setWriteError(null);
-    setFocusSignal((signal) => signal + 1);
   };
 
   const startMutation = useMutation({
@@ -117,10 +120,6 @@ export function TodoWorkflowScreen({
       queryClient.setQueryData(workflowQueryKey(userId, id), workflow);
       setLocalError(null);
       setWriteError(null);
-      setFocusSignal((signal) => signal + 1);
-      if (workflow.state === "COMPLETED") {
-        void queryClient.invalidateQueries({ queryKey: ["todos"] });
-      }
     },
     onError: (error: unknown) => {
       if (error instanceof TodoApiError && error.kind === "validation") {
@@ -132,6 +131,9 @@ export function TodoWorkflowScreen({
             queryKey: workflowQueryKey(userId, workflowId),
             refetchType: "none",
           });
+          if (error instanceof TodoApiError && error.kind === "conflict") {
+            void workflowQuery.refetch();
+          }
         }
       }
     },
@@ -144,6 +146,19 @@ export function TodoWorkflowScreen({
   const advancePending = advanceMutation.isPending;
   const buttonsDisabled = !fresh || isFetching || advancePending;
 
+  const announcedState = useRef<TodoWorkflowState | null>(null);
+  useEffect(() => {
+    if (snapshot === undefined || snapshot.state === announcedState.current) return;
+    announcedState.current = snapshot.state;
+    setFocusSignal((signal) => signal + 1);
+  }, [snapshot]);
+
+  useEffect(() => {
+    if (snapshot?.state === "COMPLETED") {
+      void queryClient.invalidateQueries({ queryKey: ["todos"] });
+    }
+  }, [queryClient, snapshot?.state]);
+
   useEffect(() => {
     if (focusSignal === focusedSignal.current) return;
     focusedSignal.current = focusSignal;
@@ -151,18 +166,34 @@ export function TodoWorkflowScreen({
       titleInput.current?.focus();
       return;
     }
+    const step = {
+      ASSESS_TASK: "Does this task involve multiple steps?",
+      COLLECT_TASKS: "Break it into smaller todos",
+      REVIEW: "Review your plan",
+      COMPLETED: "Plan complete",
+      CANCELLED: "Plan cancelled",
+    }[snapshot.state];
+    AccessibilityInfo.announceForAccessibility(step);
+    const focusButton = (ref: ControlRef) => {
+      const control = ref.current as unknown as { focus?: () => void } | null;
+      control?.focus?.();
+      if (Platform.OS !== "web") {
+        const node = findNodeHandle(ref.current);
+        if (node !== null) AccessibilityInfo.setAccessibilityFocus(node);
+      }
+    };
     switch (snapshot.state) {
       case "ASSESS_TASK":
-        (yesButton.current as unknown as { focus?: () => void })?.focus?.();
+        focusButton(yesButton);
         break;
       case "COLLECT_TASKS":
         tasksInput.current?.focus();
         break;
       case "REVIEW":
-        (confirmButton.current as unknown as { focus?: () => void })?.focus?.();
+        focusButton(confirmButton);
         break;
       default:
-        (backButton.current as unknown as { focus?: () => void })?.focus?.();
+        focusButton(backButton);
         break;
     }
   }, [focusSignal, snapshot]);
@@ -253,6 +284,7 @@ export function TodoWorkflowScreen({
             }
             onCancel={() => sendAction({ action: "cancel" })}
             disabled={buttonsDisabled}
+            submitting={advancePending}
             yesRef={yesButton}
           />
         )}
@@ -263,6 +295,7 @@ export function TodoWorkflowScreen({
             onSubmit={submitTasks}
             onCancel={() => sendAction({ action: "cancel" })}
             disabled={buttonsDisabled}
+            submitting={advancePending}
             inputRef={tasksInput}
           />
         )}
@@ -338,7 +371,7 @@ function WorkflowStartScreen({
 }) {
   return (
     <View style={styles.screen}>
-      <Text accessibilityRole="header" style={styles.heading}>
+      <Text accessibilityRole="header" accessibilityLiveRegion="polite" style={styles.heading}>
         Help me plan a task
       </Text>
       <Text style={styles.fieldLabel}>Task title</Text>
@@ -382,16 +415,18 @@ function AssessTaskScreen({
   onAnswer,
   onCancel,
   disabled,
+  submitting,
   yesRef,
 }: {
   onAnswer: (answer: boolean) => void;
   onCancel: () => void;
   disabled: boolean;
+  submitting: boolean;
   yesRef: ControlRef;
 }) {
   return (
     <View style={styles.screen}>
-      <Text accessibilityRole="header" style={styles.heading}>
+      <Text accessibilityRole="header" accessibilityLiveRegion="polite" style={styles.heading}>
         Does this task involve multiple steps?
       </Text>
       <Pressable
@@ -422,6 +457,7 @@ function AssessTaskScreen({
       >
         <Text style={styles.refreshButtonText}>Cancel planning</Text>
       </Pressable>
+      {submitting && <Text style={styles.status}>Submitting…</Text>}
     </View>
   );
 }
@@ -432,6 +468,7 @@ function CollectTasksScreen({
   onSubmit,
   onCancel,
   disabled,
+  submitting,
   inputRef,
 }: {
   draft: string;
@@ -439,11 +476,12 @@ function CollectTasksScreen({
   onSubmit: () => void;
   onCancel: () => void;
   disabled: boolean;
+  submitting: boolean;
   inputRef: InputRef;
 }) {
   return (
     <View style={styles.screen}>
-      <Text accessibilityRole="header" style={styles.heading}>
+      <Text accessibilityRole="header" accessibilityLiveRegion="polite" style={styles.heading}>
         Break it into smaller todos
       </Text>
       <Text style={styles.fieldLabel}>Todo titles (one per line)</Text>
@@ -476,6 +514,7 @@ function CollectTasksScreen({
       >
         <Text style={styles.refreshButtonText}>Cancel planning</Text>
       </Pressable>
+      {submitting && <Text style={styles.status}>Submitting…</Text>}
     </View>
   );
 }
@@ -497,7 +536,7 @@ function ReviewWorkflowScreen({
 }) {
   return (
     <View style={styles.screen}>
-      <Text accessibilityRole="header" style={styles.heading}>
+      <Text accessibilityRole="header" accessibilityLiveRegion="polite" style={styles.heading}>
         Review your plan
       </Text>
       {titles.map((title, index) => (
@@ -544,7 +583,7 @@ function CompletedWorkflowScreen({
 }) {
   return (
     <View style={styles.screen}>
-      <Text accessibilityRole="header" style={styles.heading}>
+      <Text accessibilityRole="header" accessibilityLiveRegion="polite" style={styles.heading}>
         Plan complete
       </Text>
       {created.map((todo, index) => (
@@ -578,7 +617,7 @@ function CancelledWorkflowScreen({
 }) {
   return (
     <View style={styles.screen}>
-      <Text accessibilityRole="header" style={styles.heading}>
+      <Text accessibilityRole="header" accessibilityLiveRegion="polite" style={styles.heading}>
         Plan cancelled
       </Text>
       <Pressable
