@@ -170,8 +170,8 @@ retried automatically — a second attempt could double-apply — so recovery
 is always an explicit reload.
 
 Limitation to know: if the *start* request itself is lost, there is no
-workflow ID to reload, so the screen says **Starting may not have finished.
-Start again to retry** and warns that retrying may create another draft.
+workflow ID to reload, so the screen explains that the result may be unknown
+and warns that retrying may create another draft.
 Recovery identifiers arrive in Phase 9.
 
 ## 11. Focused commands that were actually verified
@@ -206,6 +206,9 @@ phase: there is no `OFFER_BREAKDOWN` state, no template registry, no
 endpoint, and no automatic resubmission.
 
 ## 13. Phase 7 acceptance record
+
+Local acceptance is pending. Record only observed web and iOS results below;
+passing automated checks does not establish these manual observations.
 
 | Target | Date/runtime | Simple path | Breakdown path | Cancel/terminal | Invalid action | Restart/outage |
 | --- | --- | --- | --- | --- | --- | --- |

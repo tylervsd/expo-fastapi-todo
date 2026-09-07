@@ -462,6 +462,10 @@ describe("todo workflow transport", () => {
       ],
     },
   };
+  const cancelledWorkflow = {
+    ...assessWorkflow,
+    state: "CANCELLED",
+  };
 
   it("starts a workflow with an exact POST request", async () => {
     const fetchImpl = jest.fn().mockResolvedValue(response(201, assessWorkflow));
@@ -534,6 +538,41 @@ describe("todo workflow transport", () => {
     ],
     ["null completed result", { ...completedWorkflow, result: null }],
     [
+      "assessment context with an answer",
+      { ...assessWorkflow, context: { involves_multiple_steps: false, proposed_todo_titles: [] } },
+    ],
+    [
+      "collection context with proposals",
+      { ...assessWorkflow, state: "COLLECT_TASKS", context: { involves_multiple_steps: true, proposed_todo_titles: ["One"] } },
+    ],
+    [
+      "context with an extra key",
+      { ...assessWorkflow, context: { involves_multiple_steps: null, proposed_todo_titles: [], extra: true } },
+    ],
+    [
+      "review context with missing proposal",
+      { ...assessWorkflow, state: "REVIEW", context: { involves_multiple_steps: false, proposed_todo_titles: [] } },
+    ],
+    [
+      "review context with too few multi-step proposals",
+      { ...assessWorkflow, state: "REVIEW", context: { involves_multiple_steps: true, proposed_todo_titles: ["One"] } },
+    ],
+    [
+      "completed result with wrong title",
+      {
+        ...completedWorkflow,
+        result: { created_todos: [{ ...completedWorkflow.result.created_todos[0], title: "Other" }] },
+      },
+    ],
+    [
+      "completed result with completed todo",
+      {
+        ...completedWorkflow,
+        result: { created_todos: [{ ...completedWorkflow.result.created_todos[0], completed: true }] },
+      },
+    ],
+    ["cancelled result object", { ...cancelledWorkflow, result: { created_todos: [] } }],
+    [
       "malformed created todo",
       {
         ...completedWorkflow,
@@ -548,6 +587,17 @@ describe("todo workflow transport", () => {
     await expect(pending).rejects.not.toMatchObject({
       message: expect.stringContaining("birthday"),
     });
+  });
+
+  it.each([
+    ["assessment context", cancelledWorkflow],
+    ["collection context", { ...cancelledWorkflow, context: { involves_multiple_steps: true, proposed_todo_titles: [] } }],
+    ["single review context", { ...cancelledWorkflow, context: { involves_multiple_steps: false, proposed_todo_titles: ["Plan birthday party"] } }],
+    ["multi-step review context", { ...cancelledWorkflow, context: { involves_multiple_steps: true, proposed_todo_titles: ["One", "Two"] } }],
+  ])("accepts cancelled %s", async (_case, body) => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(200, body));
+
+    await expect(getTodoWorkflow(workflowId, { apiUrl, token: "tok", fetchImpl })).resolves.toEqual(body);
   });
 
   it("maps workflow 401 to auth-required", async () => {

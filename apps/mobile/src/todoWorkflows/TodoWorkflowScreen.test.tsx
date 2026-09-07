@@ -12,6 +12,10 @@ import {
 
 const mockInputFocus = jest.fn();
 const mockControlFocus: (unknown[] | undefined)[] = [];
+const mockAnnounceForAccessibility = jest.fn();
+const mockSetAccessibilityFocus = jest.fn();
+const mockFindNodeHandle = jest.fn(() => 123);
+let mockPlatformOs: "ios" | "web" = "ios";
 
 jest.mock("react-native", () => {
   const actual = jest.requireActual("react-native");
@@ -58,6 +62,17 @@ jest.mock("react-native", () => {
     get(target, property, receiver) {
       if (property === "TextInput") return TestTextInput;
       if (property === "Pressable") return TestPressable;
+      if (property === "AccessibilityInfo") {
+        return {
+          ...actual.AccessibilityInfo,
+          announceForAccessibility: mockAnnounceForAccessibility,
+          setAccessibilityFocus: mockSetAccessibilityFocus,
+        };
+      }
+      if (property === "findNodeHandle") return mockFindNodeHandle;
+      if (property === "Platform") {
+        return { get OS() { return mockPlatformOs; } };
+      }
       return Reflect.get(target, property, receiver);
     },
   });
@@ -176,6 +191,9 @@ const renderHost = async (api: MockWorkflowApi, client = createAppQueryClient())
 beforeEach(() => {
   mockInputFocus.mockClear();
   mockControlFocus.length = 0;
+  mockAnnounceForAccessibility.mockClear();
+  mockSetAccessibilityFocus.mockClear();
+  mockFindNodeHandle.mockClear();
 });
 
 afterEach(() => {
@@ -246,6 +264,25 @@ it("sends one canonical start despite rapid press and submit", async () => {
   expect(mockControlFocus[mockControlFocus.length - 1]).toBe("Yes");
 });
 
+it("shows Submitting… while assessment and collection actions are pending", async () => {
+  const answering = deferred<TodoWorkflow>();
+  const submitting = deferred<TodoWorkflow>();
+  const api = makeApi();
+  await renderHost(api);
+  await startToAssess(api);
+  api.advanceWorkflow.mockReturnValueOnce(answering.promise);
+
+  await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
+  expect(screen.getByText("Submitting…")).toBeTruthy();
+  await act(async () => answering.resolve(collectWorkflow));
+  await waitFor(() => expect(screen.getByRole("header", { name: "Break it into smaller todos" })).toBeTruthy());
+
+  api.advanceWorkflow.mockReturnValueOnce(submitting.promise);
+  await fireEvent.changeText(screen.getByLabelText("Todo titles (one per line)"), "One\nTwo");
+  await fireEvent.press(screen.getByRole("button", { name: "Save tasks" }));
+  expect(screen.getByText("Submitting…")).toBeTruthy();
+});
+
 it("preserves the start draft on 422", async () => {
   const api = makeApi();
   api.startWorkflow.mockRejectedValueOnce(
@@ -275,7 +312,7 @@ it("shows lost-start uncertainty without retry and keeps Back", async () => {
 
   await waitFor(() =>
     expect(screen.getByRole("alert")).toHaveTextContent(
-      "Starting may not have finished. Start again to retry."
+      "The result may be unknown. Starting again may create another draft."
     )
   );
   expect(api.startWorkflow).toHaveBeenCalledTimes(1);
@@ -562,7 +599,7 @@ it("locks on uncertain advance and unlocks only on a valid reload", async () => 
 
   await waitFor(() =>
     expect(screen.getByRole("alert")).toHaveTextContent(
-      "The result may be unknown. Reload the plan to recover."
+      "The result may be unknown. Reload this plan before trying again."
     )
   );
   expect(
@@ -623,10 +660,12 @@ it("keeps the lock when reload fails and unlocks on the next valid reload", asyn
   );
 });
 
-it("reconciles conflict through a safe GET with plan-changed copy", async () => {
+it("reconciles conflict immediately through exactly one safe GET", async () => {
   const api = makeApi();
   await renderHost(api);
   await startToAssess(api);
+  const recovering = deferred<TodoWorkflow>();
+  api.getWorkflow.mockReturnValueOnce(recovering.promise);
   api.advanceWorkflow.mockRejectedValueOnce(
     new TodoApiError("conflict", "The plan changed. Reload to continue.")
   );
@@ -636,14 +675,46 @@ it("reconciles conflict through a safe GET with plan-changed copy", async () => 
   await waitFor(() =>
     expect(screen.getByRole("alert")).toHaveTextContent("The plan changed. Reload to continue.")
   );
-  await waitFor(() => expect(screen.getByRole("button", { name: "Reload plan" })).toBeTruthy());
-
-  api.getWorkflow.mockResolvedValueOnce(collectWorkflow);
-  await fireEvent.press(screen.getByRole("button", { name: "Reload plan" }));
+  await waitFor(() => expect(api.getWorkflow).toHaveBeenCalledTimes(1));
+  expect(api.advanceWorkflow).toHaveBeenCalledTimes(1);
+  await act(async () => recovering.resolve(collectWorkflow));
   await waitFor(() =>
     expect(screen.getByRole("header", { name: "Break it into smaller todos" })).toBeTruthy()
   );
   expect(screen.queryByRole("alert")).toBeNull();
+});
+
+it("announces and focuses the state returned by recovery GET", async () => {
+  const api = makeApi();
+  await renderHost(api);
+  await startToAssess(api);
+  api.advanceWorkflow.mockRejectedValueOnce(
+    new TodoApiError("unavailable", "Could not update the plan.")
+  );
+  await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Reload plan" })).toBeTruthy());
+  const inputFocusBefore = mockInputFocus.mock.calls.length;
+  api.getWorkflow.mockResolvedValueOnce(collectWorkflow);
+  await fireEvent.press(screen.getByRole("button", { name: "Reload plan" }));
+  await waitFor(() => expect(screen.getByRole("header", { name: "Break it into smaller todos" })).toBeTruthy());
+  expect(mockInputFocus.mock.calls.length).toBeGreaterThan(inputFocusBefore);
+  expect(mockAnnounceForAccessibility).toHaveBeenCalledWith("Break it into smaller todos");
+});
+
+it("invalidates todos when recovery GET returns COMPLETED", async () => {
+  const api = makeApi();
+  const { client } = await renderHost(api);
+  await startToAssess(api);
+  api.advanceWorkflow.mockRejectedValueOnce(
+    new TodoApiError("unavailable", "Could not update the plan.")
+  );
+  await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Reload plan" })).toBeTruthy());
+  client.setQueryData(["todos"], []);
+  api.getWorkflow.mockResolvedValueOnce(completedWorkflow);
+  await fireEvent.press(screen.getByRole("button", { name: "Reload plan" }));
+  await waitFor(() => expect(screen.getByRole("header", { name: "Plan complete" })).toBeTruthy());
+  expect(client.getQueryState(["todos"])?.isInvalidated).toBe(true);
 });
 
 it("invalidates todos on completion without a second todo array", async () => {
@@ -683,6 +754,28 @@ it("moves focus to the Yes action after assessment appears", async () => {
 
   await waitFor(() => expect(mockControlFocus.length).toBeGreaterThan(focusBefore));
   expect(mockControlFocus[mockControlFocus.length - 1]).toBe("Yes");
+  expect(mockAnnounceForAccessibility).toHaveBeenCalledWith("Does this task involve multiple steps?");
+  expect(mockSetAccessibilityFocus).toHaveBeenCalledWith(123);
+});
+
+it("keeps web focus usable without native accessibility focus", async () => {
+  mockPlatformOs = "web";
+  try {
+    const api = makeApi();
+    await renderHost(api);
+    await startToAssess(api);
+
+    expect(mockControlFocus[mockControlFocus.length - 1]).toBe("Yes");
+    expect(mockAnnounceForAccessibility).toHaveBeenCalledWith("Does this task involve multiple steps?");
+    expect(mockFindNodeHandle).not.toHaveBeenCalled();
+    expect(mockSetAccessibilityFocus).not.toHaveBeenCalled();
+    expect(screen.getByRole("header", { name: "Does this task involve multiple steps?" })).toHaveProp(
+      "accessibilityLiveRegion",
+      "polite"
+    );
+  } finally {
+    mockPlatformOs = "ios";
+  }
 });
 
 it("moves focus to the breakdown input, Confirm, and terminal Back", async () => {
@@ -698,6 +791,8 @@ it("moves focus to the breakdown input, Confirm, and terminal Back", async () =>
     expect(screen.getByRole("header", { name: "Plan complete" })).toBeTruthy()
   );
   expect(mockControlFocus[mockControlFocus.length - 1]).toBe("Back to todos");
+  expect(mockAnnounceForAccessibility).toHaveBeenCalledWith("Plan complete");
+  expect(mockSetAccessibilityFocus).toHaveBeenCalledWith(123);
 });
 
 it("keeps explicit roles, alerts, disabled semantics, and 44-point targets", async () => {

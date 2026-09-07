@@ -458,6 +458,9 @@ function isTodoWorkflow(value: unknown): value is TodoWorkflow {
     context === null ||
     Array.isArray(context) ||
     Reflect.ownKeys(context).length !== 2 ||
+    !Reflect.ownKeys(context).every((key) => typeof key === "string") ||
+    !Reflect.ownKeys(context).includes("involves_multiple_steps") ||
+    !Reflect.ownKeys(context).includes("proposed_todo_titles") ||
     !(
       (context as Record<string, unknown>).involves_multiple_steps === null ||
       typeof (context as Record<string, unknown>).involves_multiple_steps === "boolean"
@@ -475,9 +478,24 @@ function isTodoWorkflow(value: unknown): value is TodoWorkflow {
   ) {
     return false;
   }
+
+  const answer = (context as Record<string, unknown>).involves_multiple_steps;
+  const isReviewed =
+    (answer === false && proposals.length === 1 && proposals[0] === record.title) ||
+    (answer === true && proposals.length >= 2 && proposals.length <= 10);
+  const state = record.state;
+  const validContext =
+    (state === "ASSESS_TASK" && answer === null && proposals.length === 0) ||
+    (state === "COLLECT_TASKS" && answer === true && proposals.length === 0) ||
+    ((state === "REVIEW" || state === "COMPLETED") && isReviewed) ||
+    (state === "CANCELLED" &&
+      ((answer === null && proposals.length === 0) ||
+        (answer === true && (proposals.length === 0 || isReviewed)) ||
+        (answer === false && isReviewed)));
+  if (!validContext) return false;
+
   const result = record.result;
-  const terminal = record.state === "COMPLETED" || record.state === "CANCELLED";
-  if (!terminal) {
+  if (state !== "COMPLETED") {
     return result === null;
   }
   if (
@@ -489,7 +507,14 @@ function isTodoWorkflow(value: unknown): value is TodoWorkflow {
     return false;
   }
   const created = (result as Record<string, unknown>).created_todos;
-  return Array.isArray(created) && created.every(isTodo);
+  return (
+    Array.isArray(created) &&
+    created.length === proposals.length &&
+    created.every(
+      (todo, index): todo is Todo =>
+        isTodo(todo) && todo.completed === false && todo.title === proposals[index]
+    )
+  );
 }
 
 function workflowActionBody(action: TodoWorkflowAction): RequestBody {
