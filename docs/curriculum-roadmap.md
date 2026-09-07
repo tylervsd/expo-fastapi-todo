@@ -56,7 +56,7 @@ This roadmap is provisional. Every phase receives its own approved spec before i
 - **Visible outcome:** Users sign in and see only their own protected todos on web and iOS.
 - **New technology/pattern:** Secure token handling, authenticated API requests, protected navigation, and per-user authorization.
 - **Testing-pyramid layer introduced:** Unit and integration tests for identity boundaries, plus a small set of authenticated critical-path tests.
-- **Spec gate:** Before implementation, this phase gets its own approved security-conscious spec for sessions, tokens, protected operations, and failure behavior.
+- **Spec gate:** This phase received its approved spec before implementation, covering sessions, tokens, protected operations, and failure behavior.
 
 ## 8. Cross-platform E2E
 
