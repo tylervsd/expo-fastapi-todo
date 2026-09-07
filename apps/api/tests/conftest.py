@@ -20,7 +20,7 @@ from app.database import (
 DEFAULT_TEST_DATABASE_URL = (
     "postgresql+psycopg://todo_test:todo_test@127.0.0.1:5433/todo_test"
 )
-REVISION = "2026090702"
+REVISION = "2026090801"
 
 
 def get_test_database_url() -> URL:
