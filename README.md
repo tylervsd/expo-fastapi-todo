@@ -12,7 +12,7 @@ This tutorial is for developers who know basic Git and TypeScript or Python and 
 
 ## Current checkpoint
 
-The current implementation is **Phase 6 — Authentication and authorization**. Users sign up and sign in on web and iOS, receive an opaque server-side session, and see only their own todos; sign-out revokes the session. Guide 06 explains password hashing, sessions, the Bearer boundary, per-user SQL scoping, the token-storage split, and acceptance journey. Earlier annotated checkpoints and guides remain available. The Phase 6 release checkpoint is created only after integration, passing GitHub CI, and observed local acceptance.
+The current implementation is **Phase 6 — Authentication and authorization**. Users sign up and sign in on web and iOS, receive an opaque server-side session, and see only their own todos; sign-out revokes the session. Guide 06 explains password hashing, sessions, the Bearer boundary, per-user SQL scoping, the token-storage split, and acceptance journey. Earlier annotated checkpoints and guides remain available. Phase 6 local acceptance is pending: the existing tag does not replace the missing web and iOS observations in [Guide 06](docs/guides/06-auth.md#phase-6-acceptance-record).
 
 ## Reference Mac
 

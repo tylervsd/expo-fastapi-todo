@@ -108,10 +108,27 @@ def test_user_signup_accepts_good_usernames(username: str) -> None:
     )
 
 
-@pytest.mark.parametrize("password", ["short", "x" * 129, "contains\x00nul"])
+@pytest.mark.parametrize(
+    "password",
+    [
+        "short",
+        "x" * 129,
+        "contains\x00nul",
+        pytest.param("valid\ud800-password", id="high-surrogate"),
+        pytest.param("valid\udc00-password", id="low-surrogate"),
+    ],
+)
 def test_user_signup_rejects_bad_passwords(password: str) -> None:
     with pytest.raises(ValidationError):
         UserSignup(username="alice", password=password)
+
+
+@pytest.mark.parametrize(
+    "password", ["valid" + chr(0xD800) + "-password", "valid" + chr(0xDC00) + "-password"]
+)
+def test_user_login_rejects_unpaired_surrogate_passwords(password: str) -> None:
+    with pytest.raises(ValidationError):
+        UserLogin(username="alice", password=password)
 
 
 def test_user_signup_does_not_trim_password() -> None:

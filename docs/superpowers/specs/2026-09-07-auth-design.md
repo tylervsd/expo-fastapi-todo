@@ -1,6 +1,6 @@
 # Phase 6 Authentication and Authorization Design
 
-**Status:** Locally accepted (2026-09-07)
+**Status:** Design approved; local acceptance pending (2026-09-07)
 
 ## Outcome
 

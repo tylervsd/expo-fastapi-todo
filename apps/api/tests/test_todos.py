@@ -307,6 +307,18 @@ def test_openapi_publishes_todo_paths_and_schema_references(
     )
 
 
+def test_openapi_publishes_bearer_auth_for_protected_operations(client: TestClient) -> None:
+    document = client.get("/openapi.json").json()
+
+    assert document["components"]["securitySchemes"]["HTTPBearer"] == {
+        "type": "http",
+        "scheme": "bearer",
+    }
+    assert document["paths"]["/auth/me"]["get"]["security"] == [{"HTTPBearer": []}]
+    assert document["paths"]["/todos"]["get"]["security"] == [{"HTTPBearer": []}]
+    assert document["paths"]["/auth/logout"]["post"]["security"] == [{"HTTPBearer": []}]
+
+
 def test_cors_allows_health_get_preflight(client: TestClient) -> None:
     response = client.options(
         "/health",

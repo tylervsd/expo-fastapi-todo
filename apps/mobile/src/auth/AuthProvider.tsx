@@ -45,7 +45,13 @@ export function AuthProvider({
   useEffect(() => {
     let mounted = true;
     void (async () => {
-      const stored = await storage.get();
+      let stored: string | null;
+      try {
+        stored = await storage.get();
+      } catch {
+        if (mounted) setStatus("signed-out");
+        return;
+      }
       if (!mounted) return;
       if (stored === null) {
         setStatus("signed-out");
@@ -60,7 +66,11 @@ export function AuthProvider({
       } catch (error) {
         if (!mounted) return;
         if (error instanceof TodoApiError) {
-          await storage.clear();
+          try {
+            await storage.clear();
+          } catch {
+            // Best effort: local state still settles below.
+          }
         }
         setStatus("signed-out");
       }
@@ -80,7 +90,11 @@ export function AuthProvider({
       } catch {
         // Best effort: local state clears regardless of server reachability.
       } finally {
-        await storage.clear();
+        try {
+          await storage.clear();
+        } catch {
+          // Best effort: local state still settles below.
+        }
         queryClient.clear();
         setToken(null);
         setUser(null);

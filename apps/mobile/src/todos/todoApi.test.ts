@@ -388,7 +388,7 @@ describe("auth transport", () => {
 
     await expect(logout({ apiUrl, token: "tok-1", fetchImpl })).resolves.toBeUndefined();
     expect(fetchImpl).toHaveBeenCalledWith(`${apiUrl}/auth/logout`, {
-      method: "DELETE",
+      method: "POST",
       headers: { Authorization: "Bearer tok-1" },
       signal: expect.any(AbortSignal),
     });

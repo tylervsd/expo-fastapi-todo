@@ -134,6 +134,10 @@ Use two users (`alice`, `bob`) and recognizable `Phase 6` titles.
 
 ## Phase 6 acceptance record
 
+Local acceptance is pending: neither target has recorded observations yet.
+The existing `phase-06-auth` tag does not establish that these checks passed.
+Record the runtime and results after exercising the corrected implementation.
+
 | Target | Date/runtime | Signup/login | Isolation | Restart persistence | Sign-out |
 | --- | --- | --- | --- | --- | --- |
 | Web | — | ☐ | ☐ | ☐ | ☐ |

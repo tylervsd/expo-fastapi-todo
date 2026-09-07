@@ -10,6 +10,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -88,7 +89,11 @@ def validate_username(username: str) -> str:
 
 
 def validate_password(password: str) -> str:
-    if "\x00" in password or not 8 <= len(password) <= 128:
+    if (
+        "\x00" in password
+        or not 8 <= len(password) <= 128
+        or any(0xD800 <= ord(character) <= 0xDFFF for character in password)
+    ):
         raise ValueError("password must contain 8 to 128 code points")
     return password
 
@@ -189,15 +194,18 @@ def create_app(session_factory: sessionmaker[Session] | None = None) -> FastAPI:
     def unauthorized() -> HTTPException:
         return HTTPException(status_code=401, detail="Not authenticated.")
 
+    bearer = HTTPBearer(auto_error=False)
+
     def get_current_user(
-        request: Request, session: Annotated[Session, Depends(get_session)]
+        credentials: Annotated[
+            HTTPAuthorizationCredentials | None, Depends(bearer)
+        ],
+        session: Annotated[Session, Depends(get_session)],
     ) -> UserRow:
-        header = request.headers.get("authorization", "")
-        scheme, _, token = header.partition(" ")
-        if scheme != "Bearer" or not token:
+        if credentials is None:
             raise unauthorized()
         try:
-            row = find_valid_session(session, hash_token(token))
+            row = find_valid_session(session, hash_token(credentials.credentials))
             user = find_user_by_id(session, row.user_id) if row else None
         except (OperationalError, SQLAlchemyTimeoutError) as exc:
             raise HTTPException(
@@ -272,7 +280,8 @@ def create_app(session_factory: sessionmaker[Session] | None = None) -> FastAPI:
                 password_hash = (
                     user.password_hash if user is not None else DUMMY_PASSWORD_HASH
                 )
-                if user is None or not verify_password(payload.password, password_hash):
+                password_valid = verify_password(payload.password, password_hash)
+                if user is None or not password_valid:
                     raise HTTPException(
                         status_code=401, detail="Invalid username or password."
                     )
@@ -291,14 +300,15 @@ def create_app(session_factory: sessionmaker[Session] | None = None) -> FastAPI:
 
     @app.post("/auth/logout", status_code=204)
     def logout(
-        request: Request, session: Annotated[Session, Depends(get_session)]
+        credentials: Annotated[
+            HTTPAuthorizationCredentials | None, Depends(bearer)
+        ],
+        session: Annotated[Session, Depends(get_session)],
     ) -> Response:
         try:
-            header = request.headers.get("authorization", "")
-            scheme, _, token = header.partition(" ")
             with session.begin():
-                if scheme == "Bearer" and token:
-                    delete_session(session, hash_token(token))
+                if credentials is not None:
+                    delete_session(session, hash_token(credentials.credentials))
             return Response(status_code=204)
         except (OperationalError, SQLAlchemyTimeoutError) as exc:
             raise HTTPException(

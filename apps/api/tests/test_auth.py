@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.main import create_app
+from app.passwords import DUMMY_PASSWORD_HASH
 
 
 @pytest.fixture
@@ -75,6 +76,25 @@ def test_login_rejects_unknown_user_and_wrong_password(client: TestClient) -> No
 
         assert response.status_code == 401
         assert response.json() == {"detail": "Invalid username or password."}
+
+
+def test_unknown_user_login_verifies_against_dummy_hash(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    verified: list[tuple[str, str]] = []
+
+    def record_verify(password: str, password_hash: str) -> bool:
+        verified.append((password, password_hash))
+        return False
+
+    monkeypatch.setattr("app.main.verify_password", record_verify)
+    response = client.post(
+        "/auth/login",
+        json={"username": "nobody", "password": "long-enough-password"},
+    )
+
+    assert response.status_code == 401
+    assert verified == [("long-enough-password", DUMMY_PASSWORD_HASH)]
 
 
 def test_todos_and_me_reject_unauthenticated_shapes(client: TestClient) -> None:
