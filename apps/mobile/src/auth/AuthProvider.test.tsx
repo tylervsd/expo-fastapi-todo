@@ -161,6 +161,20 @@ it("clears a revoked token and falls back to sign-in", async () => {
   expect(await storage.get()).toBeNull();
 });
 
+it("falls back to sign-in when clearing a revoked token rejects", async () => {
+  const authApi = makeAuthApi();
+  authApi.fetchMe.mockRejectedValueOnce(
+    new TodoApiError("auth-required", "Please sign in again."),
+  );
+  const storage = createMemoryTokenStorage();
+  await storage.set("tok-1");
+  jest.spyOn(storage, "clear").mockRejectedValueOnce(new Error("storage unavailable"));
+
+  await renderProvider({ authApi, storage });
+
+  await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+});
+
 it("signs out through logout, store, and cache", async () => {
   const authApi = makeAuthApi();
   const storage = createMemoryTokenStorage();
