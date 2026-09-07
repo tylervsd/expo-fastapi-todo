@@ -113,7 +113,8 @@ reported as passing until it has actually run successfully.
 - Modify `apps/mobile/src/todos/todoApi.test.ts`: workflow transport and runtime
   contract coverage.
 - Modify `apps/mobile/src/auth/authenticatedApi.ts` and its test: inject Bearer
-  credentials and preserve mid-session `401` sign-out for workflow calls.
+  credentials, report the token used by each rejected call, and preserve safe
+  mid-session `401` sign-out for workflow calls.
 - Create `apps/mobile/src/todoWorkflows/TodoWorkflowScreen.tsx`: start host,
   state-keyed cache, pessimistic submissions, uncertain-result recovery, and
   six dedicated screen components.
@@ -126,7 +127,8 @@ reported as passing until it has actually run successfully.
   preservation.
 - Modify `apps/mobile/src/TodoScreen.tsx` and its test: add the separate
   **Help me plan a task** entry without changing quick-add behavior.
-- Modify `apps/mobile/src/auth/AuthProvider.tsx` and its test: render
+- Modify `apps/mobile/src/auth/AuthProvider.tsx` and its test: ignore stale
+  session failures, protect asynchronous logout cleanup, and render
   `TodoExperience` with user identity and the authenticated combined API.
 - Modify `apps/mobile/App.test.tsx`: retain the app-lifetime QueryClient and
   authenticated composition regression.
@@ -389,13 +391,17 @@ def update_workflow(
 
 `lock_workflow` uses `select(...).where(public_id, owner_id).with_for_update()`.
 `update_workflow` assigns the supplied values and flushes; it does not commit.
+Map `completion_result` with `JSONB(none_as_null=True)` so Python `None` is SQL
+`NULL`, while completed results remain JSON objects.
 
 - [ ] **Step 1: Write the migration-shape RED tests.**
 
 Update `REVISION` in `conftest.py` and `test_persistence.py` to `2026090702`.
 Add `todo_workflows` to the expected table list and assert exact column order,
 types, nullability, identity, public-ID uniqueness, owner cascade FK, state and
-title checks, and JSON-type checks. Update cleanup to:
+title checks, the proposals JSON-array check, and the exact completion constraint
+`completion_result IS NULL OR jsonb_typeof(completion_result) = 'object'`.
+Update cleanup to:
 
 ```sql
 TRUNCATE users, sessions, todos, todo_workflows RESTART IDENTITY CASCADE
@@ -427,7 +433,8 @@ The upgrade creates `todo_workflows` with:
 - non-null text title plus named 1-120 character check;
 - nullable Boolean answer;
 - non-null JSONB proposals with server default `'[]'::jsonb` and array check;
-- nullable JSONB completion result with object-when-present check.
+- nullable `JSONB(none_as_null=True)` completion result with
+  object-when-present check.
 
 The downgrade drops only `todo_workflows`. Import `WorkflowRow` in Alembic's
 environment so its table is registered on the shared `Base.metadata`.
@@ -441,6 +448,9 @@ Run the Step 2 command. Expected: PASS with database revision `2026090702`.
 Using real `database_session`, create two users and prove:
 
 - insert flushes an `ASSESS_TASK` row with empty proposals;
+- raw SQL `completion_result IS NULL` is true for new `ASSESS_TASK` rows and
+  rows updated to `CANCELLED`;
+- the database rejects a non-object non-null completion result;
 - a new SQLAlchemy session reads accepted progress after commit;
 - `find_workflow` and `lock_workflow` return `None` for another owner;
 - `update_workflow` persists Boolean answer and ordered duplicate proposals;
@@ -460,9 +470,11 @@ Expected: FAIL because repository functions are missing.
 
 - [ ] **Step 7: Implement the concrete mapping and four operations.**
 
-Use PostgreSQL `UUID` and `JSONB`, existing `BigInteger`/`Identity` conventions,
-and no relationship objects or generic repository class. Copy mutable JSON
-values at the boundary so callers cannot mutate ORM state after persistence.
+Use PostgreSQL `UUID` and `JSONB` (with `none_as_null=True` for
+`completion_result`), existing
+`BigInteger`/`Identity` conventions, and no relationship objects or generic
+repository class. Copy mutable JSON values at the boundary so callers cannot
+mutate ORM state after persistence.
 
 - [ ] **Step 8: Verify and commit Task 2.**
 
@@ -518,7 +530,14 @@ workflow, and commits before returning.
 
 - [ ] **Step 1: Write service RED tests for persisted journeys.**
 
-Extend `test_workflow_persistence.py` with real-PostgreSQL cases that prove:
+Extend `test_workflow_persistence.py` with real-PostgreSQL cases.
+
+Create owners in a dedicated setup session and commit before invoking the
+service. Use a fresh session for every `start_workflow` or `advance_workflow`
+call, and separate fresh sessions for database verification; do not reuse a
+session after a read has triggered SQLAlchemy autobegin.
+
+Prove:
 
 - start commits `ASSESS_TASK` and creates zero todos;
 - Yes persists `COLLECT_TASKS`, then submission persists `REVIEW` across a fresh
@@ -547,15 +566,17 @@ def fail_after_one(*args, **kwargs):
     return real_create(*args, **kwargs)
 ```
 
-After the exception, verify in a fresh session that todo count is unchanged and
-the workflow remains `REVIEW` with null completion result.
+Invoke the failing advance in its own fresh write session. After the exception,
+verify in a separate fresh session that todo count is unchanged and the
+workflow remains `REVIEW` with SQL-null completion result.
 
 - [ ] **Step 3: Add the invalid-action learning experiment at service level.**
 
-Start `Plan birthday party`, record the workflow row and owner's todo count,
-submit `Confirm()` in `ASSESS_TASK`, and assert `InvalidWorkflowAction`. In a
-fresh session assert the row and todo count are byte-for-byte/value-for-value
-unchanged.
+Start `Plan birthday party` in one fresh write session, record the workflow row
+and owner's todo count in a separate verification session, then submit
+`Confirm()` in `ASSESS_TASK` through another fresh write session and assert
+`InvalidWorkflowAction`. In a final fresh verification session assert the row
+and todo count are byte-for-byte/value-for-value unchanged.
 
 - [ ] **Step 4: Run service tests and observe RED.**
 
@@ -768,6 +789,8 @@ git commit -m "feat: expose authenticated todo workflow API"
 - Modify: `apps/mobile/src/todos/todoApi.test.ts`
 - Modify: `apps/mobile/src/auth/authenticatedApi.ts`
 - Modify: `apps/mobile/src/auth/authenticatedApi.test.ts`
+- Modify: `apps/mobile/src/auth/AuthProvider.tsx`
+- Modify: `apps/mobile/src/auth/AuthProvider.test.tsx`
 
 **Interfaces:**
 
@@ -828,6 +851,12 @@ export type TodoWorkflowScreenApi = {
 };
 
 export type AuthenticatedApi = TodoScreenApi & TodoWorkflowScreenApi;
+
+export function createAuthenticatedApi(
+  getToken: () => string | null,
+  onAuthRequired: (requestToken: string | null) => void,
+  transport?: TodoTransport,
+): AuthenticatedApi;
 ```
 
 - [ ] **Step 1: Write workflow transport RED tests.**
@@ -860,31 +889,45 @@ Expected: FAIL because workflow exports and `conflict` do not exist.
 Reuse the private request function, timer/listener cleanup, URL validation, and
 `isTodo`. Expand its request-body and operation unions; do not add another fetch
 wrapper. Add one strict `isTodoWorkflow` guard with state-dependent result
-checks. Keep existing todo/auth behavior byte-for-byte compatible.
+checks. Preserve existing todo response and error behavior.
 
 - [ ] **Step 5: Write authenticated wrapper RED tests.**
 
-Prove all three workflow calls receive the current token, workflow `401` invokes
-the existing sign-out callback and rethrows, and validation/conflict/unavailable
-errors do not sign out.
+Prove all three workflow calls receive the current token. For each call,
+capture `getToken()` exactly once before invoking transport; if its deferred
+promise later rejects with `auth-required`, pass that captured token to the
+callback and rethrow even when `getToken()` now returns a different token.
+Validation/conflict/unavailable errors do not invoke the callback.
 
 - [ ] **Step 6: Extend the authenticated API and verify.**
 
 Return one `AuthenticatedApi` object containing existing todo methods plus the
-three workflow methods. Reuse the same private auth-required guard; do not add a
-second provider or token store.
+three workflow methods. Reuse one private auth-required guard that receives the
+captured request token; do not add a second provider or token store.
+
+Update `AuthProvider` in this task for the callback signature. Track the live
+`{ token, userId }` session identity in a ref and clear auth state only when the
+rejected request token still identifies that live session. Manual sign-out and
+an accepted current-token `401` likewise capture the target session identity;
+recheck that identity after awaited logout before clearing storage, query cache,
+or React state. Keep sign-in unavailable while the accepted sign-out cleanup is
+pending, so an old cleanup cannot overlap persistence of a new session token.
+Add the deferred old-token/current-token provider regressions in this task;
+Task 7 repeats them through the integrated workflow shell.
 
 Run:
 
 ```bash
 pnpm --dir apps/mobile test --runInBand \
-  src/todos/todoApi.test.ts src/auth/authenticatedApi.test.ts
+  src/todos/todoApi.test.ts src/auth/authenticatedApi.test.ts \
+  src/auth/AuthProvider.test.tsx
 pnpm lint:mobile
 pnpm typecheck
 git diff --check
 ```
 
-Expected: transport and wrapper tests PASS with lint and typecheck green.
+Expected: transport, wrapper, and provider tests PASS with lint and typecheck
+green.
 
 - [ ] **Step 7: Commit Task 5.**
 
@@ -892,7 +935,9 @@ Expected: transport and wrapper tests PASS with lint and typecheck green.
 git add apps/mobile/src/todos/todoApi.ts \
   apps/mobile/src/todos/todoApi.test.ts \
   apps/mobile/src/auth/authenticatedApi.ts \
-  apps/mobile/src/auth/authenticatedApi.test.ts
+  apps/mobile/src/auth/authenticatedApi.test.ts \
+  apps/mobile/src/auth/AuthProvider.tsx \
+  apps/mobile/src/auth/AuthProvider.test.tsx
 git commit -m "feat: add typed todo workflow transport"
 ```
 
@@ -942,6 +987,8 @@ API promises. Prove the start form:
 - sends canonical `Plan birthday party` once despite rapid press/submit;
 - remains on the start screen with disabled controls and **Submitting...** while
   pending;
+- exposes **Back to todos** before a workflow ID exists and after a lost-start
+  failure, but disables it while the start request is pending;
 - renders only the returned `ASSESS_TASK` after success;
 - preserves draft on `422`;
 - shows the explicit lost-start uncertainty copy on unavailable/invalid data,
@@ -979,9 +1026,12 @@ Prove:
   it; a full app remount intentionally loses the locally held ID in Phase 7;
 - action `unavailable` or `invalid-data` marks the workflow query stale, keeps
   the prior screen/draft, disables actions, and shows **Reload plan**;
-- Reload performs one safe GET, then either advances or retains the screen based
-  only on that response;
-- `conflict` performs safe reconciliation and shows plan-changed copy;
+- Reload performs one safe GET. An unavailable or malformed GET keeps the prior
+  snapshot, draft, and uncertainty lock; only a valid GET replaces the snapshot
+  and unlocks business actions;
+- `conflict` starts the same safe GET reconciliation and shows plan-changed
+  copy. If that GET fails or is malformed, it also keeps the prior snapshot,
+  draft, and uncertainty lock until a later valid GET succeeds;
 - completion invalidates `['todos']` but does not create a second todo array.
 
 - [ ] **Step 5: Write accessibility and focus RED tests.**
@@ -1010,6 +1060,11 @@ focus signals, and visible validation copy. Use TanStack Query for the remote
 snapshot and mutations. Keep a synchronous busy ref for rapid-event gating,
 matching the existing TodoScreen convention. Do not create a reducer, registry,
 navigation stack, or client transition table.
+
+Pass `onExit` to the pre-ID start screen so **Back to todos** is available there
+and in lost-start uncertainty, disabling it only while start is pending. Once a
+persisted active snapshot exists, expose cancellation as its only exit. Keep an
+uncertainty lock until a recovery GET returns a runtime-valid workflow.
 
 Split multiline input on line boundaries, discard blank-only lines, and
 canonicalize each remaining line before submission. Backend validation remains
@@ -1074,8 +1129,9 @@ export function TodoScreen({
 ```
 
 `TodoExperience` owns only `"todos" | "workflow"` local shell mode. It starts
-on todos, passes `onPlanTask` to TodoScreen, and returns only through the
-workflow terminal `onExit` callback.
+on todos, passes `onPlanTask` to TodoScreen, and returns through workflow
+`onExit` from a pre-ID start/lost-start screen or a terminal snapshot. A
+persisted active snapshot exits only through cancellation.
 
 - [ ] **Step 1: Add the separate-entry RED regression to TodoScreen tests.**
 
@@ -1091,10 +1147,13 @@ With injected todo/workflow methods, prove:
 - initial mode shows the existing Todos heading, title field, and quick-add;
 - pressing the separate entry replaces it with workflow start without making a
   workflow request;
+- Back from the pre-ID start or lost-start screen returns to TodoScreen, while a
+  pending start disables Back and keeps the shell in workflow mode;
 - completing or cancelling and pressing Back returns to TodoScreen;
 - returning after completion observes a stale `['todos']` cache and starts the
   existing authoritative GET;
-- an active workflow has no silent shell Back control; cancellation is the exit;
+- a persisted active workflow has no shell Back control; cancellation is the
+  only exit;
 - switching users through remount cannot render the prior user's workflow key.
 
 - [ ] **Step 3: Run TodoScreen and shell tests and observe RED.**
@@ -1117,16 +1176,19 @@ union; do not add Expo Router or another navigation package.
 - [ ] **Step 5: Write AuthProvider integration RED tests.**
 
 Update its transport double with the three workflow methods. Prove signed-in
-render passes the public user ID, workflow calls carry the current token, a
-workflow `401` clears storage/cache and returns to sign-in, and sign-out while a
-workflow request settles cannot expose the former user's snapshot to the next
-session.
+render passes the public user ID and workflow calls carry the current token.
+Start a deferred workflow call as user A, sign out A, sign in as user B, then
+reject A's call with `auth-required`; B must remain signed in with B's stored
+token and cache. A workflow `401` from B's current token must still clear
+storage/cache and return to sign-in. Also defer logout/storage cleanup and prove
+sign-in remains unavailable until that cleanup finishes.
 
 - [ ] **Step 6: Replace direct TodoScreen composition with TodoExperience.**
 
-Keep auth status ownership, token restore, logout, storage, and query clearing
-unchanged. Build the authenticated combined API once per render as today; pass
-it and `user.id` to TodoExperience. Do not move auth state into TanStack Query.
+Preserve Task 5's session-identity checks around token restore, logout, storage,
+and query clearing. Build the authenticated combined API once per render as
+today; pass it and `user.id` to TodoExperience. Do not move auth state into
+TanStack Query.
 
 - [ ] **Step 7: Run the full focused mobile regression.**
 
