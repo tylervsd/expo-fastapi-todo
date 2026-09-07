@@ -20,7 +20,7 @@ from app.database import (
 DEFAULT_TEST_DATABASE_URL = (
     "postgresql+psycopg://todo_test:todo_test@127.0.0.1:5433/todo_test"
 )
-REVISION = "2026090701"
+REVISION = "2026090702"
 
 
 def get_test_database_url() -> URL:
@@ -67,7 +67,7 @@ def database_session(
 ) -> Iterator[Session]:
     with database_engine.begin() as connection:
         connection.execute(
-            text("TRUNCATE users, sessions, todos RESTART IDENTITY CASCADE")
+            text("TRUNCATE users, sessions, todos, todo_workflows RESTART IDENTITY CASCADE")
         )
     with session_factory() as session:
         yield session

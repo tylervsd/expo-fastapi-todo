@@ -31,7 +31,7 @@ from app.todo_repository import (
 )
 from app.todo_repository import set_title as set_todo_title
 
-REVISION = "2026090701"
+REVISION = "2026090702"
 
 
 def test_alembic_cli_loads_api_package() -> None:
@@ -58,9 +58,77 @@ def test_migration_creates_expected_todos_shape(database_engine: Engine) -> None
     assert sorted(inspector.get_table_names()) == [
         "alembic_version",
         "sessions",
+        "todo_workflows",
         "todos",
         "users",
     ]
+    workflow_columns = {
+        column["name"]: column for column in inspector.get_columns("todo_workflows")
+    }
+    assert list(workflow_columns) == [
+        "id",
+        "public_id",
+        "owner_id",
+        "state",
+        "title",
+        "involves_multiple_steps",
+        "proposed_todo_titles",
+        "completion_result",
+    ]
+    assert all(
+        workflow_columns[name]["nullable"] is False
+        for name in (
+            "id",
+            "public_id",
+            "owner_id",
+            "state",
+            "title",
+            "proposed_todo_titles",
+        )
+    )
+    assert workflow_columns["involves_multiple_steps"]["nullable"] is True
+    assert workflow_columns["completion_result"]["nullable"] is True
+    assert str(workflow_columns["id"]["type"]) == "BIGINT"
+    assert str(workflow_columns["public_id"]["type"]) == "UUID"
+    assert str(workflow_columns["state"]["type"]) == "TEXT"
+    assert str(workflow_columns["title"]["type"]) == "TEXT"
+    assert str(workflow_columns["involves_multiple_steps"]["type"]) == "BOOLEAN"
+    assert workflow_columns["id"]["identity"] is not None
+    assert (
+        inspector.get_pk_constraint("todo_workflows")["constrained_columns"]
+        == ["id"]
+    )
+    assert [
+        (constraint["name"], constraint["column_names"])
+        for constraint in inspector.get_unique_constraints("todo_workflows")
+    ] == [("uq_todo_workflows_public_id", ["public_id"])]
+    assert sorted(
+        [
+            (constraint["name"], constraint["sqltext"])
+            for constraint in inspector.get_check_constraints("todo_workflows")
+        ]
+    ) == [
+        (
+            "ck_todo_workflows_completion_object",
+            "completion_result IS NULL OR jsonb_typeof(completion_result) = 'object'::text",
+        ),
+        (
+            "ck_todo_workflows_proposals_array",
+            "jsonb_typeof(proposed_todo_titles) = 'array'::text",
+        ),
+        (
+            "ck_todo_workflows_state",
+            "state = ANY (ARRAY['ASSESS_TASK'::text, 'COLLECT_TASKS'::text, 'REVIEW'::text, 'COMPLETED'::text, 'CANCELLED'::text])",
+        ),
+        (
+            "ck_todo_workflows_title_length",
+            "char_length(title) >= 1 AND char_length(title) <= 120",
+        ),
+    ]
+    assert [
+        (fk["referred_table"], tuple(fk["constrained_columns"]))
+        for fk in inspector.get_foreign_keys("todo_workflows")
+    ] == [("users", ("owner_id",))]
     users_columns = {
         column["name"]: column for column in inspector.get_columns("users")
     }
