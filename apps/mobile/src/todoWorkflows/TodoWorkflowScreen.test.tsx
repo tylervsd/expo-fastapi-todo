@@ -572,7 +572,7 @@ it("locks on uncertain advance and unlocks only on a valid reload", async () => 
     "accessibilityState",
     expect.objectContaining({ disabled: true })
   );
-  expect(screen.getByRole("button", { name: "Reload plan" })).toBeTruthy();
+  await waitFor(() => expect(screen.getByRole("button", { name: "Reload plan" })).toBeTruthy());
   const callsAfterFailure = api.advanceWorkflow.mock.calls.length;
 
   const reloading = deferred<TodoWorkflow>();
@@ -602,7 +602,7 @@ it("keeps the lock when reload fails and unlocks on the next valid reload", asyn
   await waitFor(() => expect(screen.getByRole("button", { name: "Reload plan" })).toBeTruthy());
 
   api.getWorkflow.mockRejectedValueOnce(
-    new TodoApiError("unavailable", "Could not reload the plan.")
+    new TodoApiError("invalid-data", "The API returned invalid plan data.")
   );
   await fireEvent.press(screen.getByRole("button", { name: "Reload plan" }));
   await waitFor(() =>
@@ -610,7 +610,7 @@ it("keeps the lock when reload fails and unlocks on the next valid reload", asyn
       screen.getByRole("header", { name: "Does this task involve multiple steps?" })
     ).toBeTruthy()
   );
-  expect(screen.getByRole("button", { name: "Reload plan" })).toBeTruthy();
+  await waitFor(() => expect(screen.getByRole("button", { name: "Reload plan" })).toBeTruthy());
   expect(screen.getByRole("button", { name: "Yes" })).toHaveProp(
     "accessibilityState",
     expect.objectContaining({ disabled: true })
@@ -636,7 +636,7 @@ it("reconciles conflict through a safe GET with plan-changed copy", async () => 
   await waitFor(() =>
     expect(screen.getByRole("alert")).toHaveTextContent("The plan changed. Reload to continue.")
   );
-  expect(screen.getByRole("button", { name: "Reload plan" })).toBeTruthy();
+  await waitFor(() => expect(screen.getByRole("button", { name: "Reload plan" })).toBeTruthy());
 
   api.getWorkflow.mockResolvedValueOnce(collectWorkflow);
   await fireEvent.press(screen.getByRole("button", { name: "Reload plan" }));
