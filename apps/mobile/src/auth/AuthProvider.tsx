@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useQueryClient } from "@tanstack/react-query";
-import { TodoScreen } from "../TodoScreen";
+import { TodoExperience } from "../TodoExperience";
 import {
   fetchMe,
   login,
@@ -145,7 +145,7 @@ export function AuthProvider({
     );
   }
 
-  if (status === "signed-out") {
+  if (status === "signed-out" || user === null) {
     return (
       <AuthScreen
         signup={authApi.signup}
@@ -158,7 +158,7 @@ export function AuthProvider({
   return (
     <View style={styles.signedIn}>
       <View style={styles.header}>
-        <Text style={styles.username}>Signed in as {user?.username}</Text>
+        <Text style={styles.username}>Signed in as {user.username}</Text>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Sign out"
@@ -168,7 +168,7 @@ export function AuthProvider({
           <Text style={styles.signOutButtonText}>Sign out</Text>
         </Pressable>
       </View>
-      <TodoScreen api={todoApi} />
+      <TodoExperience userId={user.id} api={todoApi} />
     </View>
   );
 }

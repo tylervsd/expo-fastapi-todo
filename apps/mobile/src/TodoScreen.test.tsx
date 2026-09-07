@@ -1131,3 +1131,20 @@ it("aborts the list request on unmount", async () => {
   await act(async () => pending.resolve([todo("late", "Late row")]));
   expect(api.list).toHaveBeenCalledTimes(1);
 });
+
+it("exposes a separate plan-a-task entry without firing workflow requests", async () => {
+  const api = makeApi();
+  const onPlanTask = jest.fn();
+  api.list.mockResolvedValueOnce([]);
+  const client = createAppQueryClient();
+  liveClients.push(client);
+  await render(
+    <QueryClientProvider client={client}>
+      <TodoScreen api={api} onPlanTask={onPlanTask} />
+    </QueryClientProvider>
+  );
+  await waitFor(() => expect(screen.queryByText("Loading todos…")).toBeNull());
+
+  await fireEvent.press(screen.getByRole("button", { name: "Help me plan a task" }));
+  expect(onPlanTask).toHaveBeenCalledTimes(1);
+});
