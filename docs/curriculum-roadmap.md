@@ -70,7 +70,7 @@ Phases 7-9 build one guided-todo creation feature to teach backend-owned state t
 - Testing-pyramid layer introduced: Table-driven transition unit tests and targeted API/PostgreSQL tests for saved progress, validation, ownership, cancellation, and commit/rollback behavior.
 - Learning experiment: Submit an action that is invalid in the current state and verify that the backend rejects it without advancing the workflow or creating todos.
 - Non-goals: A general-purpose workflow engine, arbitrary JSON layouts, a new navigation library, background workers, and concurrency/retry guarantees that belong to Phase 9.
-- Spec gate: Before implementation, approve a transition table, state-ownership model, command/response examples, persistence boundary, accessibility behavior, error cases, and acceptance criteria.
+- Spec gate: This phase received its approved spec before implementation, covering the transition table, state-ownership model, command/response examples, persistence boundary, accessibility behavior, error cases, and acceptance criteria. Implementation is complete on its feature branch; web and iOS acceptance observations are pending.
 
 ## 8. Server-directed screens and reusable templates
 
