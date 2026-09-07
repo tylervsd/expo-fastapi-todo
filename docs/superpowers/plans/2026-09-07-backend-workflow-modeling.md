@@ -1,6 +1,6 @@
 # Phase 7 Backend Workflow Modeling Implementation Plan
 
-**Status:** Approved specification; implementation not started (2026-09-07)
+**Status:** Implemented; local acceptance pending (2026-09-07)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
 > superpowers:subagent-driven-development (recommended) or
@@ -25,12 +25,13 @@ TanStack Query 5.102.8, pytest, Jest, React Native Testing Library.
 
 ## Planning record
 
-This document is a future execution plan. During planning, the repository and
+This section records the original planning stage. During planning, the repository and
 approved specification were inspected and the specification's isolated
 Markdown lint passed. No application code, migrations, application tests,
-manual acceptance, completion tag, push, or pull request has been performed.
-Every unchecked command below is planned for implementation and must not be
-reported as passing until it has actually run successfully.
+manual acceptance, completion tag, push, or pull request had been performed.
+The task checklists below retain the implementation instructions; an unchecked
+command is not evidence that it passed. Guide 07 records verification and the
+still-pending manual acceptance.
 
 ## Global constraints
 
