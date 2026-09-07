@@ -16,6 +16,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StrictBool,
+    StrictInt,
     StrictStr,
     field_validator,
     model_validator,
@@ -58,6 +59,7 @@ from app.workflow_domain import (
     WorkflowSnapshot,
     create_submit_tasks,
 )
+from app.workflow_presentation import WorkflowView, present_workflow
 from app.workflow_service import advance_workflow, get_workflow, start_workflow
 
 EXPO_WEB_ORIGIN = "http://localhost:8081"
@@ -204,6 +206,62 @@ class TodoWorkflowResponse(BaseModel):
     title: str
     context: TodoWorkflowContext
     result: TodoWorkflowResult | None
+    view: TodoWorkflowView
+
+
+class WorkflowChoice(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: Literal["yes", "no"]
+    label: StrictStr
+
+
+class YesNoWorkflowView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["yes_no"]
+    step_id: StrictStr
+    title: StrictStr
+    question: StrictStr
+    actions: list[WorkflowChoice]
+
+
+class TaskBreakdownWorkflowView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["task_breakdown"]
+    step_id: StrictStr
+    title: StrictStr
+    min_titles: StrictInt
+    max_titles: StrictInt
+
+
+class ReviewWorkflowView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["review"]
+    step_id: StrictStr
+    title: StrictStr
+    proposed_titles: list[StrictStr]
+
+
+class CompletionWorkflowView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["completion"]
+    step_id: StrictStr
+    title: StrictStr
+    outcome: Literal["completed", "cancelled"]
+    created_todos: list[Todo]
+
+
+TodoWorkflowView = Annotated[
+    YesNoWorkflowView
+    | TaskBreakdownWorkflowView
+    | ReviewWorkflowView
+    | CompletionWorkflowView,
+    Field(discriminator="type"),
+]
 
 
 class TodoUpdate(BaseModel):
@@ -383,6 +441,7 @@ def create_app(session_factory: sessionmaker[Session] | None = None) -> FastAPI:
         return as_user(user)
 
     def as_workflow_response(snapshot: WorkflowSnapshot) -> TodoWorkflowResponse:
+        view: WorkflowView = present_workflow(snapshot)
         return TodoWorkflowResponse(
             workflow_id=snapshot.id,
             state=snapshot.state.value,
@@ -405,6 +464,7 @@ def create_app(session_factory: sessionmaker[Session] | None = None) -> FastAPI:
                 if snapshot.created_todos is not None
                 else None
             ),
+            view=view,
         )
 
     def to_domain_command(
