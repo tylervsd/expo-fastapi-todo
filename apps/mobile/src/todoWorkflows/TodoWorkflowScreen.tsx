@@ -17,7 +17,6 @@ import {
   TodoApiError,
   type TodoWorkflow,
   type TodoWorkflowAction,
-  type TodoWorkflowState,
 } from "../todos/todoApi";
 
 export type TodoWorkflowScreenApi = {
@@ -35,7 +34,6 @@ export function workflowQueryKey(userId: string, workflowId: string) {
 
 const EMPTY_TITLE = "Enter a task title.";
 const INVALID_TITLE = "Check the plan title and try again.";
-const INVALID_TASKS = "Enter 2 to 10 todo titles, one per line.";
 const SERVER_INVALID = "Check the plan details and try again.";
 const LOST_START = "The result may be unknown. Starting again may create another draft.";
 const UNCERTAIN = "The result may be unknown. Reload this plan before trying again.";
@@ -47,6 +45,13 @@ function serverCopy(error: unknown, uncertain: string): { message: string; lock:
   }
   return { message: uncertain, lock: true };
 }
+
+const templateRegistry = {
+  yes_no: YesNoTemplate,
+  task_breakdown: TaskBreakdownTemplate,
+  review: ReviewTemplate,
+  completion: CompletionTemplate,
+} as const;
 
 export function TodoWorkflowScreen({
   userId,
@@ -68,6 +73,7 @@ export function TodoWorkflowScreen({
   const [focusSignal, setFocusSignal] = useState(0);
   const busy = useRef(false);
   const focusedSignal = useRef(-1);
+  const previousStepId = useRef<string | null>(null);
   const titleInput = useRef<TextInput>(null);
   const tasksInput = useRef<TextInput>(null);
   const yesButton = useRef<View>(null);
@@ -84,10 +90,21 @@ export function TodoWorkflowScreen({
   });
 
   const snapshot = workflowId === null ? undefined : workflowQuery.data;
+  const view = snapshot?.view;
+  const stepId = view?.step_id;
   const hasData = snapshot !== undefined;
   const isFetching = workflowQuery.isFetching;
   const isStale = workflowQuery.isStale;
   const fresh = hasData && !isStale;
+
+  useEffect(() => {
+    if (stepId === undefined || stepId === previousStepId.current) return;
+    previousStepId.current = stepId;
+    setTasksDraft("");
+    setLocalError(null);
+    setWriteError(null);
+    setFocusSignal((signal) => signal + 1);
+  }, [stepId]);
 
   const seedSnapshot = (workflow: TodoWorkflow) => {
     queryClient.setQueryData(workflowQueryKey(userId, workflow.workflow_id), workflow);
@@ -146,34 +163,29 @@ export function TodoWorkflowScreen({
   const advancePending = advanceMutation.isPending;
   const buttonsDisabled = !fresh || isFetching || advancePending;
 
-  const announcedState = useRef<TodoWorkflowState | null>(null);
   useEffect(() => {
-    if (snapshot === undefined || snapshot.state === announcedState.current) return;
-    announcedState.current = snapshot.state;
-    setFocusSignal((signal) => signal + 1);
-  }, [snapshot]);
-
-  useEffect(() => {
-    if (snapshot?.state === "COMPLETED") {
-      void queryClient.invalidateQueries({ queryKey: ["todos"] });
+    if (workflowQuery.data?.view.type === "completion") {
+      const outcome = workflowQuery.data.view.outcome;
+      if (outcome === "completed") {
+        void queryClient.invalidateQueries({ queryKey: ["todos"] });
+      }
     }
-  }, [queryClient, snapshot?.state]);
+  }, [workflowQuery.data, queryClient]);
 
   useEffect(() => {
     if (focusSignal === focusedSignal.current) return;
     focusedSignal.current = focusSignal;
-    if (snapshot === undefined) {
+    if (view === undefined) {
       titleInput.current?.focus();
       return;
     }
-    const step: string = {
-      ASSESS_TASK: "Does this task involve multiple steps?",
-      COLLECT_TASKS: "Break it into smaller todos",
-      REVIEW: "Review your plan",
-      COMPLETED: "Plan complete",
-      CANCELLED: "Plan cancelled",
-    }[snapshot.state] ?? snapshot.state;
-    AccessibilityInfo.announceForAccessibility(step);
+    if (view.type === "yes_no") {
+      AccessibilityInfo.announceForAccessibility(view.question);
+    } else if (view.type === "unsupported") {
+      AccessibilityInfo.announceForAccessibility("Unsupported step");
+    } else {
+      AccessibilityInfo.announceForAccessibility(view.title);
+    }
     const focusButton = (ref: ControlRef) => {
       const control = ref.current as unknown as { focus?: () => void } | null;
       control?.focus?.();
@@ -182,21 +194,21 @@ export function TodoWorkflowScreen({
         if (node !== null) AccessibilityInfo.setAccessibilityFocus(node);
       }
     };
-    switch (snapshot.state) {
-      case "ASSESS_TASK":
+    switch (view.type) {
+      case "yes_no":
         focusButton(yesButton);
         break;
-      case "COLLECT_TASKS":
+      case "task_breakdown":
         tasksInput.current?.focus();
         break;
-      case "REVIEW":
+      case "review":
         focusButton(confirmButton);
         break;
       default:
         focusButton(backButton);
         break;
     }
-  }, [focusSignal, snapshot]);
+  }, [focusSignal, view]);
 
   const submitStart = () => {
     if (busy.current || startPending) return;
@@ -215,21 +227,40 @@ export function TodoWorkflowScreen({
     startMutation.mutate(canonical);
   };
 
-  const sendAction = (action: TodoWorkflowAction) => {
+  const sendAnswer = (actionId: string) => {
     if (workflowId === null || busy.current || buttonsDisabled) return;
     busy.current = true;
     setLocalError(null);
-    advanceMutation.mutate({ id: workflowId, action });
+    advanceMutation.mutate({
+      id: workflowId,
+      action: { action: "answer_multiple_steps", answer: actionId === "yes" },
+    });
   };
 
-  const submitTasks = () => {
+  const cancel = () => {
+    if (workflowId === null || busy.current || buttonsDisabled) return;
+    busy.current = true;
+    setLocalError(null);
+    advanceMutation.mutate({ id: workflowId, action: { action: "cancel" } });
+  };
+
+  const confirm = () => {
+    if (workflowId === null || busy.current || buttonsDisabled) return;
+    busy.current = true;
+    setLocalError(null);
+    advanceMutation.mutate({ id: workflowId, action: { action: "confirm" } });
+  };
+
+  const submitTasks = (bounds: { min_titles: number; max_titles: number }) => {
     if (workflowId === null || busy.current || buttonsDisabled) return;
     const lines = tasksDraft
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter((line) => line !== "");
-    if (lines.length < 2 || lines.length > 10) {
-      setLocalError(INVALID_TASKS);
+    if (lines.length < bounds.min_titles || lines.length > bounds.max_titles) {
+      setLocalError(
+        `Enter ${bounds.min_titles} to ${bounds.max_titles} todo titles, one per line.`
+      );
       return;
     }
     const canonical: string[] = [];
@@ -257,6 +288,76 @@ export function TodoWorkflowScreen({
 
   const reloadVisible = hasData && isStale && !isFetching;
 
+  const renderView = () => {
+    if (view === undefined) {
+      return (
+        <WorkflowStartScreen
+          draft={startDraft}
+          onChangeDraft={setStartDraft}
+          onSubmit={submitStart}
+          onExit={onExit}
+          exitDisabled={startPending}
+          submitDisabled={startPending}
+          submitting={startPending}
+          inputRef={titleInput}
+          backRef={backButton}
+        />
+      );
+    }
+    switch (view.type) {
+      case "yes_no": {
+        const Template = templateRegistry.yes_no;
+        return (
+          <Template
+            key={view.step_id}
+            view={view}
+            onAnswer={sendAnswer}
+            onCancel={cancel}
+            disabled={buttonsDisabled}
+            submitting={advancePending}
+            yesRef={yesButton}
+          />
+        );
+      }
+      case "task_breakdown": {
+        const Template = templateRegistry.task_breakdown;
+        return (
+          <Template
+            key={view.step_id}
+            view={view}
+            draft={tasksDraft}
+            onChangeDraft={setTasksDraft}
+            onSubmit={submitTasks}
+            onCancel={cancel}
+            disabled={buttonsDisabled}
+            submitting={advancePending}
+            inputRef={tasksInput}
+          />
+        );
+      }
+      case "review": {
+        const Template = templateRegistry.review;
+        return (
+          <Template
+            key={view.step_id}
+            view={view}
+            onConfirm={confirm}
+            onCancel={cancel}
+            disabled={buttonsDisabled}
+            submitting={advancePending}
+            confirmRef={confirmButton}
+          />
+        );
+      }
+      case "completion": {
+        const Template = templateRegistry.completion;
+        return <Template key={view.step_id} view={view} onExit={onExit} backRef={backButton} />;
+      }
+      case "unsupported":
+        return <UnsupportedTemplate key={view.step_id} onExit={onExit} onReload={reload} />;
+    }
+  };
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <ScrollView
@@ -264,64 +365,7 @@ export function TodoWorkflowScreen({
         keyboardShouldPersistTaps="handled"
         contentContainerStyle={styles.content}
       >
-        {snapshot === undefined && (
-          <WorkflowStartScreen
-            draft={startDraft}
-            onChangeDraft={setStartDraft}
-            onSubmit={submitStart}
-            onExit={onExit}
-            exitDisabled={startPending}
-            submitDisabled={startPending}
-            submitting={startPending}
-            inputRef={titleInput}
-            backRef={backButton}
-          />
-        )}
-        {snapshot?.state === "ASSESS_TASK" && (
-          <AssessTaskScreen
-            onAnswer={(answer) =>
-              sendAction({ action: "answer_multiple_steps", answer })
-            }
-            onCancel={() => sendAction({ action: "cancel" })}
-            disabled={buttonsDisabled}
-            submitting={advancePending}
-            yesRef={yesButton}
-          />
-        )}
-        {snapshot?.state === "COLLECT_TASKS" && (
-          <CollectTasksScreen
-            draft={tasksDraft}
-            onChangeDraft={setTasksDraft}
-            onSubmit={submitTasks}
-            onCancel={() => sendAction({ action: "cancel" })}
-            disabled={buttonsDisabled}
-            submitting={advancePending}
-            inputRef={tasksInput}
-          />
-        )}
-        {snapshot?.state === "REVIEW" && (
-          <ReviewWorkflowScreen
-            titles={[...snapshot.context.proposed_todo_titles]}
-            onConfirm={() => sendAction({ action: "confirm" })}
-            onCancel={() => sendAction({ action: "cancel" })}
-            disabled={buttonsDisabled}
-            submitting={advancePending}
-            confirmRef={confirmButton}
-          />
-        )}
-        {snapshot?.state === "COMPLETED" && (
-          <CompletedWorkflowScreen
-            created={(snapshot.result?.created_todos ?? []).map((todo) => ({
-              id: todo.id,
-              title: todo.title,
-            }))}
-            onExit={onExit}
-            backRef={backButton}
-          />
-        )}
-        {snapshot?.state === "CANCELLED" && (
-          <CancelledWorkflowScreen onExit={onExit} backRef={backButton} />
-        )}
+        {renderView()}
         {alert && (
           <Text accessibilityRole="alert" style={styles.error}>
             {alert}
@@ -411,14 +455,16 @@ function WorkflowStartScreen({
   );
 }
 
-function AssessTaskScreen({
+function YesNoTemplate({
+  view,
   onAnswer,
   onCancel,
   disabled,
   submitting,
   yesRef,
 }: {
-  onAnswer: (answer: boolean) => void;
+  view: Extract<TodoWorkflow["view"], { type: "yes_no" }>;
+  onAnswer: (actionId: string) => void;
   onCancel: () => void;
   disabled: boolean;
   submitting: boolean;
@@ -427,27 +473,23 @@ function AssessTaskScreen({
   return (
     <View style={styles.screen}>
       <Text accessibilityRole="header" accessibilityLiveRegion="polite" style={styles.heading}>
-        Does this task involve multiple steps?
+        {view.question}
       </Text>
-      <Pressable
-        ref={yesRef}
-        accessibilityRole="button"
-        accessibilityLabel="Yes"
-        disabled={disabled}
-        style={styles.addButton}
-        onPress={() => onAnswer(true)}
-      >
-        <Text style={styles.addButtonText}>Yes</Text>
-      </Pressable>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="No"
-        disabled={disabled}
-        style={styles.refreshButton}
-        onPress={() => onAnswer(false)}
-      >
-        <Text style={styles.refreshButtonText}>No</Text>
-      </Pressable>
+      {view.actions.map((action, index) => (
+        <Pressable
+          key={action.id}
+          ref={index === 0 ? yesRef : undefined}
+          accessibilityRole="button"
+          accessibilityLabel={action.label}
+          disabled={disabled}
+          style={index === 0 ? styles.addButton : styles.refreshButton}
+          onPress={() => onAnswer(action.id)}
+        >
+          <Text style={index === 0 ? styles.addButtonText : styles.refreshButtonText}>
+            {action.label}
+          </Text>
+        </Pressable>
+      ))}
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Cancel planning"
@@ -462,7 +504,8 @@ function AssessTaskScreen({
   );
 }
 
-function CollectTasksScreen({
+function TaskBreakdownTemplate({
+  view,
   draft,
   onChangeDraft,
   onSubmit,
@@ -471,9 +514,10 @@ function CollectTasksScreen({
   submitting,
   inputRef,
 }: {
+  view: Extract<TodoWorkflow["view"], { type: "task_breakdown" }>;
   draft: string;
   onChangeDraft: (value: string) => void;
-  onSubmit: () => void;
+  onSubmit: (bounds: { min_titles: number; max_titles: number }) => void;
   onCancel: () => void;
   disabled: boolean;
   submitting: boolean;
@@ -482,7 +526,7 @@ function CollectTasksScreen({
   return (
     <View style={styles.screen}>
       <Text accessibilityRole="header" accessibilityLiveRegion="polite" style={styles.heading}>
-        Break it into smaller todos
+        {view.title}
       </Text>
       <Text style={styles.fieldLabel}>Todo titles (one per line)</Text>
       <TextInput
@@ -492,7 +536,9 @@ function CollectTasksScreen({
         value={draft}
         multiline
         onChangeText={onChangeDraft}
-        onSubmitEditing={onSubmit}
+        onSubmitEditing={() =>
+          onSubmit({ min_titles: view.min_titles, max_titles: view.max_titles })
+        }
         placeholder={"Send invitations\nBuy decorations"}
         style={[styles.input, styles.multilineInput]}
       />
@@ -501,7 +547,9 @@ function CollectTasksScreen({
         accessibilityLabel="Save tasks"
         disabled={disabled}
         style={styles.addButton}
-        onPress={onSubmit}
+        onPress={() =>
+          onSubmit({ min_titles: view.min_titles, max_titles: view.max_titles })
+        }
       >
         <Text style={styles.addButtonText}>Save tasks</Text>
       </Pressable>
@@ -519,15 +567,15 @@ function CollectTasksScreen({
   );
 }
 
-function ReviewWorkflowScreen({
-  titles,
+function ReviewTemplate({
+  view,
   onConfirm,
   onCancel,
   disabled,
   submitting,
   confirmRef,
 }: {
-  titles: string[];
+  view: Extract<TodoWorkflow["view"], { type: "review" }>;
   onConfirm: () => void;
   onCancel: () => void;
   disabled: boolean;
@@ -537,12 +585,12 @@ function ReviewWorkflowScreen({
   return (
     <View style={styles.screen}>
       <Text accessibilityRole="header" accessibilityLiveRegion="polite" style={styles.heading}>
-        Review your plan
+        {view.title}
       </Text>
-      {titles.map((title, index) => (
+      {view.proposed_titles.map((title, index) => (
         <Text
           key={`${index}-${title}`}
-          accessibilityLabel={`Proposed todo ${index + 1} of ${titles.length}: ${title}`}
+          accessibilityLabel={`Proposed todo ${index + 1} of ${view.proposed_titles.length}: ${title}`}
           style={styles.todoTitle}
         >
           {title}
@@ -572,24 +620,24 @@ function ReviewWorkflowScreen({
   );
 }
 
-function CompletedWorkflowScreen({
-  created,
+function CompletionTemplate({
+  view,
   onExit,
   backRef,
 }: {
-  created: { id: string; title: string }[];
+  view: Extract<TodoWorkflow["view"], { type: "completion" }>;
   onExit: () => void;
   backRef: ControlRef;
 }) {
   return (
     <View style={styles.screen}>
       <Text accessibilityRole="header" accessibilityLiveRegion="polite" style={styles.heading}>
-        Plan complete
+        {view.title}
       </Text>
-      {created.map((todo, index) => (
+      {view.created_todos.map((todo, index) => (
         <Text
           key={todo.id}
-          accessibilityLabel={`Created todo ${index + 1} of ${created.length}: ${todo.title}`}
+          accessibilityLabel={`Created todo ${index + 1} of ${view.created_todos.length}: ${todo.title}`}
           style={styles.todoTitle}
         >
           {todo.title}
@@ -608,26 +656,34 @@ function CompletedWorkflowScreen({
   );
 }
 
-function CancelledWorkflowScreen({
+function UnsupportedTemplate({
   onExit,
-  backRef,
+  onReload,
 }: {
   onExit: () => void;
-  backRef: ControlRef;
+  onReload: () => void;
 }) {
   return (
     <View style={styles.screen}>
       <Text accessibilityRole="header" accessibilityLiveRegion="polite" style={styles.heading}>
-        Plan cancelled
+        Unsupported step
       </Text>
+      <Text style={styles.empty}>This planning step needs a newer app version.</Text>
       <Pressable
-        ref={backRef}
         accessibilityRole="button"
         accessibilityLabel="Back to todos"
         style={styles.refreshButton}
         onPress={onExit}
       >
         <Text style={styles.refreshButtonText}>Back to todos</Text>
+      </Pressable>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Reload plan"
+        style={styles.refreshButton}
+        onPress={onReload}
+      >
+        <Text style={styles.refreshButtonText}>Reload plan</Text>
       </Pressable>
     </View>
   );
