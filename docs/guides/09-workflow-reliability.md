@@ -141,9 +141,13 @@ UI reports **"This device could not save a safe retry. The plan was not
 sent. Try again."** All valid maximum-size Unicode inputs round-trip
 exactly, including a ten-title payload.
 
-Only one workflow write can be pending per app instance — a second write
-is refused with "Another workflow write is still pending. Retry or discard
-it before sending a new one." On validated success the matching
+Only one workflow write can be pending per owner per installation —
+records for different owners coexist under separate owner-scoped keys, but
+a second write for the same owner is refused with "Another workflow write
+is still pending. Retry or discard it before sending a new one." Two tabs
+sharing one installation are not coordinated: each tab reads and writes the
+same owner-scoped key, so concurrent tabs can overwrite each other's pending
+record — a deliberate non-target (see section 9). On validated success the matching
 owner/request record is cleared and the response applied; a storage-clear
 failure keeps the record with "The plan was saved, but recovery is still
 pending. Retry or discard the saved request." A timeout, network failure,
@@ -161,7 +165,11 @@ they prove the request did not commit — except `request_id_reused`, which
 stays visible until explicitly discarded since its identity is unsafe to
 replace. `401` requires re-authentication without replaying under another
 owner. Observed in a real browser: an aborted advance left **Retry saved
-request**, and retrying advanced the plan exactly once.
+request**, and retrying advanced the plan exactly once. Likewise, an
+aborted start left **Retry saved request**, and retrying started the plan
+once — discovery shows exactly one draft. A fresh browser context logging
+in as the same user sees the plan under **Resume plans** and resumes its
+authoritative current step.
 
 ## 7. Version migration
 
@@ -213,10 +221,12 @@ never expose action controls.
 
 ## 9. Deliberate limitations
 
-- **Single-instance journal.** The recovery record covers this app
-  instance's current unknown write. Multiple browser tabs sharing one
-  installation are not a coordination target; independent devices are
-  covered by backend idempotency, not by shared client state.
+- **Single-instance journal.** The recovery record covers one pending
+  workflow write per owner per installation. Multiple browser tabs sharing
+  one installation are not a coordination target: they share the same
+  owner-scoped key without locking, so one tab can overwrite another's
+  pending record. Independent devices are covered by backend idempotency,
+  not by shared client state.
 - **Unpaginated tutorial list.** Discovery performs one owner-indexed
   active-row query with no pagination. Add pagination only when a measured
   number of abandoned drafts makes the bounded owner scan material — never
@@ -251,9 +261,12 @@ against the UI and confirm each behavior:
 1. Start "Plan birthday party", answer Yes, Yes, enter two titles, review,
    confirm — exactly two todos appear in order, and the plan leaves
    **Resume plans**.
-2. Start a second plan, then reload the page mid-`ASSESS_TASK` — the plan
-   reappears under **Resume plans** at the same step; half-typed titles
-   are gone (expected: only accepted context resumes).
+2. Start a second plan, answer Yes, Yes to reach **Break it into smaller
+   todos**, type two titles without pressing **Save tasks**, then reload
+   the page — the plan reappears under **Resume plans** at the same
+   `COLLECT_TASKS` step, but the typed titles are gone (verified: the
+   titles field is empty after reload; expected, only accepted context
+   resumes).
 3. With devtools blocking the advance request, answer a question, then
    unblock and press **Retry saved request** — the plan advances exactly
    once with no duplicate draft.
@@ -268,14 +281,16 @@ against the UI and confirm each behavior:
 Web rows below were observed 2026-09-08 (America/Los_Angeles) in headless
 Chrome 140 driving Expo web (Metro on `127.0.0.1:8089`) against a local
 API (uvicorn on `127.0.0.1:8000`, PostgreSQL 18.6 scratch database
-migrated to head `2026090901`), plus direct HTTP checks of the same
-server. Browser cross-origin POSTs required launching Chrome with
-`--disable-web-security` because the API defines no CORS policy (mobile
-targets are unaffected; no repo change was made for this).
+migrated to head `2026090901`). The Backend row records direct HTTP
+checks of the same server; it is not a UI claim. Browser cross-origin
+POSTs required launching Chrome with `--disable-web-security` because the
+API defines no CORS policy (mobile targets are unaffected; no repo change
+was made for this).
 
 | Target | Date/runtime | Quick add | Birthday branches | Discovery after restart | Another-device resume | Lost-start retry | Lost-confirmation retry | Competing revisions | Cancel | Storage failure-before-send | Sign-out/re-login | Unsupported UI | Focus/alerts |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Web | 2026-09-08, Chrome 140 headless + HTTP | ☑ observed | ☑ observed (Yes/Yes→2 todos) | ☑ observed (reload relists draft) | ☑ observed (2nd token fetches rev 0) | ☑ observed (replay 201 identical) | ☑ observed (browser retry advanced once; HTTP replay identical, no dup todos) | ☑ observed (one 200 rev+1, one 409 stale) | ☑ observed (CANCELLED rev 1) | ☐ blocked — cannot force a real localStorage failure headlessly; covered by component tests | ☑ observed (todos + draft survive) | ☐ blocked — needs contract surgery; covered by component tests | ☐ blocked — headless cannot observe focus; alert roles asserted in tests |
+| Web | 2026-09-08, Chrome 140 headless driving Expo web | ☑ observed ("Web milk" appears) | ☑ observed (No→1 todo COMPLETED rev 2; Yes/No→1 todo COMPLETED rev 3; Yes/Yes→2 todos; DB-verified) | ☑ observed (browser reload relists draft; API kill+restart then fresh login relists draft) | ☑ observed (fresh browser context login → Resume plans → renders OFFER rev 1) | ☑ observed (aborted start POST → Retry saved request UI → retry → ASSESS; discovery count 1, no duplicate) | ☑ observed (aborted action POST → app retry advanced exactly once, no dup todos) | ☐ blocked — needs two coordinated browser sessions; covered by integration tests and the Backend race row | ☑ observed ("Plan cancelled"; plan leaves Resume plans, other draft stays) | ☐ blocked — cannot force a real localStorage failure headlessly; covered by component tests | ☑ observed (todos + draft survive) | ☐ blocked — needs contract surgery; covered by component tests | ☐ blocked — headless cannot observe focus; alert roles asserted in tests |
+| Backend (HTTP) | 2026-09-08, curl against the same local API | ☑ observed | ☑ covered end-to-end via browser + DB rows above; HTTP advanced every transition incl. race | ☑ observed (post-API-restart rediscovery; terminal completion discovers `[]`) | ☑ observed (2nd login token fetches rev 0) | ☑ observed (start replay 201 byte-identical; mismatch → `request_id_reused`) | ☑ observed (confirm replay 200 byte-identical, no dup todos) | ☑ observed (one 200 rev+1, one 409 stale with spec copy; single advance) | ☑ observed (CANCELLED rev 1) | — (client-only) | — (client-only) | ☑ observed (definition 2 → fetch+discovery 409, no mutation; reverted after) | — (client-only) |
 | iOS Simulator | 2026-09-08, iPhone 17 (iOS 26.5) via `expo run:ios` | ☐ blocked — no UI driver | ☐ blocked | ☐ blocked | ☐ blocked | ☐ blocked | ☐ blocked | ☐ blocked | ☐ blocked | ☐ blocked | ☐ blocked | ☐ blocked | ☐ blocked |
 
 iOS acceptance is launch-only: `expo run:ios` built with 0 errors, installed, and launched on a booted iPhone 17 simulator where the sign-in screen renders with no crash (one pre-existing SafeAreaView deprecation LogBox warning, unrelated to Phase 9). Interactive iOS rows are blocked: no UI automation driver is available, and the installed build was bundled without `EXPO_PUBLIC_API_URL`, so its network calls report unavailable — a future interactive pass needs a rebuild with the API URL set plus a driver.
