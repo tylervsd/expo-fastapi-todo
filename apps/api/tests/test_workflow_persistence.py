@@ -742,6 +742,98 @@ def test_snapshot_from_record_rejects_malformed_records(
         snapshot_from_record(record)
 
 
+def _review_snapshot(workflow_id: UUID) -> WorkflowSnapshot:
+    return WorkflowSnapshot(
+        id=workflow_id,
+        state=WorkflowState.REVIEW,
+        title="Plan birthday party",
+        involves_multiple_steps=True,
+        proposed_todo_titles=("Send invitations", "Buy decorations"),
+        created_todos=None,
+        revision=1,
+        definition_version=CURRENT_WORKFLOW_DEFINITION_VERSION,
+    )
+
+
+@pytest.mark.parametrize(
+    "base, mutate",
+    [
+        (
+            "active",
+            lambda record: record.update(
+                {"proposed_todo_titles": [f"Todo {index}" for index in range(11)]}
+            ),
+        ),
+        (
+            "review",
+            lambda record: record.update(
+                {"proposed_todo_titles": [f"Todo {index}" for index in range(11)]}
+            ),
+        ),
+        (
+            "completed",
+            lambda record: record.update(
+                {
+                    "proposed_todo_titles": [
+                        f"Todo {index}" for index in range(11)
+                    ],
+                    "created_todos": [
+                        {
+                            "id": str(uuid4()),
+                            "title": f"Todo {index}",
+                            "completed": False,
+                        }
+                        for index in range(11)
+                    ],
+                }
+            ),
+        ),
+        (
+            "completed",
+            lambda record: record["created_todos"].append(
+                {
+                    "id": str(uuid4()),
+                    "title": "Plan birthday party",
+                    "completed": False,
+                }
+            ),
+        ),
+        (
+            "completed",
+            lambda record: record.update(
+                {
+                    "proposed_todo_titles": [
+                        "Send invitations",
+                        "Buy decorations",
+                    ],
+                }
+            ),
+        ),
+    ],
+    ids=[
+        "active-proposals-over-limit",
+        "review-proposals-over-limit",
+        "completed-proposals-over-limit",
+        "completed-extra-todo",
+        "completed-todo-count-mismatch",
+    ],
+)
+def test_snapshot_from_record_rejects_count_violations(
+    base: str, mutate: Callable[[dict[str, object]], None]
+) -> None:
+    workflow_id = uuid4()
+    if base == "active":
+        record = snapshot_to_record(active_snapshot(workflow_id))
+    elif base == "review":
+        record = snapshot_to_record(_review_snapshot(workflow_id))
+    else:
+        record = snapshot_to_record(completed_snapshot(workflow_id, uuid4()))
+    mutate(record)
+
+    with pytest.raises(ValueError):
+        snapshot_from_record(record)
+
+
 def _phase8_insert(connection, owner_id: int, public_id: UUID, state: str,
                    involves: bool | None, proposals: str,
                    completion: str | None) -> None:

@@ -24,7 +24,9 @@ from app.database import Base
 from app.title_validation import canonicalize_title
 from app.workflow_domain import (
     CURRENT_WORKFLOW_DEFINITION_VERSION,
+    MAX_BREAKDOWN_TITLES,
     MAX_WORKFLOW_REVISION,
+    MIN_BREAKDOWN_TITLES,
     CreatedTodo,
     WorkflowSnapshot,
     WorkflowState,
@@ -297,6 +299,23 @@ def snapshot_from_record(record: Mapping[str, object]) -> WorkflowSnapshot:
         _require_canonical_title(item, field="proposed_todo_titles")
         for item in proposals
     )
+    if state in (
+        WorkflowState.ASSESS_TASK,
+        WorkflowState.OFFER_BREAKDOWN,
+        WorkflowState.COLLECT_TASKS,
+    ):
+        if canonical_proposals:
+            raise InvalidStoredSnapshot("stored snapshot has invalid proposals")
+    elif state in (WorkflowState.REVIEW, WorkflowState.COMPLETED):
+        if not (
+            len(canonical_proposals) == 1
+            or MIN_BREAKDOWN_TITLES <= len(canonical_proposals) <= MAX_BREAKDOWN_TITLES
+        ):
+            raise InvalidStoredSnapshot("stored snapshot has invalid proposals")
+    elif len(canonical_proposals) > MAX_BREAKDOWN_TITLES:
+        # CANCELLED preserves the proposals of the cancelled state, which
+        # is empty, a single title, or 2 through 10 breakdown titles.
+        raise InvalidStoredSnapshot("stored snapshot has invalid proposals")
     created: tuple[CreatedTodo, ...] | None = None
     stored_todos = record["created_todos"]
     if state == WorkflowState.COMPLETED:
@@ -324,6 +343,8 @@ def snapshot_from_record(record: Mapping[str, object]) -> WorkflowSnapshot:
                     id=todo_id, title=todo_title, completed=entry["completed"]
                 )
             )
+        if len(items) != len(canonical_proposals):
+            raise InvalidStoredSnapshot("stored snapshot has invalid created_todos")
         created = tuple(items)
     elif stored_todos is not None:
         raise InvalidStoredSnapshot("stored snapshot has invalid created_todos")
