@@ -1867,3 +1867,106 @@ it("renders an advance only after its reconciliation GET resolves", async () => 
     expect.objectContaining({ disabled: false })
   );
 });
+
+it("resets the recovery lock when clearing before a stale reconciliation fails", async () => {
+  const backing = createMemoryPendingWriteStorage();
+  // Fail only the conflict-time clear: the setup flow's own reconciliation
+  // cleanup must still succeed.
+  let failClear = false;
+  const store = createPendingWriteStore({
+    ...backing,
+    removeItem: async (key: string) => {
+      if (failClear) throw new Error("storage locked");
+      await backing.removeItem(key);
+    },
+  });
+  const api = makeApi();
+  await renderHost(api, createAppQueryClient(), { store });
+  await driveToReview(api);
+  failClear = true;
+  const callsBefore = api.getWorkflow.mock.calls.length;
+  api.advanceWorkflow.mockRejectedValueOnce(
+    new TodoApiError("conflict", "This plan changed. Reload it and try again.", "stale_step")
+  );
+  await fireEvent.press(screen.getByRole("button", { name: "Confirm plan" }));
+
+  // The clear failed before any reconciliation GET: the pending record is
+  // retained with a recovery lock, but reconciliation itself must reset so
+  // Retry/Discard stay usable and no GET is attempted.
+  await waitFor(() =>
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "The plan was saved, but recovery is still pending. Retry or discard the saved request."
+    )
+  );
+  await act(async () => {});
+  expect(api.getWorkflow.mock.calls.length).toBe(callsBefore);
+  expect((await store.read(USER_ID))?.requestId).toBe(REQUEST_ID);
+  expect(screen.queryByText("Reloading plan…")).toBeNull();
+  expect(screen.getByRole("button", { name: "Retry saved request" })).toHaveProp(
+    "accessibilityState",
+    expect.objectContaining({ disabled: false })
+  );
+  expect(screen.getByRole("button", { name: "Discard saved request" })).toHaveProp(
+    "accessibilityState",
+    expect.objectContaining({ disabled: false })
+  );
+});
+
+it("ignores a reload's storage clear that resolves after the session changed", async () => {
+  const backing = createMemoryPendingWriteStorage();
+  let releaseClear!: () => void;
+  const clearGate = new Promise<void>((resolve) => {
+    releaseClear = resolve;
+  });
+  let clearAttempted = false;
+  let gateClear = false;
+  const store = createPendingWriteStore({
+    ...backing,
+    removeItem: async (key: string) => {
+      if (gateClear) {
+        clearAttempted = true;
+        await clearGate;
+      }
+      await backing.removeItem(key);
+    },
+  });
+  let currentEpoch = 0;
+  const api = makeApi();
+  await renderHost(api, createAppQueryClient(), {
+    store,
+    sessionEpoch: 0,
+    isSessionCurrent: (epoch) => epoch === currentEpoch,
+  });
+  await startToAssess(api);
+  // Reach the GET-failure lock with a retained record: Retry and Reload
+  // are both visible.
+  api.advanceWorkflow.mockResolvedValueOnce(offerWorkflow);
+  api.getWorkflow.mockRejectedValueOnce(
+    new TodoApiError("unavailable", "Could not reload the plan.")
+  );
+  await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Reload plan" })).toBeTruthy()
+  );
+  expect(screen.getByRole("button", { name: "Retry saved request" })).toBeTruthy();
+
+  // The manual reload's refetch succeeds but its storage clear stays
+  // deferred; the session changes before the clear resolves.
+  gateClear = true;
+  api.getWorkflow.mockResolvedValueOnce(offerWorkflow);
+  await fireEvent.press(screen.getByRole("button", { name: "Reload plan" }));
+  await waitFor(() => expect(clearAttempted).toBe(true));
+  currentEpoch = 1;
+  await act(async () => {
+    releaseClear();
+  });
+  await act(async () => {});
+
+  // The stale clear resolves into nothing: the retry stays offered, the
+  // lock message stays, and no state is consumed. The storage delete
+  // itself already landed (the refetch had proven the request resolved);
+  // only the UI consumption is skipped for the stale session.
+  expect(screen.getByRole("button", { name: "Retry saved request" })).toBeTruthy();
+  expect(screen.getByRole("alert")).toHaveTextContent("Could not reload the plan.");
+  await waitFor(() => expect(store.read(USER_ID)).resolves.toBeNull());
+});

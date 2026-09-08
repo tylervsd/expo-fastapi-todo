@@ -288,18 +288,20 @@ export function TodoWorkflowScreen({
     if (!mountedRef.current || !isSessionCurrent(captured)) return;
     setReconciling(true);
     setReconcileFailed(false);
-    // Conflict paths clear the matching record before the reconciliation
-    // GET: a failed GET must not resurrect a Retry for a request the server
-    // already rejected. Success paths keep clear-after-GET so an unproven
-    // reconciliation retains its safe retry.
-    if (options.clearFirst && options.clearRecord !== null) {
-      const cleared = await clearPendingRecord(options.clearRecord, captured);
-      if (!mountedRef.current || !isSessionCurrent(captured)) return;
-      if (!cleared) return;
-    }
-    const fetched = await fetchCurrentSnapshot(id, captured);
-    if (!mountedRef.current || !isSessionCurrent(captured)) return;
     try {
+      // Conflict paths clear the matching record before the reconciliation
+      // GET: a failed GET must not resurrect a Retry for a request the server
+      // already rejected. Success paths keep clear-after-GET so an unproven
+      // reconciliation retains its safe retry. The clear-first step shares
+      // this try/finally so a clear failure still resets the reconciling
+      // indicator (the pending record stays, keeping its own retry lock).
+      if (options.clearFirst && options.clearRecord !== null) {
+        const cleared = await clearPendingRecord(options.clearRecord, captured);
+        if (!mountedRef.current || !isSessionCurrent(captured)) return;
+        if (!cleared) return;
+      }
+      const fetched = await fetchCurrentSnapshot(id, captured);
+      if (!mountedRef.current || !isSessionCurrent(captured)) return;
       if (fetched === null) return;
       if (!fetched.ok) {
         setReconcileFailed(true);
@@ -780,11 +782,17 @@ export function TodoWorkflowScreen({
           try {
             await pendingStore.clear(userId, record.requestId);
           } catch {
+            // A deferred clear can reject after the session changed: like
+            // every other deferred callback, it must not touch state then.
+            if (!mountedRef.current || !isSessionCurrent(captured)) return;
             setPendingRecord(record);
             setReconcileFailed(true);
             setWriteError({ message: RECOVERY_PENDING, lock: true });
             return;
           }
+          // The clear resolved after an unknown wait: re-check the session
+          // before consuming it, so a stale reload cannot clear the retry.
+          if (!mountedRef.current || !isSessionCurrent(captured)) return;
           setPendingRecord(null);
         }
         setReconcileFailed(false);
