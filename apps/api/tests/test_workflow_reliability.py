@@ -797,3 +797,45 @@ def test_unsupported_definition_rejected_without_mutation(
     assert row.state == "ASSESS_TASK"
     assert row.revision == 0
     assert table_count(session_factory, WorkflowActionRequestRow) == 0
+
+
+def test_get_workflow_unsupported_definition_with_nonv1_representation(
+    database_session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    del database_session
+    owner_id = setup_reliability_owner(session_factory)
+    snapshot = start_owned(session_factory, owner_id, "Party")
+    with session_factory() as session:
+        session.execute(
+            text(
+                "UPDATE todo_workflows SET definition_version = 2, "
+                "state = 'REVIEW', completion_result = :result "
+                "WHERE public_id = :id"
+            ),
+            {"id": str(snapshot.id), "result": '{"v2_result": []}'},
+        )
+        session.commit()
+    with session_factory() as session, pytest.raises(UnsupportedWorkflowDefinition):
+        get_workflow(session, owner_id, snapshot.id)
+
+
+def test_list_active_unsupported_definition_with_nonv1_representation(
+    database_session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    del database_session
+    owner_id = setup_reliability_owner(session_factory)
+    snapshot = start_owned(session_factory, owner_id, "Party")
+    with session_factory() as session:
+        session.execute(
+            text(
+                "UPDATE todo_workflows SET definition_version = 2, "
+                "state = 'REVIEW', completion_result = :result "
+                "WHERE public_id = :id"
+            ),
+            {"id": str(snapshot.id), "result": '{"v2_result": []}'},
+        )
+        session.commit()
+    with session_factory() as session, pytest.raises(UnsupportedWorkflowDefinition):
+        list_active_workflows(session, owner_id)

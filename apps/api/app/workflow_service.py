@@ -3,7 +3,7 @@ import json
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -156,11 +156,11 @@ def get_workflow(
     row = find_workflow(session, workflow_id, owner_id)
     if row is None:
         return None
-    snapshot = _snapshot_from_row(row)
-    if snapshot.definition_version != CURRENT_WORKFLOW_DEFINITION_VERSION:
+    if row.definition_version != CURRENT_WORKFLOW_DEFINITION_VERSION:
         raise UnsupportedWorkflowDefinition(
-            f"unsupported workflow definition version {snapshot.definition_version}"
+            f"unsupported workflow definition version {row.definition_version}"
         )
+    snapshot = _snapshot_from_row(row)
     return snapshot
 
 
@@ -276,8 +276,12 @@ def list_active_workflows(session: Session, owner_id: int) -> list[WorkflowSnaps
             select(WorkflowRow)
             .where(
                 WorkflowRow.owner_id == owner_id,
-                WorkflowRow.state.in_(
-                    [state.value for state in ACTIVE_WORKFLOW_STATES]
+                or_(
+                    WorkflowRow.definition_version
+                    != CURRENT_WORKFLOW_DEFINITION_VERSION,
+                    WorkflowRow.state.in_(
+                        [state.value for state in ACTIVE_WORKFLOW_STATES]
+                    ),
                 ),
             )
             .order_by(WorkflowRow.id.desc())
@@ -285,10 +289,9 @@ def list_active_workflows(session: Session, owner_id: int) -> list[WorkflowSnaps
     ).all()
     snapshots: list[WorkflowSnapshot] = []
     for row in rows:
-        snapshot = _snapshot_from_row(row)
-        if snapshot.definition_version != CURRENT_WORKFLOW_DEFINITION_VERSION:
+        if row.definition_version != CURRENT_WORKFLOW_DEFINITION_VERSION:
             raise UnsupportedWorkflowDefinition(
-                f"unsupported workflow definition version {snapshot.definition_version}"
+                f"unsupported workflow definition version {row.definition_version}"
             )
-        snapshots.append(snapshot)
+        snapshots.append(_snapshot_from_row(row))
     return snapshots
