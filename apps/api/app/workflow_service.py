@@ -38,6 +38,8 @@ def _snapshot_from_row(row: WorkflowRow) -> WorkflowSnapshot:
         involves_multiple_steps=row.involves_multiple_steps,
         proposed_todo_titles=tuple(row.proposed_todo_titles),
         created_todos=created_todos,
+        revision=row.revision,
+        definition_version=row.definition_version,
     )
 
 
@@ -105,4 +107,6 @@ def advance_workflow(
             involves_multiple_steps=decision.involves_multiple_steps,
             proposed_todo_titles=decision.proposed_todo_titles,
             created_todos=tuple(created) if completion_result is not None else None,
+            revision=row.revision,
+            definition_version=row.definition_version,
         )

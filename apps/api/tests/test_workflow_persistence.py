@@ -1,18 +1,24 @@
+from collections.abc import Callable
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from alembic.config import Config
 from sqlalchemy import Engine, select, text
+from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from alembic import command
 from app.auth_repository import create_user
 from app.workflow_domain import (
+    CURRENT_WORKFLOW_DEFINITION_VERSION,
+    MAX_WORKFLOW_REVISION,
     AnswerMultipleSteps,
     Cancel,
     Confirm,
+    CreatedTodo,
     InvalidWorkflowAction,
+    WorkflowSnapshot,
     WorkflowState,
     create_submit_tasks,
 )
@@ -20,6 +26,8 @@ from app.workflow_repository import (
     create_workflow,
     find_workflow,
     lock_workflow,
+    snapshot_from_record,
+    snapshot_to_record,
     update_workflow,
 )
 
@@ -41,6 +49,8 @@ def test_insert_flushes_assess_task_row(database_session: Session) -> None:
     assert row.involves_multiple_steps is None
     assert row.proposed_todo_titles == []
     assert row.completion_result is None
+    assert row.revision == 0
+    assert row.definition_version == CURRENT_WORKFLOW_DEFINITION_VERSION
 
 
 def test_new_assess_task_completion_result_is_sql_null(
@@ -610,3 +620,320 @@ def test_downgrade_rewinds_offer_before_narrowing(database_engine: Engine) -> No
             )
             config.attributes["connection"] = connection
             command.upgrade(config, "head")
+
+
+def active_snapshot(workflow_id: UUID) -> WorkflowSnapshot:
+    return WorkflowSnapshot(
+        id=workflow_id,
+        state=WorkflowState.COLLECT_TASKS,
+        title="Plan birthday party",
+        involves_multiple_steps=True,
+        proposed_todo_titles=(),
+        created_todos=None,
+        revision=0,
+        definition_version=CURRENT_WORKFLOW_DEFINITION_VERSION,
+    )
+
+
+def cancelled_snapshot(workflow_id: UUID) -> WorkflowSnapshot:
+    return WorkflowSnapshot(
+        id=workflow_id,
+        state=WorkflowState.CANCELLED,
+        title="Plan birthday party",
+        involves_multiple_steps=True,
+        proposed_todo_titles=("Send invitations", "Buy decorations"),
+        created_todos=None,
+        revision=3,
+        definition_version=CURRENT_WORKFLOW_DEFINITION_VERSION,
+    )
+
+
+def completed_snapshot(workflow_id: UUID, todo_id: UUID) -> WorkflowSnapshot:
+    return WorkflowSnapshot(
+        id=workflow_id,
+        state=WorkflowState.COMPLETED,
+        title="Plan birthday party",
+        involves_multiple_steps=False,
+        proposed_todo_titles=("Plan birthday party",),
+        created_todos=(
+            CreatedTodo(id=todo_id, title="Plan birthday party", completed=False),
+        ),
+        revision=2,
+        definition_version=CURRENT_WORKFLOW_DEFINITION_VERSION,
+    )
+
+
+def test_snapshot_record_round_trip_active_cancelled_completed() -> None:
+    workflow_id = uuid4()
+    todo_id = uuid4()
+    for snapshot in (
+        active_snapshot(workflow_id),
+        cancelled_snapshot(workflow_id),
+        completed_snapshot(workflow_id, todo_id),
+    ):
+        record = snapshot_to_record(snapshot)
+
+        assert set(record) == {
+            "workflow_id",
+            "revision",
+            "definition_version",
+            "state",
+            "title",
+            "involves_multiple_steps",
+            "proposed_todo_titles",
+            "created_todos",
+        }
+        assert record["workflow_id"] == str(workflow_id)
+        assert isinstance(record["proposed_todo_titles"], list)
+        assert snapshot_from_record(record) == snapshot
+
+
+def test_snapshot_record_encodes_uuids_and_tuples_as_json_values() -> None:
+    todo_id = uuid4()
+    record = snapshot_to_record(completed_snapshot(uuid4(), todo_id))
+
+    assert record["created_todos"] == [
+        {"id": str(todo_id), "title": "Plan birthday party", "completed": False}
+    ]
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda record: record.pop("revision"),
+        lambda record: record.update({"unexpected": 1}),
+        lambda record: record.update({"workflow_id": "not-a-uuid"}),
+        lambda record: record.update({"revision": -1}),
+        lambda record: record.update({"revision": MAX_WORKFLOW_REVISION + 1}),
+        lambda record: record.update({"definition_version": 0}),
+        lambda record: record.update({"state": "NOT_A_STATE"}),
+        lambda record: record.update({"title": "   "}),
+        lambda record: record.update({"involves_multiple_steps": "yes"}),
+        lambda record: record.update({"proposed_todo_titles": "nope"}),
+        lambda record: record.update({"proposed_todo_titles": ["   "]}),
+        lambda record: record.update({"created_todos": []}),
+        lambda record: record.update(
+            {"created_todos": [{"id": "x", "title": "T", "completed": False}]}
+        ),
+    ],
+    ids=[
+        "missing-key",
+        "extra-key",
+        "bad-workflow-id",
+        "negative-revision",
+        "revision-above-max",
+        "definition-version-zero",
+        "unknown-state",
+        "blank-title",
+        "non-boolean-flag",
+        "proposals-not-array",
+        "blank-proposal",
+        "completed-requires-todos",
+        "bad-todo-id",
+    ],
+)
+def test_snapshot_from_record_rejects_malformed_records(
+    mutate: Callable[[dict[str, object]], None],
+) -> None:
+    record = snapshot_to_record(active_snapshot(uuid4()))
+    mutate(record)
+
+    with pytest.raises(ValueError):
+        snapshot_from_record(record)
+
+
+def _phase8_insert(connection, owner_id: int, public_id: UUID, state: str,
+                   involves: bool | None, proposals: str,
+                   completion: str | None) -> None:
+    connection.execute(
+        text(
+            "INSERT INTO todo_workflows (public_id, owner_id, state, title, "
+            "involves_multiple_steps, proposed_todo_titles, completion_result) "
+            "VALUES (:public_id, :owner_id, :state, 'Plan birthday party', "
+            ":involves, CAST(:proposals AS jsonb), "
+            "CAST(:completion AS jsonb))"
+        ),
+        {
+            "public_id": public_id,
+            "owner_id": owner_id,
+            "state": state,
+            "involves": involves,
+            "proposals": proposals,
+            "completion": completion,
+        },
+    )
+
+
+def test_reliability_migration_backfills_each_state(database_engine: Engine) -> None:
+    config = Config(Path(__file__).parents[1] / "alembic.ini")
+    states = [
+        ("ASSESS_TASK", None, "[]", None),
+        ("OFFER_BREAKDOWN", True, "[]", None),
+        ("COLLECT_TASKS", True, "[]", None),
+        ("REVIEW", True, '["Send invitations", "Buy decorations"]', None),
+        (
+            "COMPLETED",
+            False,
+            '["Plan birthday party"]',
+            (
+                '{"created_todos": [{"id": "5f699d61-9449-407e-aa37-89e759b78df0", '
+                '"title": "Plan birthday party", "completed": false}]}'
+            ),
+        ),
+        ("CANCELLED", None, "[]", None),
+    ]
+    public_ids = [uuid4() for _ in states]
+    username = f"migrate-{uuid4()}"
+    try:
+        with database_engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "2026090801")
+            owner_id = connection.execute(
+                text(
+                    "INSERT INTO users (public_id, username, password_hash) "
+                    "VALUES (:public_id, :username, 'hash') RETURNING id"
+                ),
+                {"public_id": uuid4(), "username": username},
+            ).scalar_one()
+            for public_id, (state, involves, proposals, completion) in zip(
+                public_ids, states
+            ):
+                _phase8_insert(
+                    connection, owner_id, public_id, state, involves, proposals,
+                    completion,
+                )
+            command.upgrade(config, "head")
+            rows = connection.execute(
+                text(
+                    "SELECT state, revision, definition_version, title, "
+                    "involves_multiple_steps, "
+                    "proposed_todo_titles::text, completion_result::text "
+                    "FROM todo_workflows WHERE owner_id = :owner_id "
+                    "ORDER BY public_id"
+                ),
+                {"owner_id": owner_id},
+            ).all()
+            assert len(rows) == len(states)
+            for row in rows:
+                assert row.revision == 0
+                assert row.definition_version == 1
+                assert row.title == "Plan birthday party"
+            by_state = {row.state: row for row in rows}
+            assert by_state["REVIEW"].proposed_todo_titles == (
+                '["Send invitations", "Buy decorations"]'
+            )
+            assert "5f699d61-9449-407e-aa37-89e759b78df0" in (
+                by_state["COMPLETED"].completion_result or ""
+            )
+            for bad_sql, params, expected in [
+                (
+                    (
+                        "UPDATE todo_workflows SET revision = -1 "
+                        "WHERE public_id = :public_id"
+                    ),
+                    {"public_id": public_ids[0]},
+                    IntegrityError,
+                ),
+                # 2147483648 overflows INTEGER, so PostgreSQL raises a
+                # numeric-range error before the CHECK constraint is reached.
+                (
+                    (
+                        "UPDATE todo_workflows SET revision = 2147483648 "
+                        "WHERE public_id = :public_id"
+                    ),
+                    {"public_id": public_ids[0]},
+                    (IntegrityError, DataError),
+                ),
+                (
+                    (
+                        "UPDATE todo_workflows SET definition_version = 0 "
+                        "WHERE public_id = :public_id"
+                    ),
+                    {"public_id": public_ids[0]},
+                    IntegrityError,
+                ),
+            ]:
+                # Same connection via savepoint: a second connection would
+                # block on this transaction's DDL locks and deadlock.
+                with pytest.raises(expected), connection.begin_nested():
+                    connection.execute(text(bad_sql), params)
+    finally:
+        with database_engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "head")
+            connection.execute(
+                text("DELETE FROM users WHERE username = :username"),
+                {"username": username},
+            )
+
+
+def test_reliability_rollback_and_reupgrade_preserve_data(
+    database_engine: Engine,
+) -> None:
+    config = Config(Path(__file__).parents[1] / "alembic.ini")
+    public_id = uuid4()
+    todo_id = uuid4()
+    username = f"roundtrip-{uuid4()}"
+    try:
+        with database_engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "head")
+            owner_id = connection.execute(
+                text(
+                    "INSERT INTO users (public_id, username, password_hash) "
+                    "VALUES (:public_id, :username, 'hash') RETURNING id"
+                ),
+                {"public_id": uuid4(), "username": username},
+            ).scalar_one()
+            connection.execute(
+                text(
+                    "INSERT INTO todo_workflows (public_id, owner_id, state, "
+                    "title, involves_multiple_steps, proposed_todo_titles, "
+                    "revision, definition_version) "
+                    "VALUES (:public_id, :owner_id, 'REVIEW', "
+                    "'Plan birthday party', true, "
+                    "'[\"Send invitations\"]'::jsonb, 0, 1)"
+                ),
+                {"public_id": public_id, "owner_id": owner_id},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO todos (public_id, owner_id, title, completed) "
+                    "VALUES (:public_id, :owner_id, 'Keep', false)"
+                ),
+                {"public_id": todo_id, "owner_id": owner_id},
+            )
+            command.downgrade(config, "2026090801")
+            assert connection.execute(
+                text(
+                    "SELECT count(*) FROM todo_workflows "
+                    "WHERE public_id = :public_id"
+                ),
+                {"public_id": public_id},
+            ).scalar_one() == 1
+            assert connection.execute(
+                text("SELECT count(*) FROM todos WHERE public_id = :public_id"),
+                {"public_id": todo_id},
+            ).scalar_one() == 1
+            command.upgrade(config, "head")
+            row = connection.execute(
+                text(
+                    "SELECT state, revision, definition_version, "
+                    "proposed_todo_titles::text FROM todo_workflows "
+                    "WHERE public_id = :public_id"
+                ),
+                {"public_id": public_id},
+            ).one()
+            assert tuple(row) == ("REVIEW", 0, 1, '["Send invitations"]')
+            assert connection.execute(
+                text("SELECT count(*) FROM todos WHERE public_id = :public_id"),
+                {"public_id": todo_id},
+            ).scalar_one() == 1
+    finally:
+        with database_engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "head")
+            connection.execute(
+                text("DELETE FROM users WHERE username = :username"),
+                {"username": username},
+            )

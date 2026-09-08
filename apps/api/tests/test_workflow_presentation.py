@@ -2,7 +2,12 @@ from dataclasses import replace
 
 import pytest
 
-from app.workflow_domain import CreatedTodo, WorkflowSnapshot, WorkflowState
+from app.workflow_domain import (
+    CURRENT_WORKFLOW_DEFINITION_VERSION,
+    CreatedTodo,
+    WorkflowSnapshot,
+    WorkflowState,
+)
 from app.workflow_presentation import present_workflow
 
 WORKFLOW_ID = "6fc33b84-16a8-4d8e-ae94-fc50bb457d72"
@@ -17,6 +22,8 @@ def snapshot(state: WorkflowState) -> WorkflowSnapshot:
         involves_multiple_steps=state != WorkflowState.ASSESS_TASK,
         proposed_todo_titles=(),
         created_todos=None,
+        revision=0,
+        definition_version=CURRENT_WORKFLOW_DEFINITION_VERSION,
     )
 
 
@@ -81,3 +88,16 @@ def test_terminal_views_are_exact() -> None:
 def test_mapping_same_snapshot_is_stable() -> None:
     current = snapshot(WorkflowState.OFFER_BREAKDOWN)
     assert present_workflow(current) == present_workflow(current)
+
+
+def test_presentation_ignores_revision_and_definition_metadata() -> None:
+    current = snapshot(WorkflowState.REVIEW)
+    review = replace(
+        current,
+        proposed_todo_titles=("Send invitations", "Order birthday cake"),
+    )
+    advanced = replace(review, revision=5)
+
+    assert present_workflow(advanced) == present_workflow(review)
+    assert advanced.revision == 5
+    assert current.definition_version == CURRENT_WORKFLOW_DEFINITION_VERSION
