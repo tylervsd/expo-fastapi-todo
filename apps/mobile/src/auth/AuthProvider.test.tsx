@@ -3,7 +3,8 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-
 import { QueryClientProvider, timeoutManager, type QueryClient } from "@tanstack/react-query";
 import { createAppQueryClient } from "../../App";
 import { TodoApiError, type AuthUser, type Todo } from "../todos/todoApi";
-import { AuthProvider } from "./AuthProvider";
+import { AuthProvider, SessionEpochContext } from "./AuthProvider";
+import { PENDING_WRITE_KEY_PREFIX } from "../todoWorkflows/pendingWorkflowWrite";
 import { createMemoryTokenStorage, type TokenStorage } from "./tokenStorage";
 import type { TodoTransport } from "./authenticatedApi";
 
@@ -100,6 +101,7 @@ const renderProvider = async (options?: {
   storage?: TokenStorage;
   transport?: TodoTransport;
   client?: QueryClient;
+  children?: mockReact.ReactNode;
 }) => {
   const authApi = options?.authApi ?? makeAuthApi();
   const storage = options?.storage ?? createMemoryTokenStorage();
@@ -108,7 +110,9 @@ const renderProvider = async (options?: {
   liveClients.push(client);
   const view = await render(
     <QueryClientProvider client={client}>
-      <AuthProvider authApi={authApi} storage={storage} transport={transport} />
+      <AuthProvider authApi={authApi} storage={storage} transport={transport}>
+        {options?.children}
+      </AuthProvider>
     </QueryClientProvider>
   );
   return { view, authApi, storage, transport, client };
@@ -484,5 +488,149 @@ describe("workflow shell integration", () => {
     await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
     expect(await storage.get()).toBeNull();
     expect(authApi.logout).toHaveBeenCalledWith({ token: "tok-A" });
+  });
+});
+
+describe("session epoch", () => {
+  const sessionA = {
+    token: "tok-A",
+    expires_at: "2026-10-07T00:00:00+00:00",
+    user: { id: "6fc33b84-16a8-4d8e-ae94-fc50bb457d72", username: "alice" },
+  };
+
+  const signInThroughForm = async (username: string, password: string) => {
+    await fireEvent.changeText(screen.getByLabelText("Username"), username);
+    await fireEvent.changeText(screen.getByLabelText("Password"), password);
+    await fireEvent.press(screen.getByRole("button", { name: "Sign in" }));
+  };
+
+  const renderWithProbe = async (options?: {
+    authApi?: ReturnType<typeof makeAuthApi>;
+    storage?: TokenStorage;
+    transport?: TodoTransport;
+  }) => {
+    const seen: { epoch: number; current: (epoch: number) => boolean }[] = [];
+    const Probe = () => {
+      const value = mockReact.useContext(SessionEpochContext);
+      seen.push({ epoch: value.sessionEpoch, current: value.isSessionCurrent });
+      return null;
+    };
+    const rendered = await renderProvider({ ...options, children: <Probe /> });
+    return { ...rendered, seen };
+  };
+
+  const latest = (seen: { epoch: number; current: (epoch: number) => boolean }[]) =>
+    seen[seen.length - 1];
+
+  it("bumps the epoch when a stored session is restored", async () => {
+    const authApi = makeAuthApi();
+    const storage = createMemoryTokenStorage();
+    await storage.set("tok-1");
+    const { seen } = await renderWithProbe({ authApi, storage });
+
+    await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
+    expect(latest(seen).epoch).toBe(1);
+    expect(latest(seen).current(1)).toBe(true);
+    expect(latest(seen).current(0)).toBe(false);
+  });
+
+  it("bumps the epoch when restore finds no session", async () => {
+    const { seen } = await renderWithProbe();
+
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    expect(latest(seen).epoch).toBe(1);
+    expect(latest(seen).current(1)).toBe(true);
+  });
+
+  it("bumps the epoch on login, sign-out, and same-user re-login", async () => {
+    const authApi = makeAuthApi();
+    authApi.login.mockResolvedValue(sessionA);
+    const { seen } = await renderWithProbe({ authApi });
+
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    expect(latest(seen).epoch).toBe(1);
+
+    await signInThroughForm("alice", "long-enough-password");
+    await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
+    expect(latest(seen).epoch).toBe(2);
+    expect(latest(seen).current(1)).toBe(false);
+
+    await fireEvent.press(screen.getByRole("button", { name: "Sign out" }));
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    expect(latest(seen).epoch).toBe(3);
+
+    await signInThroughForm("alice", "long-enough-password");
+    await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
+    expect(latest(seen).epoch).toBe(4);
+    expect(latest(seen).current(3)).toBe(false);
+    expect(latest(seen).current(4)).toBe(true);
+  });
+
+  it("does not bump the epoch for a superseded stale-token cleanup", async () => {
+    const authApi = makeAuthApi();
+    authApi.login
+      .mockResolvedValueOnce(sessionA)
+      .mockResolvedValueOnce({
+        token: "tok-B",
+        expires_at: "2026-10-07T00:00:00+00:00",
+        user: { id: "9ab4d5e6-16a8-4d8e-ae94-fc50bb457d72", username: "bob" },
+      });
+    const storage = createMemoryTokenStorage();
+    const transport = makeTransport();
+    const pendingList: { promise: Promise<Todo[]>; resolve: (value: Todo[]) => void; reject: (reason?: unknown) => void } = (() => {
+      let resolve!: (value: Todo[]) => void;
+      let reject!: (reason?: unknown) => void;
+      const promise = new Promise<Todo[]>((onResolve, onReject) => {
+        resolve = onResolve;
+        reject = onReject;
+      });
+      return { promise, resolve, reject };
+    })();
+    transport.listTodos.mockReturnValueOnce(pendingList.promise).mockResolvedValue([]);
+    const { seen } = await renderWithProbe({ authApi, storage, transport });
+
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    await signInThroughForm("alice", "long-enough-password");
+    await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
+
+    await fireEvent.press(screen.getByRole("button", { name: "Sign out" }));
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    await signInThroughForm("bob", "long-enough-password");
+    await waitFor(() => expect(screen.getByText("Signed in as bob")).toBeTruthy());
+    const epochAfterSwitch = latest(seen).epoch;
+
+    await act(async () => {
+      pendingList.reject(new TodoApiError("auth-required", "Please sign in again."));
+    });
+
+    expect(screen.getByText("Signed in as bob")).toBeTruthy();
+    expect(latest(seen).epoch).toBe(epochAfterSwitch);
+    expect(latest(seen).current(epochAfterSwitch)).toBe(true);
+  });
+
+  it("never writes pending-workflow keys during auth flows", async () => {
+    const SecureStore = jest.requireMock("expo-secure-store") as {
+      setItemAsync: jest.Mock;
+      deleteItemAsync: jest.Mock;
+    };
+    SecureStore.setItemAsync.mockClear();
+    SecureStore.deleteItemAsync.mockClear();
+    const authApi = makeAuthApi();
+    authApi.login.mockResolvedValueOnce(sessionA);
+    const { storage } = await renderProvider({ authApi, storage: createMemoryTokenStorage() });
+
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    await signInThroughForm("alice", "long-enough-password");
+    await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
+    await fireEvent.press(screen.getByRole("button", { name: "Sign out" }));
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    void storage;
+
+    for (const call of SecureStore.setItemAsync.mock.calls) {
+      expect(String(call[0])).not.toContain(PENDING_WRITE_KEY_PREFIX);
+    }
+    for (const call of SecureStore.deleteItemAsync.mock.calls) {
+      expect(String(call[0])).not.toContain(PENDING_WRITE_KEY_PREFIX);
+    }
   });
 });
