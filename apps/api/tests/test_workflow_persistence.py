@@ -1,9 +1,12 @@
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select, text
+from alembic.config import Config
+from sqlalchemy import Engine, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
+from alembic import command
 from app.auth_repository import create_user
 from app.workflow_domain import (
     AnswerMultipleSteps,
@@ -251,6 +254,12 @@ def test_yes_then_submit_persists_review_with_zero_todos(
     with session_factory() as write_session:
         snapshot = start_workflow(write_session, owner_id, "Plan birthday party")
     with session_factory() as write_session:
+        offered = advance_workflow(
+            write_session, owner_id, snapshot.id, AnswerMultipleSteps(answer=True)
+        )
+    assert offered is not None
+    assert offered.state == WorkflowState.OFFER_BREAKDOWN
+    with session_factory() as write_session:
         collecting = advance_workflow(
             write_session, owner_id, snapshot.id, AnswerMultipleSteps(answer=True)
         )
@@ -307,10 +316,25 @@ def test_cancel_from_each_active_state_persists_cancelled(
             )
             workflow_ids.append(snapshot.id)
     with session_factory() as write_session:
+        offered = advance_workflow(
+            write_session, owner_id, workflow_ids[1], AnswerMultipleSteps(answer=True)
+        )
+        assert offered is not None
+        assert offered.state == WorkflowState.OFFER_BREAKDOWN
+    with session_factory() as write_session:
         collecting = advance_workflow(
             write_session, owner_id, workflow_ids[1], AnswerMultipleSteps(answer=True)
         )
         assert collecting is not None
+    with session_factory() as write_session:
+        offered = advance_workflow(
+            write_session,
+            owner_id,
+            workflow_ids[2],
+            AnswerMultipleSteps(answer=True),
+        )
+        assert offered is not None
+        assert offered.state == WorkflowState.OFFER_BREAKDOWN
     with session_factory() as write_session:
         review = advance_workflow(
             write_session,
@@ -371,6 +395,10 @@ def test_confirm_breakdown_path_creates_exact_ordered_todos(
     owner_id = setup_owner(session_factory)
     with session_factory() as write_session:
         snapshot = start_workflow(write_session, owner_id, "Plan birthday party")
+    with session_factory() as write_session:
+        advance_workflow(
+            write_session, owner_id, snapshot.id, AnswerMultipleSteps(answer=True)
+        )
     with session_factory() as write_session:
         advance_workflow(
             write_session, owner_id, snapshot.id, AnswerMultipleSteps(answer=True)
@@ -441,6 +469,10 @@ def test_confirm_rollback_leaves_review_and_zero_todos(
     owner_id = setup_owner(session_factory)
     with session_factory() as write_session:
         snapshot = start_workflow(write_session, owner_id, "Plan birthday party")
+    with session_factory() as write_session:
+        advance_workflow(
+            write_session, owner_id, snapshot.id, AnswerMultipleSteps(answer=True)
+        )
     with session_factory() as write_session:
         advance_workflow(
             write_session, owner_id, snapshot.id, AnswerMultipleSteps(answer=True)
@@ -522,3 +554,59 @@ def test_confirm_in_assess_task_rejects_without_mutation(
         assert after_row == before_row
         assert todo_titles(session_factory, owner_id) == before_todos
         assert get_workflow(verification_session, owner_id, snapshot.id) == snapshot
+
+
+def test_offer_breakdown_row_persists(database_session: Session) -> None:
+    owner_id = make_owner(database_session)
+    row = create_workflow(database_session, uuid4(), owner_id, "Plan birthday party")
+    update_workflow(
+        database_session, row, state="OFFER_BREAKDOWN",
+        involves_multiple_steps=True, proposed_todo_titles=[],
+        completion_result=None,
+    )
+    assert find_workflow(database_session, row.public_id, owner_id).state == "OFFER_BREAKDOWN"
+
+
+def test_downgrade_rewinds_offer_before_narrowing(database_engine: Engine) -> None:
+    config = Config(Path(__file__).parents[1] / "alembic.ini")
+    public_id = uuid4()
+    try:
+        with database_engine.begin() as connection:
+            owner_id = connection.execute(
+                text(
+                    "INSERT INTO users (public_id, username, password_hash) "
+                    "VALUES (:public_id, :username, 'hash') RETURNING id"
+                ),
+                {"public_id": uuid4(), "username": f"downgrade-{public_id}"},
+            ).scalar_one()
+            connection.execute(
+                text(
+                    "INSERT INTO todo_workflows "
+                    "(public_id, owner_id, state, title, involves_multiple_steps, proposed_todo_titles) "
+                    "VALUES (:public_id, :owner_id, 'OFFER_BREAKDOWN', "
+                    "'Plan birthday party', true, '[]'::jsonb)"
+                ),
+                {"public_id": public_id, "owner_id": owner_id},
+            )
+            config.attributes["connection"] = connection
+            command.downgrade(config, "2026090702")
+            row = connection.execute(
+                text(
+                    "SELECT state, involves_multiple_steps, proposed_todo_titles "
+                    "FROM todo_workflows WHERE public_id = :public_id"
+                ),
+                {"public_id": public_id},
+            ).one()
+            assert tuple(row) == ("ASSESS_TASK", None, [])
+    finally:
+        with database_engine.begin() as connection:
+            connection.execute(
+                text("DELETE FROM todo_workflows WHERE public_id = :public_id"),
+                {"public_id": public_id},
+            )
+            connection.execute(
+                text("DELETE FROM users WHERE username = :username"),
+                {"username": f"downgrade-{public_id}"},
+            )
+            config.attributes["connection"] = connection
+            command.upgrade(config, "head")

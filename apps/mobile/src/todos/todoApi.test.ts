@@ -441,12 +441,23 @@ describe("auth transport", () => {
 
 describe("todo workflow transport", () => {
   const workflowId = "6fc33b84-16a8-4d8e-ae94-fc50bb457d72";
+  const assessView = {
+    type: "yes_no" as const,
+    step_id: `${workflowId}:ASSESS_TASK`,
+    title: "Plan birthday party",
+    question: "Does this task involve multiple steps?",
+    actions: [
+      { id: "yes" as const, label: "Yes" },
+      { id: "no" as const, label: "No" },
+    ],
+  };
   const assessWorkflow = {
     workflow_id: workflowId,
     state: "ASSESS_TASK",
     title: "Plan birthday party",
     context: { involves_multiple_steps: null, proposed_todo_titles: [] },
     result: null,
+    view: assessView,
   };
   const completedWorkflow = {
     workflow_id: workflowId,
@@ -461,12 +472,16 @@ describe("todo workflow transport", () => {
         { id: "81b3c4d5-16a8-4d8e-ae94-fc50bb457d72", title: "Plan birthday party", completed: false },
       ],
     },
+    view: {
+      type: "completion" as const,
+      step_id: `${workflowId}:COMPLETED`,
+      title: "Plan complete",
+      outcome: "completed" as const,
+      created_todos: [
+        { id: "81b3c4d5-16a8-4d8e-ae94-fc50bb457d72", title: "Plan birthday party", completed: false },
+      ],
+    },
   };
-  const cancelledWorkflow = {
-    ...assessWorkflow,
-    state: "CANCELLED",
-  };
-
   it("starts a workflow with an exact POST request", async () => {
     const fetchImpl = jest.fn().mockResolvedValue(response(201, assessWorkflow));
 
@@ -492,6 +507,44 @@ describe("todo workflow transport", () => {
       headers: { Authorization: "Bearer tok" },
       signal: expect.any(AbortSignal),
     });
+  });
+
+  it.each([
+    [
+      "task breakdown",
+      {
+        ...assessWorkflow,
+        state: "COLLECT_TASKS",
+        context: { involves_multiple_steps: true, proposed_todo_titles: [] },
+        view: {
+          type: "task_breakdown" as const,
+          step_id: `${workflowId}:COLLECT_TASKS`,
+          title: "Break it down",
+          min_titles: 2,
+          max_titles: 10,
+        },
+      },
+    ],
+    [
+      "review",
+      {
+        ...assessWorkflow,
+        state: "REVIEW",
+        context: { involves_multiple_steps: false, proposed_todo_titles: ["Plan birthday party"] },
+        view: {
+          type: "review" as const,
+          step_id: `${workflowId}:REVIEW`,
+          title: "Review the plan",
+          proposed_titles: ["Plan birthday party"],
+        },
+      },
+    ],
+  ])("accepts a valid %s workflow view", async (_name, body) => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(200, body));
+
+    await expect(
+      getTodoWorkflow(workflowId, { apiUrl, token: "tok", fetchImpl })
+    ).resolves.toEqual(body);
   });
 
   it("advances with exact action bodies", async () => {
@@ -528,50 +581,9 @@ describe("todo workflow transport", () => {
   it.each([
     ["extra key", { ...assessWorkflow, extra: true }],
     ["missing key", { workflow_id: workflowId, state: "ASSESS_TASK" }],
-    ["unknown state", { ...assessWorkflow, state: "DREAMING" }],
     ["malformed UUID", { ...assessWorkflow, workflow_id: "not-a-uuid" }],
     ["noncanonical title", { ...assessWorkflow, title: "  Padded  " }],
     ["bad context", { ...assessWorkflow, context: { involves_multiple_steps: "maybe" } }],
-    [
-      "non-null active result",
-      { ...assessWorkflow, result: { created_todos: [] } },
-    ],
-    ["null completed result", { ...completedWorkflow, result: null }],
-    [
-      "assessment context with an answer",
-      { ...assessWorkflow, context: { involves_multiple_steps: false, proposed_todo_titles: [] } },
-    ],
-    [
-      "collection context with proposals",
-      { ...assessWorkflow, state: "COLLECT_TASKS", context: { involves_multiple_steps: true, proposed_todo_titles: ["One"] } },
-    ],
-    [
-      "context with an extra key",
-      { ...assessWorkflow, context: { involves_multiple_steps: null, proposed_todo_titles: [], extra: true } },
-    ],
-    [
-      "review context with missing proposal",
-      { ...assessWorkflow, state: "REVIEW", context: { involves_multiple_steps: false, proposed_todo_titles: [] } },
-    ],
-    [
-      "review context with too few multi-step proposals",
-      { ...assessWorkflow, state: "REVIEW", context: { involves_multiple_steps: true, proposed_todo_titles: ["One"] } },
-    ],
-    [
-      "completed result with wrong title",
-      {
-        ...completedWorkflow,
-        result: { created_todos: [{ ...completedWorkflow.result.created_todos[0], title: "Other" }] },
-      },
-    ],
-    [
-      "completed result with completed todo",
-      {
-        ...completedWorkflow,
-        result: { created_todos: [{ ...completedWorkflow.result.created_todos[0], completed: true }] },
-      },
-    ],
-    ["cancelled result object", { ...cancelledWorkflow, result: { created_todos: [] } }],
     [
       "malformed created todo",
       {
@@ -589,15 +601,118 @@ describe("todo workflow transport", () => {
     });
   });
 
-  it.each([
-    ["assessment context", cancelledWorkflow],
-    ["collection context", { ...cancelledWorkflow, context: { involves_multiple_steps: true, proposed_todo_titles: [] } }],
-    ["single review context", { ...cancelledWorkflow, context: { involves_multiple_steps: false, proposed_todo_titles: ["Plan birthday party"] } }],
-    ["multi-step review context", { ...cancelledWorkflow, context: { involves_multiple_steps: true, proposed_todo_titles: ["One", "Two"] } }],
-  ])("accepts cancelled %s", async (_case, body) => {
+  it("accepts an opaque state and normalizes an unknown view", async () => {
+    const body = {
+      ...assessWorkflow,
+      state: "FUTURE_STATE",
+      view: {
+        type: "future_template",
+        step_id: `${workflowId}:FUTURE_STATE`,
+        server_only: true,
+      },
+    };
     const fetchImpl = jest.fn().mockResolvedValue(response(200, body));
 
-    await expect(getTodoWorkflow(workflowId, { apiUrl, token: "tok", fetchImpl })).resolves.toEqual(body);
+    await expect(
+      getTodoWorkflow(workflowId, { apiUrl, token: "tok", fetchImpl })
+    ).resolves.toEqual({
+      ...body,
+      view: {
+        type: "unsupported",
+        server_type: "future_template",
+        step_id: `${workflowId}:FUTURE_STATE`,
+      },
+    });
+  });
+
+  it.each([
+    ["empty state", { ...assessWorkflow, state: "" }],
+    ["wrong step", { ...assessWorkflow, view: { ...assessView, step_id: "wrong" } }],
+    ["missing view key", { ...assessWorkflow, view: { type: "future_template" } }],
+    ["extra known key", { ...assessWorkflow, view: { ...assessView, extra: true } }],
+    ["wrong choice id", {
+      ...assessWorkflow,
+      view: {
+        ...assessView,
+        actions: [{ id: "maybe", label: "Maybe" }, { id: "no", label: "No" }],
+      },
+    }],
+  ])("rejects %s", async (_name, body) => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(200, body));
+    await expect(
+      getTodoWorkflow(workflowId, { apiUrl, token: "tok", fetchImpl })
+    ).rejects.toMatchObject({ kind: "invalid-data" });
+  });
+
+  it.each([
+    [
+      "breakdown with invalid bounds",
+      {
+        ...assessWorkflow,
+        state: "COLLECT_TASKS",
+        view: {
+          type: "task_breakdown",
+          step_id: `${workflowId}:COLLECT_TASKS`,
+          title: "Break it down",
+          min_titles: 10,
+          max_titles: 2,
+        },
+      },
+    ],
+    [
+      "review with noncanonical title",
+      {
+        ...assessWorkflow,
+        state: "REVIEW",
+        view: {
+          type: "review",
+          step_id: `${workflowId}:REVIEW`,
+          title: "Review the plan",
+          proposed_titles: [" Plan birthday party "],
+        },
+      },
+    ],
+    [
+      "review with an extra key",
+      {
+        ...assessWorkflow,
+        state: "REVIEW",
+        view: {
+          type: "review",
+          step_id: `${workflowId}:REVIEW`,
+          title: "Review the plan",
+          proposed_titles: ["Plan birthday party"],
+          extra: true,
+        },
+      },
+    ],
+  ])("rejects malformed %s view", async (_name, body) => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(200, body));
+
+    await expect(
+      getTodoWorkflow(workflowId, { apiUrl, token: "tok", fetchImpl })
+    ).rejects.toMatchObject({ kind: "invalid-data" });
+  });
+
+  it("accepts declined breakdown context structurally", async () => {
+    const body = {
+      ...assessWorkflow,
+      state: "REVIEW",
+      context: {
+        involves_multiple_steps: true,
+        proposed_todo_titles: ["Plan birthday party"],
+      },
+      view: {
+        type: "review",
+        step_id: `${workflowId}:REVIEW`,
+        title: "Review your plan",
+        proposed_titles: ["Plan birthday party"],
+      },
+    };
+    const fetchImpl = jest.fn().mockResolvedValue(response(200, body));
+    await expect(
+      getTodoWorkflow(workflowId, { apiUrl, token: "tok", fetchImpl })
+    ).resolves.toEqual(body);
   });
 
   it("maps workflow 401 to auth-required", async () => {

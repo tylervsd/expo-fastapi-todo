@@ -31,7 +31,7 @@ from app.todo_repository import (
 )
 from app.todo_repository import set_title as set_todo_title
 
-REVISION = "2026090702"
+REVISION = "2026090801"
 
 
 def test_alembic_cli_loads_api_package() -> None:
@@ -118,7 +118,11 @@ def test_migration_creates_expected_todos_shape(database_engine: Engine) -> None
         ),
         (
             "ck_todo_workflows_state",
-            "state = ANY (ARRAY['ASSESS_TASK'::text, 'COLLECT_TASKS'::text, 'REVIEW'::text, 'COMPLETED'::text, 'CANCELLED'::text])",
+            (
+                "state = ANY (ARRAY['ASSESS_TASK'::text, 'OFFER_BREAKDOWN'::text, "
+                "'COLLECT_TASKS'::text, 'REVIEW'::text, 'COMPLETED'::text, "
+                "'CANCELLED'::text])"
+            ),
         ),
         (
             "ck_todo_workflows_title_length",

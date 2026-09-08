@@ -80,7 +80,7 @@ Phases 7-9 build one guided-todo creation feature to teach backend-owned state t
 - Testing-pyramid layer introduced: API contract tests and component tests for template selection, accessibility, submitting state, draft reset between questions, and unsupported-template handling.
 - Learning experiment: Add another yes/no question and its branching rule in the backend without adding frontend workflow branching or a new screen component.
 - Non-goals: Downloading executable UI, accepting arbitrary navigation URLs, server-defined layout trees, optimistic workflow advancement, and requiring Expo Router. New template types still need client support.
-- Spec gate: Before implementation, approve the supported view/action contracts, state-to-view mapping, client rendering boundary, step identity rules, and unknown-contract fallback.
+- Spec gate: This phase received its approved spec before implementation, covering the supported view/action contracts, state-to-view mapping, client rendering boundary, step identity rules, and unknown-contract fallback. Implementation is complete on its feature branch; web and iOS acceptance observations are pending.
 
 ## 9. Reliable, resumable workflows
 

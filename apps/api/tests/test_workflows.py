@@ -3,9 +3,10 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.main import create_app
+from app.main import YesNoWorkflowView, create_app
 
 
 @pytest.fixture
@@ -45,7 +46,7 @@ def test_start_returns_assess_task_without_todos(
 
     assert response.status_code == 201
     body = response.json()
-    assert set(body) == {"workflow_id", "state", "title", "context", "result"}
+    assert set(body) == {"workflow_id", "state", "title", "context", "result", "view"}
     assert body["state"] == "ASSESS_TASK"
     assert body["title"] == "Plan birthday party"
     assert body["context"] == {
@@ -53,6 +54,14 @@ def test_start_returns_assess_task_without_todos(
         "proposed_todo_titles": [],
     }
     assert body["result"] is None
+    workflow_id = body["workflow_id"]
+    assert body["view"] == {
+        "type": "yes_no",
+        "step_id": f"{workflow_id}:ASSESS_TASK",
+        "title": "Plan birthday party",
+        "question": "Does this task involve multiple steps?",
+        "actions": [{"id": "yes", "label": "Yes"}, {"id": "no", "label": "No"}],
+    }
     assert client.get("/todos", headers=headers).json() == []
 
 
@@ -70,7 +79,25 @@ def test_yes_branch_collects_then_confirms_three_todos(
         headers=headers,
     )
     assert collecting.status_code == 200
-    assert collecting.json()["state"] == "COLLECT_TASKS"
+    assert collecting.json()["state"] == "OFFER_BREAKDOWN"
+    assert collecting.json()["view"]["question"] == (
+        "Would you like to split it into smaller todos?"
+    )
+    assert collecting.json()["view"]["step_id"] == f"{workflow_id}:OFFER_BREAKDOWN"
+
+    breakdown = client.post(
+        f"/todo-workflows/{workflow_id}/actions",
+        json={"action": "answer_multiple_steps", "answer": True},
+        headers=headers,
+    )
+    assert breakdown.json()["state"] == "COLLECT_TASKS"
+    assert breakdown.json()["view"] == {
+        "type": "task_breakdown",
+        "step_id": f"{workflow_id}:COLLECT_TASKS",
+        "title": "Break it into smaller todos",
+        "min_titles": 2,
+        "max_titles": 10,
+    }
 
     review = client.post(
         f"/todo-workflows/{workflow_id}/actions",
@@ -87,6 +114,12 @@ def test_yes_branch_collects_then_confirms_three_todos(
         "Buy decorations",
         "Book venue",
     ]
+    assert review.json()["view"] == {
+        "type": "review",
+        "step_id": f"{workflow_id}:REVIEW",
+        "title": "Review your plan",
+        "proposed_titles": ["Send invitations", "Buy decorations", "Book venue"],
+    }
 
     completed = client.post(
         f"/todo-workflows/{workflow_id}/actions",
@@ -102,6 +135,13 @@ def test_yes_branch_collects_then_confirms_three_todos(
         "Book venue",
     ]
     assert [todo["completed"] for todo in created] == [False, False, False]
+    assert completed.json()["view"] == {
+        "type": "completion",
+        "step_id": f"{workflow_id}:COMPLETED",
+        "title": "Plan complete",
+        "outcome": "completed",
+        "created_todos": created,
+    }
 
     todos = client.get("/todos", headers=headers).json()
     assert [todo["title"] for todo in todos] == [
@@ -109,6 +149,50 @@ def test_yes_branch_collects_then_confirms_three_todos(
         "Buy decorations",
         "Book venue",
     ]
+
+
+def test_offer_no_reviews_original_with_views(
+    client: TestClient,
+) -> None:
+    headers = auth_headers(client)
+    workflow_id = client.post(
+        "/todo-workflows", json={"title": "Plan birthday party"}, headers=headers
+    ).json()["workflow_id"]
+
+    offered = client.post(
+        f"/todo-workflows/{workflow_id}/actions",
+        json={"action": "answer_multiple_steps", "answer": True},
+        headers=headers,
+    )
+    assert offered.status_code == 200
+    assert offered.json()["state"] == "OFFER_BREAKDOWN"
+    assert offered.json()["context"] == {
+        "involves_multiple_steps": True,
+        "proposed_todo_titles": [],
+    }
+    assert offered.json()["view"]["question"] == (
+        "Would you like to split it into smaller todos?"
+    )
+    assert offered.json()["view"]["step_id"] == f"{workflow_id}:OFFER_BREAKDOWN"
+
+    review = client.post(
+        f"/todo-workflows/{workflow_id}/actions",
+        json={"action": "answer_multiple_steps", "answer": False},
+        headers=headers,
+    )
+    assert review.status_code == 200
+    assert review.json()["state"] == "REVIEW"
+    assert review.json()["context"] == {
+        "involves_multiple_steps": True,
+        "proposed_todo_titles": ["Plan birthday party"],
+    }
+    assert review.json()["view"] == {
+        "type": "review",
+        "step_id": f"{workflow_id}:REVIEW",
+        "title": "Review your plan",
+        "proposed_titles": ["Plan birthday party"],
+    }
+    assert client.get("/todos", headers=headers).json() == []
 
 
 def test_no_branch_reviews_and_creates_original_title(
@@ -142,7 +226,7 @@ def test_no_branch_reviews_and_creates_original_title(
     ]
 
 
-@pytest.mark.parametrize("path", ["assess", "collect", "review"])
+@pytest.mark.parametrize("path", ["assess", "offer", "collect", "review"])
 def test_cancel_from_each_active_state(client: TestClient, path: str) -> None:
     headers = auth_headers(client)
     first = client.post(
@@ -154,22 +238,31 @@ def test_cancel_from_each_active_state(client: TestClient, path: str) -> None:
     third = client.post(
         "/todo-workflows", json={"title": "Plan birthday party"}, headers=headers
     ).json()["workflow_id"]
+    fourth = client.post(
+        "/todo-workflows", json={"title": "Plan birthday party"}, headers=headers
+    ).json()["workflow_id"]
     client.post(
         f"/todo-workflows/{second}/actions",
         json={"action": "answer_multiple_steps", "answer": True},
         headers=headers,
     )
+    for target_id in (third, fourth):
+        client.post(
+            f"/todo-workflows/{target_id}/actions",
+            json={"action": "answer_multiple_steps", "answer": True},
+            headers=headers,
+        )
+        client.post(
+            f"/todo-workflows/{target_id}/actions",
+            json={"action": "answer_multiple_steps", "answer": True},
+            headers=headers,
+        )
     client.post(
-        f"/todo-workflows/{third}/actions",
-        json={"action": "answer_multiple_steps", "answer": True},
-        headers=headers,
-    )
-    client.post(
-        f"/todo-workflows/{third}/actions",
+        f"/todo-workflows/{fourth}/actions",
         json={"action": "submit_tasks", "titles": ["Send invitations", "Buy cake"]},
         headers=headers,
     )
-    target = {"assess": first, "collect": second, "review": third}[path]
+    target = {"assess": first, "offer": second, "collect": third, "review": fourth}[path]
 
     cancelled = client.post(
         f"/todo-workflows/{target}/actions",
@@ -181,6 +274,50 @@ def test_cancel_from_each_active_state(client: TestClient, path: str) -> None:
     assert cancelled.json()["state"] == "CANCELLED"
     assert cancelled.json()["result"] is None
     assert client.get("/todos", headers=headers).json() == []
+
+
+def test_offer_rejects_misplaced_actions(
+    client: TestClient,
+) -> None:
+    headers = auth_headers(client)
+    workflow_id = client.post(
+        "/todo-workflows", json={"title": "Plan birthday party"}, headers=headers
+    ).json()["workflow_id"]
+    client.post(
+        f"/todo-workflows/{workflow_id}/actions",
+        json={"action": "answer_multiple_steps", "answer": True},
+        headers=headers,
+    )
+
+    for action in (
+        {"action": "submit_tasks", "titles": ["Send invitations", "Buy cake"]},
+        {"action": "confirm"},
+    ):
+        response = client.post(
+            f"/todo-workflows/{workflow_id}/actions", json=action, headers=headers
+        )
+
+        assert response.status_code == 409
+        assert response.json() == {
+            "detail": "Action is not valid for the current workflow state."
+        }
+
+
+def test_known_view_models_forbid_unknown_fields() -> None:
+    with pytest.raises(ValidationError):
+        YesNoWorkflowView.model_validate(
+            {
+                "type": "yes_no",
+                "step_id": f"{uuid4()}:ASSESS_TASK",
+                "title": "Plan birthday party",
+                "question": "Does this task involve multiple steps?",
+                "actions": [
+                    {"id": "yes", "label": "Yes"},
+                    {"id": "no", "label": "No"},
+                ],
+                "extra": True,
+            }
+        )
 
 
 @pytest.mark.parametrize("state", ["COMPLETED", "CANCELLED"])
@@ -376,6 +513,11 @@ def test_progress_survives_fresh_client_without_side_effects(
         json={"action": "answer_multiple_steps", "answer": True},
         headers=headers,
     )
+    client.post(
+        f"/todo-workflows/{workflow_id}/actions",
+        json={"action": "answer_multiple_steps", "answer": True},
+        headers=headers,
+    )
     before_todos = client.get("/todos", headers=headers).json()
 
     with TestClient(create_app(session_factory)) as fresh_client:
@@ -457,6 +599,19 @@ def test_openapi_publishes_workflow_contract(client: TestClient) -> None:
         "ConfirmAction",
         "CancelAction",
     } <= set(document["components"]["schemas"])
+    view_schema = document["components"]["schemas"]["TodoWorkflowResponse"][
+        "properties"
+    ]["view"]
+    assert view_schema["discriminator"] == {
+        "propertyName": "type",
+        "mapping": {
+            "yes_no": "#/components/schemas/YesNoWorkflowView",
+            "task_breakdown": "#/components/schemas/TaskBreakdownWorkflowView",
+            "review": "#/components/schemas/ReviewWorkflowView",
+            "completion": "#/components/schemas/CompletionWorkflowView",
+        },
+    }
+    assert len(view_schema["oneOf"]) == 4
     assert "TodoWorkflowResponse" in document["components"]["schemas"]
     assert {"type": "http", "scheme": "bearer"} in document["components"][
         "securitySchemes"

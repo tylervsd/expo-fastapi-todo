@@ -8,6 +8,7 @@ from app.title_validation import canonicalize_title
 
 class WorkflowState(StrEnum):
     ASSESS_TASK = "ASSESS_TASK"
+    OFFER_BREAKDOWN = "OFFER_BREAKDOWN"
     COLLECT_TASKS = "COLLECT_TASKS"
     REVIEW = "REVIEW"
     COMPLETED = "COMPLETED"
@@ -129,7 +130,7 @@ def transition(
             if isinstance(command, AnswerMultipleSteps):
                 if command.answer:
                     return TransitionDecision(
-                        state=WorkflowState.COLLECT_TASKS,
+                        state=WorkflowState.OFFER_BREAKDOWN,
                         involves_multiple_steps=True,
                         proposed_todo_titles=(),
                         todo_titles_to_create=(),
@@ -142,6 +143,24 @@ def transition(
                 )
             raise InvalidWorkflowAction(
                 f"{type(command).__name__} is not valid in ASSESS_TASK"
+            )
+        case WorkflowState.OFFER_BREAKDOWN:
+            if isinstance(command, AnswerMultipleSteps):
+                if command.answer:
+                    return TransitionDecision(
+                        state=WorkflowState.COLLECT_TASKS,
+                        involves_multiple_steps=snapshot.involves_multiple_steps,
+                        proposed_todo_titles=(),
+                        todo_titles_to_create=(),
+                    )
+                return TransitionDecision(
+                    state=WorkflowState.REVIEW,
+                    involves_multiple_steps=snapshot.involves_multiple_steps,
+                    proposed_todo_titles=(snapshot.title,),
+                    todo_titles_to_create=(),
+                )
+            raise InvalidWorkflowAction(
+                f"{type(command).__name__} is not valid in OFFER_BREAKDOWN"
             )
         case WorkflowState.COLLECT_TASKS:
             if isinstance(command, SubmitTasks):

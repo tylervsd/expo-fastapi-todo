@@ -73,9 +73,29 @@ const assessWorkflow: TodoWorkflow = {
   title: "Plan birthday party",
   context: { involves_multiple_steps: null, proposed_todo_titles: [] },
   result: null,
+  view: {
+    type: "yes_no",
+    step_id: `${WORKFLOW_ID}:ASSESS_TASK`,
+    title: "Plan birthday party",
+    question: "Does this task involve multiple steps?",
+    actions: [
+      { id: "yes", label: "Yes" },
+      { id: "no", label: "No" },
+    ],
+  },
 };
 
-const cancelledWorkflow: TodoWorkflow = { ...assessWorkflow, state: "CANCELLED" };
+const cancelledWorkflow: TodoWorkflow = {
+  ...assessWorkflow,
+  state: "CANCELLED",
+  view: {
+    type: "completion",
+    step_id: `${WORKFLOW_ID}:CANCELLED`,
+    title: "Plan cancelled",
+    outcome: "cancelled",
+    created_todos: [],
+  },
+};
 
 type MockShellApi = {
   [K in keyof AuthenticatedApi]: jest.Mock;
@@ -209,12 +229,45 @@ it("returns to todos after cancel", async () => {
 });
 
 it("returns after completion onto a refetching todo list", async () => {
+  const offerWorkflow: TodoWorkflow = {
+    ...assessWorkflow,
+    state: "OFFER_BREAKDOWN",
+    context: { involves_multiple_steps: true, proposed_todo_titles: [] },
+    view: {
+      type: "yes_no",
+      step_id: `${WORKFLOW_ID}:OFFER_BREAKDOWN`,
+      title: "Plan birthday party",
+      question: "Would you like to split it into smaller todos?",
+      actions: [
+        { id: "yes", label: "Yes" },
+        { id: "no", label: "No" },
+      ],
+    },
+  };
+  const collectWorkflow: TodoWorkflow = {
+    ...assessWorkflow,
+    state: "COLLECT_TASKS",
+    context: { involves_multiple_steps: true, proposed_todo_titles: [] },
+    view: {
+      type: "task_breakdown",
+      step_id: `${WORKFLOW_ID}:COLLECT_TASKS`,
+      title: "Break it into smaller todos",
+      min_titles: 2,
+      max_titles: 10,
+    },
+  };
   const reviewWorkflow: TodoWorkflow = {
     ...assessWorkflow,
     state: "REVIEW",
     context: {
       involves_multiple_steps: true,
       proposed_todo_titles: ["Send invitations", "Buy decorations"],
+    },
+    view: {
+      type: "review",
+      step_id: `${WORKFLOW_ID}:REVIEW`,
+      title: "Review your plan",
+      proposed_titles: ["Send invitations", "Buy decorations"],
     },
   };
   const completedWorkflow: TodoWorkflow = {
@@ -225,16 +278,22 @@ it("returns after completion onto a refetching todo list", async () => {
         { id: "81b3c4d5-16a8-4d8e-ae94-fc50bb457d72", title: "Send invitations", completed: false },
       ],
     },
+    view: {
+      type: "completion",
+      step_id: `${WORKFLOW_ID}:COMPLETED`,
+      title: "Plan complete",
+      outcome: "completed",
+      created_todos: [
+        { id: "81b3c4d5-16a8-4d8e-ae94-fc50bb457d72", title: "Send invitations", completed: false },
+      ],
+    },
   };
   const api = makeShellApi();
   ;(api.list as jest.Mock).mockResolvedValue([]);
   ;(api.startWorkflow as jest.Mock).mockResolvedValue(assessWorkflow);
   ;(api.advanceWorkflow as jest.Mock)
-    .mockResolvedValueOnce({
-      ...assessWorkflow,
-      state: "COLLECT_TASKS",
-      context: { involves_multiple_steps: true, proposed_todo_titles: [] },
-    })
+    .mockResolvedValueOnce(offerWorkflow)
+    .mockResolvedValueOnce(collectWorkflow)
     .mockResolvedValueOnce(reviewWorkflow)
     .mockResolvedValueOnce(completedWorkflow);
   await renderShell(api);
@@ -247,6 +306,14 @@ it("returns after completion onto a refetching todo list", async () => {
   await waitFor(() =>
     expect(
       screen.getByRole("header", { name: "Does this task involve multiple steps?" })
+    ).toBeTruthy()
+  );
+  await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
+  await waitFor(() =>
+    expect(
+      screen.getByRole("header", {
+        name: "Would you like to split it into smaller todos?",
+      })
     ).toBeTruthy()
   );
   await fireEvent.press(screen.getByRole("button", { name: "Yes" }));

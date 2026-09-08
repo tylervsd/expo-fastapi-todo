@@ -26,8 +26,21 @@ def assess_snapshot() -> WorkflowSnapshot:
     return create_initial_snapshot(WORKFLOW_ID, TITLE)
 
 
-def collect_snapshot() -> WorkflowSnapshot:
+def offer_snapshot() -> WorkflowSnapshot:
     snapshot = assess_snapshot()
+    decision = transition(snapshot, AnswerMultipleSteps(answer=True))
+    return WorkflowSnapshot(
+        id=snapshot.id,
+        state=decision.state,
+        title=snapshot.title,
+        involves_multiple_steps=decision.involves_multiple_steps,
+        proposed_todo_titles=decision.proposed_todo_titles,
+        created_todos=None,
+    )
+
+
+def collect_snapshot() -> WorkflowSnapshot:
+    snapshot = offer_snapshot()
     decision = transition(snapshot, AnswerMultipleSteps(answer=True))
     return WorkflowSnapshot(
         id=snapshot.id,
@@ -50,6 +63,25 @@ def review_snapshot(proposals: tuple[str, ...] = (TITLE,)) -> WorkflowSnapshot:
     )
 
 
+def test_yes_in_assess_task_now_offers_breakdown() -> None:
+    decision = transition(assess_snapshot(), AnswerMultipleSteps(answer=True))
+    assert decision.state == WorkflowState.OFFER_BREAKDOWN
+    assert decision.involves_multiple_steps is True
+    assert decision.proposed_todo_titles == ()
+
+
+def test_offer_yes_collects_and_offer_no_reviews_original() -> None:
+    snapshot = offer_snapshot()
+    assert snapshot.state == WorkflowState.OFFER_BREAKDOWN
+    collect = transition(snapshot, AnswerMultipleSteps(answer=True))
+    assert collect.state == WorkflowState.COLLECT_TASKS
+    assert collect.involves_multiple_steps is True
+    review = transition(snapshot, AnswerMultipleSteps(answer=False))
+    assert review.state == WorkflowState.REVIEW
+    assert review.involves_multiple_steps is True
+    assert review.proposed_todo_titles == (TITLE,)
+
+
 def test_create_initial_snapshot_canonicalizes_title() -> None:
     snapshot = create_initial_snapshot(WORKFLOW_ID, "  Plan birthday party  ")
 
@@ -69,7 +101,7 @@ def test_create_initial_snapshot_rejects_invalid_title() -> None:
 @pytest.mark.parametrize(
     ("answer", "state", "proposals"),
     [
-        (True, WorkflowState.COLLECT_TASKS, ()),
+        (True, WorkflowState.OFFER_BREAKDOWN, ()),
         (False, WorkflowState.REVIEW, ("Plan birthday party",)),
     ],
 )
@@ -88,6 +120,7 @@ def test_assessment_branches(
     "state",
     [
         WorkflowState.ASSESS_TASK,
+        WorkflowState.OFFER_BREAKDOWN,
         WorkflowState.COLLECT_TASKS,
         WorkflowState.REVIEW,
     ],
@@ -95,6 +128,7 @@ def test_assessment_branches(
 def test_cancel_is_valid_from_every_active_state(state: WorkflowState) -> None:
     snapshot = {
         WorkflowState.ASSESS_TASK: assess_snapshot(),
+        WorkflowState.OFFER_BREAKDOWN: offer_snapshot(),
         WorkflowState.COLLECT_TASKS: collect_snapshot(),
         WorkflowState.REVIEW: review_snapshot(),
     }[state]
@@ -219,3 +253,44 @@ def test_transition_does_not_mutate_supplied_snapshot() -> None:
     transition(snapshot, SubmitTasks(("Send invitations", "Buy decorations")))
 
     assert snapshot == before
+
+
+def test_valid_paths_never_repeat_a_state() -> None:
+    commands: tuple[WorkflowCommand, ...] = (
+        AnswerMultipleSteps(False),
+        AnswerMultipleSteps(True),
+        create_submit_tasks(("Send invitations", "Order birthday cake")),
+        Confirm(),
+        Cancel(),
+    )
+
+    def walk(snapshot: WorkflowSnapshot, seen: frozenset[WorkflowState]) -> None:
+        assert snapshot.state not in seen
+        if snapshot.state in (WorkflowState.COMPLETED, WorkflowState.CANCELLED):
+            return
+        for command in commands:
+            try:
+                decision = transition(snapshot, command)
+            except InvalidWorkflowAction:
+                continue
+            walk(
+                WorkflowSnapshot(
+                    id=snapshot.id,
+                    state=decision.state,
+                    title=snapshot.title,
+                    involves_multiple_steps=decision.involves_multiple_steps,
+                    proposed_todo_titles=decision.proposed_todo_titles,
+                    created_todos=() if decision.state == WorkflowState.COMPLETED else None,
+                ),
+                seen | {snapshot.state},
+            )
+
+    walk(assess_snapshot(), frozenset())
+
+
+def test_submit_tasks_or_confirm_in_offer_is_wrong_state() -> None:
+    snapshot = offer_snapshot()
+    with pytest.raises(InvalidWorkflowAction):
+        transition(snapshot, create_submit_tasks(("Send invitations", "Order birthday cake")))
+    with pytest.raises(InvalidWorkflowAction):
+        transition(snapshot, Confirm())

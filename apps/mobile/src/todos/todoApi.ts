@@ -395,12 +395,7 @@ export async function fetchMe(options: TodoRequestOptions = {}): Promise<AuthUse
   return body;
 }
 
-export type TodoWorkflowState =
-  | "ASSESS_TASK"
-  | "COLLECT_TASKS"
-  | "REVIEW"
-  | "COMPLETED"
-  | "CANCELLED";
+export type TodoWorkflowState = string;
 
 export type TodoWorkflow = {
   workflow_id: string;
@@ -411,6 +406,7 @@ export type TodoWorkflow = {
     proposed_todo_titles: string[];
   };
   result: { created_todos: Todo[] } | null;
+  view: TodoWorkflowView;
 };
 
 export type TodoWorkflowAction =
@@ -419,102 +415,152 @@ export type TodoWorkflowAction =
   | { action: "confirm" }
   | { action: "cancel" };
 
-const workflowStates: readonly string[] = [
-  "ASSESS_TASK",
-  "COLLECT_TASKS",
-  "REVIEW",
-  "COMPLETED",
-  "CANCELLED",
-];
+type KnownTodoWorkflowView =
+  | {
+      type: "yes_no";
+      step_id: string;
+      title: string;
+      question: string;
+      actions: [{ id: "yes"; label: string }, { id: "no"; label: string }];
+    }
+  | { type: "task_breakdown"; step_id: string; title: string; min_titles: number; max_titles: number }
+  | { type: "review"; step_id: string; title: string; proposed_titles: string[] }
+  | { type: "completion"; step_id: string; title: string; outcome: "completed" | "cancelled"; created_todos: Todo[] };
 
-function isTodoWorkflow(value: unknown): value is TodoWorkflow {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const record = value as Record<string, unknown>;
-  const keys = Reflect.ownKeys(record);
-  if (
-    keys.length !== 5 ||
-    !keys.every((key) => typeof key === "string") ||
-    !keys.includes("workflow_id") ||
-    !keys.includes("state") ||
-    !keys.includes("title") ||
-    !keys.includes("context") ||
-    !keys.includes("result")
-  ) {
-    return false;
-  }
-  if (
-    typeof record.workflow_id !== "string" ||
-    !uuidPattern.test(record.workflow_id) ||
-    typeof record.state !== "string" ||
-    !workflowStates.includes(record.state) ||
-    typeof record.title !== "string" ||
-    normalizeTodoTitle(record.title) !== record.title
-  ) {
-    return false;
-  }
-  const context = record.context;
-  if (
-    typeof context !== "object" ||
-    context === null ||
-    Array.isArray(context) ||
-    Reflect.ownKeys(context).length !== 2 ||
-    !Reflect.ownKeys(context).every((key) => typeof key === "string") ||
-    !Reflect.ownKeys(context).includes("involves_multiple_steps") ||
-    !Reflect.ownKeys(context).includes("proposed_todo_titles") ||
-    !(
-      (context as Record<string, unknown>).involves_multiple_steps === null ||
-      typeof (context as Record<string, unknown>).involves_multiple_steps === "boolean"
-    )
-  ) {
-    return false;
-  }
-  const proposals = (context as Record<string, unknown>).proposed_todo_titles;
-  if (
-    !Array.isArray(proposals) ||
-    !proposals.every(
-      (title): title is string =>
-        typeof title === "string" && normalizeTodoTitle(title) === title
-    )
-  ) {
-    return false;
-  }
+type UnsupportedTodoWorkflowView = {
+  type: "unsupported";
+  server_type: string;
+  step_id: string;
+};
 
-  const answer = (context as Record<string, unknown>).involves_multiple_steps;
-  const isReviewed =
-    (answer === false && proposals.length === 1 && proposals[0] === record.title) ||
-    (answer === true && proposals.length >= 2 && proposals.length <= 10);
-  const state = record.state;
-  const validContext =
-    (state === "ASSESS_TASK" && answer === null && proposals.length === 0) ||
-    (state === "COLLECT_TASKS" && answer === true && proposals.length === 0) ||
-    ((state === "REVIEW" || state === "COMPLETED") && isReviewed) ||
-    (state === "CANCELLED" &&
-      ((answer === null && proposals.length === 0) ||
-        (answer === true && (proposals.length === 0 || isReviewed)) ||
-        (answer === false && isReviewed)));
-  if (!validContext) return false;
+export type TodoWorkflowView = KnownTodoWorkflowView | UnsupportedTodoWorkflowView;
 
-  const result = record.result;
-  if (state !== "COMPLETED") {
-    return result === null;
-  }
-  if (
-    typeof result !== "object" ||
-    result === null ||
-    Array.isArray(result) ||
-    Reflect.ownKeys(result).length !== 1
-  ) {
-    return false;
-  }
-  const created = (result as Record<string, unknown>).created_todos;
+const exactObject = (value: unknown, keys: string[]): value is Record<string, unknown> =>
+  typeof value === "object" &&
+  value !== null &&
+  !Array.isArray(value) &&
+  Reflect.ownKeys(value).length === keys.length &&
+  keys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
+
+const isCanonicalTitle = (value: unknown): value is string =>
+  typeof value === "string" && normalizeTodoTitle(value) === value;
+
+type BreakdownView = Extract<KnownTodoWorkflowView, { type: "task_breakdown" }>;
+type ReviewView = Extract<KnownTodoWorkflowView, { type: "review" }>;
+type CompletionView = Extract<KnownTodoWorkflowView, { type: "completion" }>;
+
+function isExactBreakdownView(
+  view: Record<string, unknown>,
+): view is BreakdownView {
   return (
-    Array.isArray(created) &&
-    created.length === proposals.length &&
-    created.every(
-      (todo, index): todo is Todo =>
-        isTodo(todo) && todo.completed === false && todo.title === proposals[index]
-    )
+    exactObject(view, ["type", "step_id", "title", "min_titles", "max_titles"]) &&
+    isCanonicalTitle(view.title) &&
+    Number.isInteger(view.min_titles) &&
+    Number.isInteger(view.max_titles) &&
+    (view.min_titles as number) >= 1 &&
+    (view.min_titles as number) <= (view.max_titles as number)
   );
+}
+
+function isExactReviewView(view: Record<string, unknown>): view is ReviewView {
+  return (
+    exactObject(view, ["type", "step_id", "title", "proposed_titles"]) &&
+    isCanonicalTitle(view.title) &&
+    Array.isArray(view.proposed_titles) &&
+    view.proposed_titles.every(isCanonicalTitle)
+  );
+}
+
+function isExactCompletionView(
+  view: Record<string, unknown>,
+): view is CompletionView {
+  return (
+    exactObject(view, ["type", "step_id", "title", "outcome", "created_todos"]) &&
+    isCanonicalTitle(view.title) &&
+    (view.outcome === "completed" || view.outcome === "cancelled") &&
+    Array.isArray(view.created_todos) &&
+    view.created_todos.every(isTodo)
+  );
+}
+
+function parseWorkflowView(
+  value: unknown,
+  expectedStepId: string,
+): TodoWorkflowView | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const view = value as Record<string, unknown>;
+  if (typeof view.type !== "string" || view.type.length === 0) return null;
+  if (view.step_id !== expectedStepId) return null;
+  switch (view.type) {
+    case "yes_no":
+      if (!exactObject(view, ["type", "step_id", "title", "question", "actions"])) return null;
+      if (!isCanonicalTitle(view.title) || typeof view.question !== "string") return null;
+      if (!Array.isArray(view.actions) || view.actions.length !== 2) return null;
+      if (!exactObject(view.actions[0], ["id", "label"]) || view.actions[0].id !== "yes") return null;
+      if (!exactObject(view.actions[1], ["id", "label"]) || view.actions[1].id !== "no") return null;
+      if (typeof view.actions[0].label !== "string" || typeof view.actions[1].label !== "string") return null;
+      return view as KnownTodoWorkflowView;
+    case "task_breakdown":
+      return isExactBreakdownView(view) ? view : null;
+    case "review":
+      return isExactReviewView(view) ? view : null;
+    case "completion":
+      return isExactCompletionView(view) ? view : null;
+    default:
+      return { type: "unsupported", server_type: view.type, step_id: expectedStepId };
+  }
+}
+
+function parseTodoWorkflow(value: unknown): TodoWorkflow | null {
+  if (!exactObject(value, ["workflow_id", "state", "title", "context", "result", "view"])) {
+    return null;
+  }
+  if (
+    typeof value.workflow_id !== "string" ||
+    !uuidPattern.test(value.workflow_id) ||
+    typeof value.state !== "string" ||
+    value.state.length === 0 ||
+    !isCanonicalTitle(value.title) ||
+    !exactObject(value.context, ["involves_multiple_steps", "proposed_todo_titles"])
+  ) {
+    return null;
+  }
+
+  const answer = value.context.involves_multiple_steps;
+  const proposals = value.context.proposed_todo_titles;
+  if (
+    !(answer === null || typeof answer === "boolean") ||
+    !Array.isArray(proposals) ||
+    !proposals.every(isCanonicalTitle)
+  ) {
+    return null;
+  }
+
+  let result: TodoWorkflow["result"] = null;
+  if (value.result !== null) {
+    if (!exactObject(value.result, ["created_todos"])) return null;
+    if (!Array.isArray(value.result.created_todos) || !value.result.created_todos.every(isTodo)) {
+      return null;
+    }
+    result = { created_todos: value.result.created_todos };
+  }
+
+  const view = parseWorkflowView(
+    value.view,
+    `${value.workflow_id}:${value.state}`,
+  );
+  if (view === null) return null;
+  return {
+    workflow_id: value.workflow_id,
+    state: value.state,
+    title: value.title,
+    context: {
+      involves_multiple_steps: answer,
+      proposed_todo_titles: proposals,
+    },
+    result,
+    view,
+  };
 }
 
 function workflowActionBody(action: TodoWorkflowAction): RequestBody {
@@ -542,10 +588,11 @@ export async function startTodoWorkflow(
     options,
     { title }
   );
-  if (!isTodoWorkflow(body)) {
+  const parsed = parseTodoWorkflow(body);
+  if (parsed === null) {
     throw new TodoApiError("invalid-data", operationMessages["start-workflow"].invalidData);
   }
-  return body;
+  return parsed;
 }
 
 export async function getTodoWorkflow(
@@ -553,10 +600,11 @@ export async function getTodoWorkflow(
   options: TodoRequestOptions = {}
 ): Promise<TodoWorkflow> {
   const body = await requestJson(`/todo-workflows/${id}`, "GET", 200, "get-workflow", options);
-  if (!isTodoWorkflow(body)) {
+  const parsed = parseTodoWorkflow(body);
+  if (parsed === null) {
     throw new TodoApiError("invalid-data", operationMessages["get-workflow"].invalidData);
   }
-  return body;
+  return parsed;
 }
 
 export async function advanceTodoWorkflow(
@@ -572,8 +620,9 @@ export async function advanceTodoWorkflow(
     options,
     workflowActionBody(action)
   );
-  if (!isTodoWorkflow(body)) {
+  const parsed = parseTodoWorkflow(body);
+  if (parsed === null) {
     throw new TodoApiError("invalid-data", operationMessages["advance-workflow"].invalidData);
   }
-  return body;
+  return parsed;
 }

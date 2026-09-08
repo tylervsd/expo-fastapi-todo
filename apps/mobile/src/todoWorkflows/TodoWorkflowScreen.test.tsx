@@ -109,12 +109,45 @@ const assessWorkflow: TodoWorkflow = {
   title: "Plan birthday party",
   context: { involves_multiple_steps: null, proposed_todo_titles: [] },
   result: null,
+  view: {
+    type: "yes_no",
+    step_id: `${WORKFLOW_ID}:ASSESS_TASK`,
+    title: "Assessment title from the view",
+    question: "Does this task involve multiple steps?",
+    actions: [
+      { id: "yes", label: "Yes" },
+      { id: "no", label: "No" },
+    ],
+  },
+};
+
+const offerWorkflow: TodoWorkflow = {
+  ...assessWorkflow,
+  state: "OFFER_BREAKDOWN",
+  context: { involves_multiple_steps: true, proposed_todo_titles: [] },
+  view: {
+    type: "yes_no",
+    step_id: `${WORKFLOW_ID}:OFFER_BREAKDOWN`,
+    title: "Breakdown offer title from the view",
+    question: "Would you like to split it into smaller todos?",
+    actions: [
+      { id: "yes", label: "Yes" },
+      { id: "no", label: "No" },
+    ],
+  },
 };
 
 const collectWorkflow: TodoWorkflow = {
   ...assessWorkflow,
   state: "COLLECT_TASKS",
   context: { involves_multiple_steps: true, proposed_todo_titles: [] },
+  view: {
+    type: "task_breakdown",
+    step_id: `${WORKFLOW_ID}:COLLECT_TASKS`,
+    title: "Break it into smaller todos",
+    min_titles: 2,
+    max_titles: 10,
+  },
 };
 
 const reviewWorkflow: TodoWorkflow = {
@@ -123,6 +156,12 @@ const reviewWorkflow: TodoWorkflow = {
   context: {
     involves_multiple_steps: true,
     proposed_todo_titles: ["Send invitations", "Buy decorations", "Book venue"],
+  },
+  view: {
+    type: "review",
+    step_id: `${WORKFLOW_ID}:REVIEW`,
+    title: "Review your plan",
+    proposed_titles: ["Send invitations", "Buy decorations", "Book venue"],
   },
 };
 
@@ -148,11 +187,41 @@ const completedWorkflow: TodoWorkflow = {
       },
     ],
   },
+  view: {
+    type: "completion",
+    step_id: `${WORKFLOW_ID}:COMPLETED`,
+    title: "Plan complete",
+    outcome: "completed",
+    created_todos: [
+      {
+        id: "81b3c4d5-16a8-4d8e-ae94-fc50bb457d72",
+        title: "Send invitations",
+        completed: false,
+      },
+      {
+        id: "92c4d5e6-16a8-4d8e-ae94-fc50bb457d72",
+        title: "Buy decorations",
+        completed: false,
+      },
+      {
+        id: "a3d5e6f7-16a8-4d8e-ae94-fc50bb457d72",
+        title: "Book venue",
+        completed: false,
+      },
+    ],
+  },
 };
 
 const cancelledWorkflow: TodoWorkflow = {
   ...assessWorkflow,
   state: "CANCELLED",
+  view: {
+    type: "completion",
+    step_id: `${WORKFLOW_ID}:CANCELLED`,
+    title: "Plan cancelled",
+    outcome: "cancelled",
+    created_todos: [],
+  },
 };
 
 // TanStack Query schedules minute-scale GC timeouts that can outlive component
@@ -334,32 +403,72 @@ const startToAssess = async (api: MockWorkflowApi, title = "Plan birthday party"
   );
 };
 
-it("answers Yes pessimistically and renders only the returned state", async () => {
-  const answering = deferred<TodoWorkflow>();
+it("uses the shared yes/no template for both questions", async () => {
   const api = makeApi();
   await renderHost(api);
   await startToAssess(api);
-  api.advanceWorkflow.mockReturnValueOnce(answering.promise);
+  expect(screen.getByText("Assessment title from the view")).toBeTruthy();
+  api.advanceWorkflow.mockResolvedValueOnce(offerWorkflow);
 
   await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
-  expect(api.advanceWorkflow).toHaveBeenCalledWith(WORKFLOW_ID, {
+  await waitFor(() =>
+    expect(
+      screen.getByRole("header", {
+        name: "Would you like to split it into smaller todos?",
+      })
+    ).toBeTruthy()
+  );
+  expect(screen.getByText("Breakdown offer title from the view")).toBeTruthy();
+
+  api.advanceWorkflow.mockResolvedValueOnce(collectWorkflow);
+  await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
+  expect(api.advanceWorkflow).toHaveBeenLastCalledWith(WORKFLOW_ID, {
     action: "answer_multiple_steps",
     answer: true,
-  });
-  expect(
-    screen.getByRole("header", { name: "Does this task involve multiple steps?" })
-  ).toBeTruthy();
-  expect(screen.queryByRole("header", { name: "Break it into smaller todos" })).toBeNull();
-
-  await act(async () => {
-    answering.resolve(collectWorkflow);
   });
   await waitFor(() =>
     expect(screen.getByRole("header", { name: "Break it into smaller todos" })).toBeTruthy()
   );
-  expect(
-    screen.queryByRole("header", { name: "Does this task involve multiple steps?" })
-  ).toBeNull();
+});
+
+it("answers No in offer and renders the server-returned review", async () => {
+  const api = makeApi();
+  await renderHost(api);
+  await startToAssess(api);
+  api.advanceWorkflow.mockResolvedValueOnce(offerWorkflow);
+  await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
+  await waitFor(() =>
+    expect(
+      screen.getByRole("header", {
+        name: "Would you like to split it into smaller todos?",
+      })
+    ).toBeTruthy()
+  );
+
+  const declined: TodoWorkflow = {
+    ...offerWorkflow,
+    state: "REVIEW",
+    context: {
+      involves_multiple_steps: true,
+      proposed_todo_titles: ["Plan birthday party"],
+    },
+    view: {
+      type: "review",
+      step_id: `${WORKFLOW_ID}:REVIEW`,
+      title: "Review your plan",
+      proposed_titles: ["Plan birthday party"],
+    },
+  };
+  api.advanceWorkflow.mockResolvedValueOnce(declined);
+  await fireEvent.press(screen.getByRole("button", { name: "No" }));
+  expect(api.advanceWorkflow).toHaveBeenLastCalledWith(WORKFLOW_ID, {
+    action: "answer_multiple_steps",
+    answer: false,
+  });
+  await waitFor(() =>
+    expect(screen.getByRole("header", { name: "Review your plan" })).toBeTruthy()
+  );
+  expect(screen.getByLabelText("Proposed todo 1 of 1: Plan birthday party")).toBeTruthy();
 });
 
 it("answers No and renders the returned review", async () => {
@@ -379,6 +488,12 @@ it("answers No and renders the returned review", async () => {
     ...assessWorkflow,
     state: "REVIEW",
     context: { involves_multiple_steps: false, proposed_todo_titles: ["Plan birthday party"] },
+    view: {
+      type: "review",
+      step_id: `${WORKFLOW_ID}:REVIEW`,
+      title: "Review your plan",
+      proposed_titles: ["Plan birthday party"],
+    },
   };
   await act(async () => {
     answering.resolve(noReview);
@@ -423,30 +538,48 @@ it("submits exact newline-separated titles", async () => {
   expect(screen.getByLabelText("Proposed todo 3 of 3: Book venue")).toBeTruthy();
 });
 
-it("rejects one-line and eleven-line breakdowns locally", async () => {
+it("rejects out-of-bounds breakdowns using the view limits", async () => {
+  const customCollect: TodoWorkflow = {
+    ...collectWorkflow,
+    view: {
+      type: "task_breakdown",
+      step_id: `${WORKFLOW_ID}:COLLECT_TASKS`,
+      title: "Break it into smaller todos",
+      min_titles: 3,
+      max_titles: 4,
+    },
+  };
   const api = makeApi();
   await renderHost(api);
   await startToAssess(api);
-  api.advanceWorkflow.mockResolvedValueOnce(collectWorkflow);
+  api.advanceWorkflow.mockResolvedValueOnce(offerWorkflow);
+  await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
+  await waitFor(() =>
+    expect(
+      screen.getByRole("header", {
+        name: "Would you like to split it into smaller todos?",
+      })
+    ).toBeTruthy()
+  );
+  api.advanceWorkflow.mockResolvedValueOnce(customCollect);
   await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
   await waitFor(() =>
     expect(screen.getByRole("header", { name: "Break it into smaller todos" })).toBeTruthy()
   );
 
-  await fireEvent.changeText(screen.getByLabelText("Todo titles (one per line)"), "Only one");
+  await fireEvent.changeText(screen.getByLabelText("Todo titles (one per line)"), "Only one\nTwo");
   await fireEvent.press(screen.getByRole("button", { name: "Save tasks" }));
   expect(screen.getByRole("alert")).toHaveTextContent(
-    "Enter 2 to 10 todo titles, one per line."
+    "Enter 3 to 4 todo titles, one per line."
   );
-  expect(api.advanceWorkflow).toHaveBeenCalledTimes(1);
 
-  const eleven = Array.from({ length: 11 }, (_, index) => `Task ${index + 1}`).join("\n");
-  await fireEvent.changeText(screen.getByLabelText("Todo titles (one per line)"), eleven);
+  const five = Array.from({ length: 5 }, (_, index) => `Task ${index + 1}`).join("\n");
+  await fireEvent.changeText(screen.getByLabelText("Todo titles (one per line)"), five);
   await fireEvent.press(screen.getByRole("button", { name: "Save tasks" }));
   expect(screen.getByRole("alert")).toHaveTextContent(
-    "Enter 2 to 10 todo titles, one per line."
+    "Enter 3 to 4 todo titles, one per line."
   );
-  expect(api.advanceWorkflow).toHaveBeenCalledTimes(1);
+  expect(api.advanceWorkflow).toHaveBeenCalledTimes(2);
 });
 
 it("keeps the breakdown draft on 422 without optimistic review", async () => {
@@ -510,6 +643,15 @@ it("confirms the exact backend list and shows the persisted result", async () =>
 
 const driveToCollect = async (api: MockWorkflowApi) => {
   await startToAssess(api);
+  api.advanceWorkflow.mockResolvedValueOnce(offerWorkflow);
+  await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
+  await waitFor(() =>
+    expect(
+      screen.getByRole("header", {
+        name: "Would you like to split it into smaller todos?",
+      })
+    ).toBeTruthy()
+  );
   api.advanceWorkflow.mockResolvedValueOnce(collectWorkflow);
   await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
   await waitFor(() =>
@@ -814,4 +956,146 @@ it("keeps explicit roles, alerts, disabled semantics, and 44-point targets", asy
     children: (unknown | string)[];
   };
   expect(root.type).toBe("RCTSafeAreaView");
+});
+
+it("preserves a draft when a refetch keeps the same step id", async () => {
+  const api = makeApi();
+  const { client } = await renderHost(api);
+  await driveToCollect(api);
+  await fireEvent.changeText(
+    screen.getByLabelText("Todo titles (one per line)"),
+    "Send invitations",
+  );
+  api.getWorkflow.mockResolvedValueOnce(collectWorkflow);
+  await act(async () => {
+    await client.invalidateQueries({
+      queryKey: workflowQueryKey(USER_ID, WORKFLOW_ID),
+      refetchType: "none",
+    });
+  });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Reload plan" })).toBeTruthy());
+  await fireEvent.press(screen.getByRole("button", { name: "Reload plan" }));
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Save tasks" })).toHaveProp(
+      "accessibilityState",
+      expect.objectContaining({ disabled: false })
+    )
+  );
+  expect(screen.getByLabelText("Todo titles (one per line)")).toHaveProp(
+    "value",
+    "Send invitations"
+  );
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+it("clears draft and local error when step id changes", async () => {
+  const api = makeApi();
+  const { client } = await renderHost(api);
+  await driveToCollect(api);
+  await fireEvent.changeText(
+    screen.getByLabelText("Todo titles (one per line)"),
+    "Only one",
+  );
+  await fireEvent.press(screen.getByRole("button", { name: "Save tasks" }));
+  expect(screen.getByRole("alert")).toBeTruthy();
+
+  await act(async () => {
+    await client.invalidateQueries({
+      queryKey: workflowQueryKey(USER_ID, WORKFLOW_ID),
+      refetchType: "none",
+    });
+  });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Reload plan" })).toBeTruthy());
+
+  api.getWorkflow.mockResolvedValueOnce({
+    ...collectWorkflow,
+    state: "FUTURE_COLLECT",
+    view: {
+      type: "task_breakdown",
+      step_id: `${WORKFLOW_ID}:FUTURE_COLLECT`,
+      title: "Break it into smaller todos",
+      min_titles: 3,
+      max_titles: 4,
+    },
+  });
+  await fireEvent.press(screen.getByRole("button", { name: "Reload plan" }));
+  await waitFor(() =>
+    expect(screen.getByLabelText("Todo titles (one per line)")).toHaveProp("value", ""),
+  );
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+it("renders an unsupported view without submitting", async () => {
+  const api = makeApi();
+  api.startWorkflow.mockResolvedValueOnce({
+    ...assessWorkflow,
+    state: "FUTURE_STATE",
+    view: {
+      type: "unsupported",
+      server_type: "future_template",
+      step_id: `${WORKFLOW_ID}:FUTURE_STATE`,
+    },
+  });
+  await renderHost(api);
+  await fireEvent.changeText(screen.getByLabelText("Task title"), "Plan birthday party");
+  await fireEvent.press(screen.getByRole("button", { name: "Start planning" }));
+
+  await waitFor(() => expect(screen.getByRole("header", { name: "Unsupported step" })).toBeTruthy());
+  expect(screen.getByText("This planning step needs a newer app version.")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Back to todos" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Reload plan" })).toBeTruthy();
+  expect(mockControlFocus[mockControlFocus.length - 1]).toBe("Back to todos");
+  expect(api.advanceWorkflow).not.toHaveBeenCalled();
+});
+
+it("keeps one reload for an unsupported stale view through failed and working reloads", async () => {
+  const api = makeApi();
+  const { client } = await renderHost(api);
+  api.startWorkflow.mockResolvedValueOnce({
+    ...assessWorkflow,
+    state: "FUTURE_STATE",
+    view: {
+      type: "unsupported",
+      server_type: "future_template",
+      step_id: `${WORKFLOW_ID}:FUTURE_STATE`,
+    },
+  });
+  await fireEvent.changeText(screen.getByLabelText("Task title"), "Plan birthday party");
+  await fireEvent.press(screen.getByRole("button", { name: "Start planning" }));
+  await waitFor(() => expect(screen.getByRole("header", { name: "Unsupported step" })).toBeTruthy());
+
+  await act(async () => {
+    await client.invalidateQueries({
+      queryKey: workflowQueryKey(USER_ID, WORKFLOW_ID),
+      refetchType: "none",
+    });
+  });
+  await waitFor(() =>
+    expect(screen.getAllByRole("button", { name: "Reload plan" })).toHaveLength(1)
+  );
+
+  api.getWorkflow.mockRejectedValueOnce(
+    new TodoApiError("invalid-data", "The API returned invalid plan data.")
+  );
+  await fireEvent.press(screen.getAllByRole("button", { name: "Reload plan" })[0]);
+  await waitFor(() => expect(api.getWorkflow).toHaveBeenCalledTimes(1));
+  await waitFor(() =>
+    expect(client.getQueryState(workflowQueryKey(USER_ID, WORKFLOW_ID))?.fetchStatus).toBe("idle")
+  );
+  await waitFor(() =>
+    expect(screen.getAllByRole("button", { name: "Reload plan" })).toHaveLength(1)
+  );
+  expect(api.advanceWorkflow).not.toHaveBeenCalled();
+
+  api.getWorkflow.mockResolvedValueOnce(assessWorkflow);
+  await fireEvent.press(screen.getAllByRole("button", { name: "Reload plan" })[0]);
+  await waitFor(() => expect(api.getWorkflow).toHaveBeenCalledTimes(2));
+  await waitFor(() =>
+    expect(client.getQueryState(workflowQueryKey(USER_ID, WORKFLOW_ID))?.fetchStatus).toBe("idle")
+  );
+  await waitFor(() =>
+    expect(screen.getByRole("header", { name: "Does this task involve multiple steps?" })).toBeTruthy()
+  );
+  expect(screen.queryAllByRole("button", { name: "Reload plan" })).toHaveLength(0);
+  expect(api.advanceWorkflow).not.toHaveBeenCalled();
 });
