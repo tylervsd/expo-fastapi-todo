@@ -2,9 +2,9 @@
 
 This roadmap is provisional. Every phase receives its own approved spec before implementation; the spec defines goals, non-goals, user-visible behavior, contracts, error cases, accessibility considerations, and the intended testing-pyramid layer. The repository evolves on `main` with numbered guides and annotated checkpoint tags rather than permanent phase branches or duplicate repositories.
 
-Phase numbers start at 0 to match the README, existing guides, and checkpoint convention. This revision expands the curriculum to twelve phases (0-11); it does not renumber existing guides or tags. The implemented checkpoint remains Phase 6. Phases 7-11 below are planned, not completed features.
+Phase numbers start at 0 to match the README, existing guides, and checkpoint convention. This revision expands the curriculum to fourteen phases (0-13); it does not renumber existing guides or tags. The implemented checkpoint remains Phase 6. Phases 7 and 8 have feature-branch implementations with acceptance still pending; Phases 9-13 are planned, not completed features.
 
-Phases 7-9 build one guided-todo creation feature to teach backend-owned state transitions, server-directed screen templates, and reliable resumption. The existing quick-add and `/todos` contract remain available. See the [workflow learning plan](workflow-learning-plan.md) for the proposed scenario, API examples, state ownership, failure cases, and phase exercises. That plan informs each future approved phase spec; it is not a substitute for the spec gate or an implementation guide.
+Phases 7-9 build one guided-todo creation feature to teach backend-owned state transitions, server-directed screen templates, and reliable resumption. Phases 10 and 11 extend that feature with validated LLM suggestions and interactive agent-selected components, respectively. This keeps model integration separate from the agent/UI protocol lesson. The existing quick-add and `/todos` contract remain available. See the [workflow learning plan](workflow-learning-plan.md) for the proposed scenario, API examples, state ownership, failure cases, and phase exercises. That plan informs each future approved phase spec; it is not a substitute for the spec gate or an implementation guide.
 
 ## 0. Mac developer environment
 
@@ -87,23 +87,43 @@ Phases 7-9 build one guided-todo creation feature to teach backend-owned state t
 - Learning goal: Advance a workflow correctly despite interrupted responses, duplicate submissions, stale answers, application restarts, and competing devices.
 - Visible outcome: A user can find and resume unfinished workflows on web or iOS, retry an interrupted submission, and confirm without creating duplicate todos. A conflicting action returns a recoverable stale-step result.
 - New technology/pattern: Atomically enforced revisions, submission idempotency, database uniqueness constraints, transactional completion, workflow-definition versioning, and explicit cache reconciliation. Build on the uncertain-write lessons from Phase 5.
-- Testing-pyramid layer introduced: PostgreSQL integration tests for retry races, stale revisions, completion rollback, and ownership, with component tests for recovery. Reserve full cross-platform automation for Phase 10.
+- Testing-pyramid layer introduced: PostgreSQL integration tests for retry races, stale revisions, completion rollback, and ownership, with component tests for recovery. Reserve full cross-platform automation for Phase 12.
 - Learning experiment: Commit a confirmation but lose its response, retry with the same submission identifier, and verify one completion result and one intended set of todos. Race different submissions against the same revision and verify only one advances.
 - Non-goals: Offline-first synchronization, event sourcing, distributed exactly-once processing, external side effects, and background orchestration.
 - Spec gate: Before implementation, approve the transaction boundary, idempotency scope and payload checks, atomic conflict behavior, active-workflow discovery, version compatibility, and failure/recovery matrix.
 
-## 10. Cross-platform E2E
+## 10. LLM-assisted planning with Python and OpenRouter
+
+- Learning goal: Integrate an LLM call into an existing Python service and treat generated output as an untrusted proposal.
+- Visible outcome: A signed-in user enters a goal such as "birthday party", requests suggested todos, edits or removes suggestions, and confirms creation through the existing workflow.
+- New technology/pattern: Server-side OpenRouter requests, a compatible model's structured output, Pydantic validation, bounded requests, saved proposals, and explicit provider failure handling. Keep the existing deterministic screens for this lesson.
+- Testing-pyramid layer introduced: Unit and API tests with mocked provider responses for valid suggestions, malformed output, timeouts, ownership, and stale results. Normal CI does not require provider credentials or paid model calls.
+- Learning experiment: Return invalid model output or simulate a timeout and verify that the draft remains recoverable and no todos are created. Resume a saved suggestion set without generating it again.
+- Non-goals: Agent frameworks, streaming UI, background workers, autonomous todo creation, and model-generated layouts. API keys stay in Python-side configuration; validation and bounded usage begin here rather than waiting for hardening.
+- Spec gate: Before implementation, approve the provider/model contract, prompt and output limits, edit/review behavior, request timeout and retry policy, stale-result handling, data sent to the provider, and web/iOS acceptance criteria.
+
+## 11. Interactive AI workflows with CopilotKit and AG-UI
+
+- Learning goal: Connect a Python agent to interactive frontend components through AG-UI events while preserving backend authority over workflow state and persistence.
+- Visible outcome: The agent requests relevant context through a registered clarification form, presents an editable suggestion checklist, and waits for user confirmation before the existing backend creates todos.
+- New technology/pattern: CopilotKit frontend hooks and tool rendering, AG-UI event transport, typed tool arguments, and human-in-the-loop interaction. Reuse Phase 10's Python/OpenRouter integration and registered application components.
+- Testing-pyramid layer introduced: Recorded-event contract and component tests for form/tool rendering, invalid arguments, interrupted runs, cancellation, and confirmation, plus targeted backend tests for ownership and duplicate-write prevention.
+- Learning experiment: Change the goal and observe the agent select a relevant supported interaction; reject an unsupported tool or stale confirmation without advancing the workflow.
+- Non-goals: Arbitrary generated code or layouts, replacing the workflow domain with chat state, and requiring A2UI. A2UI is an optional later exercise in declarative UI composition; it can complement AG-UI.
+- Spec gate: Before implementation, verify the chosen CopilotKit/AG-UI versions with this Expo web/iOS stack and Python backend. Approve any required runtime bridge, authentication propagation, event/tool contracts, state reconciliation, accessibility, recovery behavior, and supported-platform acceptance. Keep model calls and business logic in Python.
+
+## 12. Cross-platform E2E
 
 - **Learning goal:** Validate the smallest set of critical user journeys across the browser and iOS Simulator.
-- **Visible outcome:** A signed-in user can complete the core todo journey in web and iOS test environments.
+- **Visible outcome:** A signed-in user can complete core todo, guided creation, and AI-assisted review/confirmation journeys in web and iOS test environments using deterministic provider/event fixtures.
 - **New technology/pattern:** Browser E2E and iOS Simulator E2E with stable fixtures and environment-aware diagnostics.
 - **Testing-pyramid layer introduced:** Thin end-to-end coverage at the top of the pyramid; web E2E runs on pull requests and iOS E2E runs on `main` once those suites exist.
 - **Spec gate:** Before implementation, this phase gets its own approved spec for journeys, fixtures, platform differences, and CI scheduling.
 
-## 11. Production hardening
+## 13. Production hardening
 
 - **Learning goal:** Prepare a maintainable application for operational use and deliberate upgrades.
 - **Visible outcome:** Configuration, secrets, structured logs, observability, security checks, deployment concepts, and upgrade maintenance are documented and exercised.
-- **New technology/pattern:** Environment management, observability, security automation, deployment workflows, and dependency maintenance.
+- **New technology/pattern:** Environment management, observability, security automation, deployment workflows, dependency maintenance, and AI usage/cost diagnostics with deliberate retention and redaction policies.
 - **Testing-pyramid layer introduced:** Static security checks and targeted integration/acceptance checks, preserving thin E2E coverage for critical journeys.
 - **Spec gate:** Before implementation, this phase gets its own approved spec for operational requirements, threat boundaries, deployment acceptance, and rollback expectations.
