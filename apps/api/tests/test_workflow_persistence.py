@@ -240,7 +240,7 @@ def test_start_commits_assess_task_with_zero_todos(
 
     owner_id = setup_owner(session_factory)
     with session_factory() as write_session:
-        snapshot = start_workflow(write_session, owner_id, "Plan birthday party")
+        snapshot = start_workflow(write_session, owner_id, "Plan birthday party", uuid4())
 
     assert snapshot.state == WorkflowState.ASSESS_TASK
     assert snapshot.title == "Plan birthday party"
@@ -262,16 +262,22 @@ def test_yes_then_submit_persists_review_with_zero_todos(
 
     owner_id = setup_owner(session_factory)
     with session_factory() as write_session:
-        snapshot = start_workflow(write_session, owner_id, "Plan birthday party")
+        snapshot = start_workflow(write_session, owner_id, "Plan birthday party", uuid4())
     with session_factory() as write_session:
         offered = advance_workflow(
-            write_session, owner_id, snapshot.id, AnswerMultipleSteps(answer=True)
+            write_session, owner_id, snapshot.id, AnswerMultipleSteps(answer=True),
+            request_id=uuid4(),
+            expected_revision=0,
+            step_id=f"{snapshot.id}:ASSESS_TASK",
         )
     assert offered is not None
     assert offered.state == WorkflowState.OFFER_BREAKDOWN
     with session_factory() as write_session:
         collecting = advance_workflow(
-            write_session, owner_id, snapshot.id, AnswerMultipleSteps(answer=True)
+            write_session, owner_id, snapshot.id, AnswerMultipleSteps(answer=True),
+            request_id=uuid4(),
+            expected_revision=1,
+            step_id=f"{snapshot.id}:OFFER_BREAKDOWN",
         )
     assert collecting is not None
     assert collecting.state == WorkflowState.COLLECT_TASKS
@@ -281,6 +287,9 @@ def test_yes_then_submit_persists_review_with_zero_todos(
             owner_id,
             snapshot.id,
             create_submit_tasks(("Send invitations", "Buy decorations")),
+            request_id=uuid4(),
+            expected_revision=2,
+            step_id=f"{snapshot.id}:COLLECT_TASKS",
         )
     assert review is not None
     assert review.state == WorkflowState.REVIEW
@@ -297,10 +306,13 @@ def test_no_persists_review_with_original_title(
 
     owner_id = setup_owner(session_factory)
     with session_factory() as write_session:
-        snapshot = start_workflow(write_session, owner_id, "Plan birthday party")
+        snapshot = start_workflow(write_session, owner_id, "Plan birthday party", uuid4())
     with session_factory() as write_session:
         review = advance_workflow(
-            write_session, owner_id, snapshot.id, AnswerMultipleSteps(answer=False)
+            write_session, owner_id, snapshot.id, AnswerMultipleSteps(answer=False),
+            request_id=uuid4(),
+            expected_revision=0,
+            step_id=f"{snapshot.id}:ASSESS_TASK",
         )
 
     assert review is not None
@@ -322,18 +334,24 @@ def test_cancel_from_each_active_state_persists_cancelled(
     for index in range(3):
         with session_factory() as write_session:
             snapshot = start_workflow(
-                write_session, owner_id, f"Plan birthday party {index}"
+                write_session, owner_id, f"Plan birthday party {index}", uuid4()
             )
             workflow_ids.append(snapshot.id)
     with session_factory() as write_session:
         offered = advance_workflow(
-            write_session, owner_id, workflow_ids[1], AnswerMultipleSteps(answer=True)
+            write_session, owner_id, workflow_ids[1], AnswerMultipleSteps(answer=True),
+            request_id=uuid4(),
+            expected_revision=0,
+            step_id=f"{workflow_ids[1]}:ASSESS_TASK",
         )
         assert offered is not None
         assert offered.state == WorkflowState.OFFER_BREAKDOWN
     with session_factory() as write_session:
         collecting = advance_workflow(
-            write_session, owner_id, workflow_ids[1], AnswerMultipleSteps(answer=True)
+            write_session, owner_id, workflow_ids[1], AnswerMultipleSteps(answer=True),
+            request_id=uuid4(),
+            expected_revision=1,
+            step_id=f"{workflow_ids[1]}:OFFER_BREAKDOWN",
         )
         assert collecting is not None
     with session_factory() as write_session:
@@ -342,6 +360,9 @@ def test_cancel_from_each_active_state_persists_cancelled(
             owner_id,
             workflow_ids[2],
             AnswerMultipleSteps(answer=True),
+            request_id=uuid4(),
+            expected_revision=0,
+            step_id=f"{workflow_ids[2]}:ASSESS_TASK",
         )
         assert offered is not None
         assert offered.state == WorkflowState.OFFER_BREAKDOWN
@@ -351,6 +372,9 @@ def test_cancel_from_each_active_state_persists_cancelled(
             owner_id,
             workflow_ids[2],
             AnswerMultipleSteps(answer=True),
+            request_id=uuid4(),
+            expected_revision=1,
+            step_id=f"{workflow_ids[2]}:OFFER_BREAKDOWN",
         )
         assert review is not None
         review = advance_workflow(
@@ -358,12 +382,30 @@ def test_cancel_from_each_active_state_persists_cancelled(
             owner_id,
             workflow_ids[2],
             create_submit_tasks(("Send invitations", "Buy decorations")),
+            request_id=uuid4(),
+            expected_revision=2,
+            step_id=f"{workflow_ids[2]}:COLLECT_TASKS",
         )
         assert review is not None
 
-    for workflow_id in workflow_ids:
+    cancel_preconditions = (
+        (0, "ASSESS_TASK"),
+        (2, "COLLECT_TASKS"),
+        (3, "REVIEW"),
+    )
+    for workflow_id, (expected_revision, state) in zip(
+        workflow_ids, cancel_preconditions
+    ):
         with session_factory() as write_session:
-            result = advance_workflow(write_session, owner_id, workflow_id, Cancel())
+            result = advance_workflow(
+                write_session,
+                owner_id,
+                workflow_id,
+                Cancel(),
+                request_id=uuid4(),
+                expected_revision=expected_revision,
+                step_id=f"{workflow_id}:{state}",
+            )
         assert result is not None
         assert result.state == WorkflowState.CANCELLED
         assert result.created_todos is None
@@ -379,13 +421,20 @@ def test_confirm_simple_path_creates_one_ordinary_todo(
 
     owner_id = setup_owner(session_factory)
     with session_factory() as write_session:
-        snapshot = start_workflow(write_session, owner_id, "Plan birthday party")
+        snapshot = start_workflow(write_session, owner_id, "Plan birthday party", uuid4())
     with session_factory() as write_session:
         advance_workflow(
-            write_session, owner_id, snapshot.id, AnswerMultipleSteps(answer=False)
+            write_session, owner_id, snapshot.id, AnswerMultipleSteps(answer=False),
+            request_id=uuid4(),
+            expected_revision=0,
+            step_id=f"{snapshot.id}:ASSESS_TASK",
         )
     with session_factory() as write_session:
-        completed = advance_workflow(write_session, owner_id, snapshot.id, Confirm())
+        completed = advance_workflow(write_session, owner_id, snapshot.id, Confirm(),
+            request_id=uuid4(),
+            expected_revision=1,
+            step_id=f"{snapshot.id}:REVIEW",
+        )
 
     assert completed is not None
     assert completed.state == WorkflowState.COMPLETED
@@ -404,14 +453,20 @@ def test_confirm_breakdown_path_creates_exact_ordered_todos(
 
     owner_id = setup_owner(session_factory)
     with session_factory() as write_session:
-        snapshot = start_workflow(write_session, owner_id, "Plan birthday party")
+        snapshot = start_workflow(write_session, owner_id, "Plan birthday party", uuid4())
     with session_factory() as write_session:
         advance_workflow(
-            write_session, owner_id, snapshot.id, AnswerMultipleSteps(answer=True)
+            write_session, owner_id, snapshot.id, AnswerMultipleSteps(answer=True),
+            request_id=uuid4(),
+            expected_revision=0,
+            step_id=f"{snapshot.id}:ASSESS_TASK",
         )
     with session_factory() as write_session:
         advance_workflow(
-            write_session, owner_id, snapshot.id, AnswerMultipleSteps(answer=True)
+            write_session, owner_id, snapshot.id, AnswerMultipleSteps(answer=True),
+            request_id=uuid4(),
+            expected_revision=1,
+            step_id=f"{snapshot.id}:OFFER_BREAKDOWN",
         )
     with session_factory() as write_session:
         advance_workflow(
@@ -421,9 +476,16 @@ def test_confirm_breakdown_path_creates_exact_ordered_todos(
             create_submit_tasks(
                 ("Buy decorations", "Send invitations", "Buy decorations")
             ),
+            request_id=uuid4(),
+            expected_revision=2,
+            step_id=f"{snapshot.id}:COLLECT_TASKS",
         )
     with session_factory() as write_session:
-        completed = advance_workflow(write_session, owner_id, snapshot.id, Confirm())
+        completed = advance_workflow(write_session, owner_id, snapshot.id, Confirm(),
+            request_id=uuid4(),
+            expected_revision=3,
+            step_id=f"{snapshot.id}:REVIEW",
+        )
 
     assert completed is not None
     assert completed.state == WorkflowState.COMPLETED
@@ -450,14 +512,17 @@ def test_other_owner_gets_none_without_changing_row(
     owner_id = setup_owner(session_factory, "owner")
     other_id = setup_owner(session_factory, "other")
     with session_factory() as write_session:
-        snapshot = start_workflow(write_session, owner_id, "Plan birthday party")
+        snapshot = start_workflow(write_session, owner_id, "Plan birthday party", uuid4())
 
     with session_factory() as strangers_session:
         assert get_workflow(strangers_session, other_id, snapshot.id) is None
     with session_factory() as strangers_session:
         assert (
             advance_workflow(
-                strangers_session, other_id, snapshot.id, AnswerMultipleSteps(answer=True)
+                strangers_session, other_id, snapshot.id, AnswerMultipleSteps(answer=True),
+                request_id=uuid4(),
+                expected_revision=0,
+                step_id=f"{snapshot.id}:ASSESS_TASK",
             )
             is None
         )
@@ -478,14 +543,20 @@ def test_confirm_rollback_leaves_review_and_zero_todos(
 
     owner_id = setup_owner(session_factory)
     with session_factory() as write_session:
-        snapshot = start_workflow(write_session, owner_id, "Plan birthday party")
+        snapshot = start_workflow(write_session, owner_id, "Plan birthday party", uuid4())
     with session_factory() as write_session:
         advance_workflow(
-            write_session, owner_id, snapshot.id, AnswerMultipleSteps(answer=True)
+            write_session, owner_id, snapshot.id, AnswerMultipleSteps(answer=True),
+            request_id=uuid4(),
+            expected_revision=0,
+            step_id=f"{snapshot.id}:ASSESS_TASK",
         )
     with session_factory() as write_session:
         advance_workflow(
-            write_session, owner_id, snapshot.id, AnswerMultipleSteps(answer=True)
+            write_session, owner_id, snapshot.id, AnswerMultipleSteps(answer=True),
+            request_id=uuid4(),
+            expected_revision=1,
+            step_id=f"{snapshot.id}:OFFER_BREAKDOWN",
         )
     with session_factory() as write_session:
         advance_workflow(
@@ -493,6 +564,9 @@ def test_confirm_rollback_leaves_review_and_zero_todos(
             owner_id,
             snapshot.id,
             create_submit_tasks(("Send invitations", "Buy decorations")),
+            request_id=uuid4(),
+            expected_revision=2,
+            step_id=f"{snapshot.id}:COLLECT_TASKS",
         )
 
     real_create = workflow_service.create_todo
@@ -511,7 +585,11 @@ def test_confirm_rollback_leaves_review_and_zero_todos(
             session_factory() as write_session,
             pytest.raises(RuntimeError, match="forced completion failure"),
         ):
-            advance_workflow(write_session, owner_id, snapshot.id, Confirm())
+            advance_workflow(write_session, owner_id, snapshot.id, Confirm(),
+                request_id=uuid4(),
+                expected_revision=3,
+                step_id=f"{snapshot.id}:REVIEW",
+            )
     finally:
         workflow_service.create_todo = real_create
 
@@ -536,7 +614,7 @@ def test_confirm_in_assess_task_rejects_without_mutation(
 
     owner_id = setup_owner(session_factory)
     with session_factory() as write_session:
-        snapshot = start_workflow(write_session, owner_id, "Plan birthday party")
+        snapshot = start_workflow(write_session, owner_id, "Plan birthday party", uuid4())
 
     with session_factory() as verification_session:
         before_row = verification_session.execute(
@@ -550,7 +628,11 @@ def test_confirm_in_assess_task_rejects_without_mutation(
         before_todos = todo_titles(session_factory, owner_id)
 
     with session_factory() as write_session, pytest.raises(InvalidWorkflowAction):
-        advance_workflow(write_session, owner_id, snapshot.id, Confirm())
+        advance_workflow(write_session, owner_id, snapshot.id, Confirm(),
+            request_id=uuid4(),
+            expected_revision=0,
+            step_id=f"{snapshot.id}:ASSESS_TASK",
+        )
 
     with session_factory() as verification_session:
         after_row = verification_session.execute(
