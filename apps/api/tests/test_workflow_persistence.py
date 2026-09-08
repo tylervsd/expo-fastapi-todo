@@ -809,6 +809,34 @@ def _review_snapshot(workflow_id: UUID) -> WorkflowSnapshot:
                 }
             ),
         ),
+        (
+            "review",
+            lambda record: record.update({"involves_multiple_steps": False}),
+        ),
+        (
+            "completed",
+            lambda record: record.update(
+                {
+                    "proposed_todo_titles": ["Todo 0", "Todo 1"],
+                    "created_todos": [
+                        {
+                            "id": str(uuid4()),
+                            "title": "Todo 0",
+                            "completed": False,
+                        },
+                        {
+                            "id": str(uuid4()),
+                            "title": "Todo 1",
+                            "completed": False,
+                        },
+                    ],
+                }
+            ),
+        ),
+        (
+            "review",
+            lambda record: record.update({"involves_multiple_steps": None}),
+        ),
     ],
     ids=[
         "active-proposals-over-limit",
@@ -816,6 +844,9 @@ def _review_snapshot(workflow_id: UUID) -> WorkflowSnapshot:
         "completed-proposals-over-limit",
         "completed-extra-todo",
         "completed-todo-count-mismatch",
+        "review-single-step-flag-with-two-proposals",
+        "completed-single-step-flag-with-two-proposals",
+        "review-missing-flag",
     ],
 )
 def test_snapshot_from_record_rejects_count_violations(
@@ -832,6 +863,39 @@ def test_snapshot_from_record_rejects_count_violations(
 
     with pytest.raises(ValueError):
         snapshot_from_record(record)
+
+
+def test_snapshot_from_record_accepts_single_proposal_multi_step_review() -> None:
+    # The domain yields one proposal with involves_multiple_steps=True when
+    # OFFER_BREAKDOWN is answered "no", so a single proposal is valid for
+    # either flag at REVIEW/COMPLETED; only False requires exactly one.
+    workflow_id = uuid4()
+    todo_id = uuid4()
+    review = WorkflowSnapshot(
+        id=workflow_id,
+        state=WorkflowState.REVIEW,
+        title="Plan birthday party",
+        involves_multiple_steps=True,
+        proposed_todo_titles=("Plan birthday party",),
+        created_todos=None,
+        revision=1,
+        definition_version=CURRENT_WORKFLOW_DEFINITION_VERSION,
+    )
+    completed = WorkflowSnapshot(
+        id=workflow_id,
+        state=WorkflowState.COMPLETED,
+        title="Plan birthday party",
+        involves_multiple_steps=True,
+        proposed_todo_titles=("Plan birthday party",),
+        created_todos=(
+            CreatedTodo(id=todo_id, title="Plan birthday party", completed=False),
+        ),
+        revision=2,
+        definition_version=CURRENT_WORKFLOW_DEFINITION_VERSION,
+    )
+
+    assert snapshot_from_record(snapshot_to_record(review)) == review
+    assert snapshot_from_record(snapshot_to_record(completed)) == completed
 
 
 def _phase8_insert(connection, owner_id: int, public_id: UUID, state: str,

@@ -26,7 +26,6 @@ from app.workflow_domain import (
     CURRENT_WORKFLOW_DEFINITION_VERSION,
     MAX_BREAKDOWN_TITLES,
     MAX_WORKFLOW_REVISION,
-    MIN_BREAKDOWN_TITLES,
     CreatedTodo,
     WorkflowSnapshot,
     WorkflowState,
@@ -307,11 +306,18 @@ def snapshot_from_record(record: Mapping[str, object]) -> WorkflowSnapshot:
         if canonical_proposals:
             raise InvalidStoredSnapshot("stored snapshot has invalid proposals")
     elif state in (WorkflowState.REVIEW, WorkflowState.COMPLETED):
-        if not (
-            len(canonical_proposals) == 1
-            or MIN_BREAKDOWN_TITLES <= len(canonical_proposals) <= MAX_BREAKDOWN_TITLES
-        ):
-            raise InvalidStoredSnapshot("stored snapshot has invalid proposals")
+        # Mirror the domain's flag/count rule: involves_multiple_steps=False
+        # yields exactly the single title proposal, while True yields one
+        # proposal (OFFER_BREAKDOWN answered "no") or 2..10 breakdown
+        # titles. A missing flag never occurs at these states.
+        if involves is False:
+            if len(canonical_proposals) != 1:
+                raise InvalidStoredSnapshot("stored snapshot has invalid proposals")
+        elif involves is True:
+            if not 1 <= len(canonical_proposals) <= MAX_BREAKDOWN_TITLES:
+                raise InvalidStoredSnapshot("stored snapshot has invalid proposals")
+        else:
+            raise InvalidStoredSnapshot("stored snapshot has invalid flag")
     elif len(canonical_proposals) > MAX_BREAKDOWN_TITLES:
         # CANCELLED preserves the proposals of the cancelled state, which
         # is empty, a single title, or 2 through 10 breakdown titles.
