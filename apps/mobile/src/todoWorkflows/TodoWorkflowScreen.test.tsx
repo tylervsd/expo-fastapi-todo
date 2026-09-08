@@ -1430,6 +1430,54 @@ it("reconciles a stale conflict automatically through a current GET", async () =
   expect(screen.queryByRole("button", { name: "Retry saved request" })).toBeNull();
 });
 
+it("keeps the stale explanation visible after reconciling to the current step", async () => {
+  const api = makeApi();
+  await renderHost(api);
+  await driveToReview(api);
+  api.advanceWorkflow.mockRejectedValueOnce(
+    new TodoApiError("conflict", "This plan changed. Reload it and try again.", "stale_step")
+  );
+  // The winner advanced the plan: the reconciliation GET returns a newer
+  // step (an older revision would be correctly ignored by the cache guard).
+  api.getWorkflow.mockResolvedValueOnce(completedWorkflow);
+
+  await fireEvent.press(screen.getByRole("button", { name: "Confirm plan" }));
+
+  await waitFor(() =>
+    expect(screen.getByRole("header", { name: "Plan complete" })).toBeTruthy()
+  );
+  // The reconciliation GET decides the rendered step, but the stale
+  // explanation must survive it: the submitted answer was stale.
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "This plan changed. Reload it and try again."
+  );
+  expect(screen.queryByRole("button", { name: "Retry saved request" })).toBeNull();
+});
+
+it("clears the stale explanation when the next write starts", async () => {
+  const api = makeApi();
+  await renderHost(api);
+  await driveToReview(api);
+  api.advanceWorkflow.mockRejectedValueOnce(
+    new TodoApiError("conflict", "This plan changed. Reload it and try again.", "stale_step")
+  );
+  api.getWorkflow.mockResolvedValueOnce({ ...reviewWorkflow, revision: 4 });
+  await fireEvent.press(screen.getByRole("button", { name: "Confirm plan" }));
+  await waitFor(() =>
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "This plan changed. Reload it and try again."
+    )
+  );
+
+  api.advanceWorkflow.mockResolvedValueOnce(completedWorkflow);
+  api.getWorkflow.mockResolvedValueOnce(completedWorkflow);
+  await fireEvent.press(screen.getByRole("button", { name: "Confirm plan" }));
+  await waitFor(() =>
+    expect(screen.getByRole("header", { name: "Plan complete" })).toBeTruthy()
+  );
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
 it("keeps a reused request ID until it is explicitly discarded", async () => {
   const api = makeApi();
   const { store } = await renderHost(api);

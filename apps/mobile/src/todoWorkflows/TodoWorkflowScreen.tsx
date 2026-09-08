@@ -91,9 +91,11 @@ export function TodoWorkflowScreen({
   const [startDraft, setStartDraft] = useState("");
   const [tasksDraft, setTasksDraft] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
-  const [writeError, setWriteError] = useState<{ message: string; lock: boolean } | null>(
-    null
-  );
+  const [writeError, setWriteError] = useState<{
+    message: string;
+    lock: boolean;
+    sticky?: boolean;
+  } | null>(null);
   const [pendingRecord, setPendingRecord] = useState<PendingWorkflowWrite | null>(null);
   const [persisting, setPersisting] = useState(false);
   const [reconciling, setReconciling] = useState(false);
@@ -174,6 +176,7 @@ export function TodoWorkflowScreen({
   const workflowQueryRef = useRef(workflowQuery);
   const pendingRecordRef = useRef(pendingRecord);
   const reconcileFailedRef = useRef(reconcileFailed);
+  const writeErrorRef = useRef(writeError);
   // Mirror render values for async callbacks without touching refs
   // during render. Declared before the step effect so mirrors are fresh
   // when it runs.
@@ -181,6 +184,7 @@ export function TodoWorkflowScreen({
     workflowQueryRef.current = workflowQuery;
     pendingRecordRef.current = pendingRecord;
     reconcileFailedRef.current = reconcileFailed;
+    writeErrorRef.current = writeError;
   });
 
   const snapshot = workflowId === null ? undefined : workflowQuery.data;
@@ -203,8 +207,14 @@ export function TodoWorkflowScreen({
     setTasksDraft("");
     setLocalError(null);
     // An arrived step clears alerts only when no recovery is outstanding:
-    // a pending write or a failed reconciliation owns the message.
-    if (pendingRecordRef.current === null && !reconcileFailedRef.current) {
+    // a pending write or a failed reconciliation owns the message. A stale
+    // notice is sticky: it must survive the reconciled step arrival that it
+    // explains, and is cleared only by the next write or manual reload.
+    if (
+      writeErrorRef.current?.sticky !== true &&
+      pendingRecordRef.current === null &&
+      !reconcileFailedRef.current
+    ) {
       setWriteError(null);
     }
     setFocusSignal((signal) => signal + 1);
@@ -412,10 +422,14 @@ export function TodoWorkflowScreen({
     if (!mountedRef.current || !isSessionCurrent(captured)) return;
     if (error instanceof TodoApiError && error.kind === "conflict") {
       if (error.conflictCode === "stale_step") {
-        setWriteError({ message: error.message, lock: true });
+        // The stale explanation is sticky: reconciliation clears the
+        // record but the message must survive the reconciled step so the
+        // submitted stale answer stays explained after the current step
+        // renders. The next write or manual reload clears it.
+        setWriteError({ message: error.message, lock: true, sticky: true });
         void reconcileAfterWrite(record.workflowId, captured, {
           clearRecord: record,
-          keepMessage: false,
+          keepMessage: true,
           clearFirst: true,
         });
         return;
@@ -806,7 +820,8 @@ export function TodoWorkflowScreen({
 
   const showWriteError =
     writeError !== null &&
-    (!writeError.lock || !fresh || livePending !== null || reconcileFailed);
+    (writeError.sticky === true ||
+      (!writeError.lock || !fresh || livePending !== null || reconcileFailed));
   const getAlert =
     getError !== null &&
     !isFetching &&
