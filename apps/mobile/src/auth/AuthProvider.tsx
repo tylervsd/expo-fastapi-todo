@@ -242,7 +242,7 @@ export function AuthProvider({
             <Text style={styles.signOutButtonText}>Sign out</Text>
           </Pressable>
         </View>
-        <TodoExperience userId={user.id} api={todoApi} />
+        <TodoExperience userId={user.id} api={todoApi} sessionEpoch={sessionEpoch} isSessionCurrent={isSessionCurrent} />
       </View>
     </SessionEpochContext.Provider>
   );

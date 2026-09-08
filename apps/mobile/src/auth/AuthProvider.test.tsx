@@ -58,7 +58,7 @@ jest.mock("react-native", () => {
 
 jest.mock("expo-secure-store", () => {
   const store = new Map<string, string>();
-  return {
+  const api = {
     getItemAsync: jest.fn(async (key: string) => store.get(key) ?? null),
     setItemAsync: jest.fn(async (key: string, value: string) => {
       store.set(key, value);
@@ -66,8 +66,27 @@ jest.mock("expo-secure-store", () => {
     deleteItemAsync: jest.fn(async (key: string) => {
       store.delete(key);
     }),
+    __clear: () => store.clear(),
   };
+  return api;
 });
+
+// The workflow screen generates request IDs through expo-crypto. The
+// jest-expo native mock returns undefined, which can never pass request
+// validation, so provide deterministic valid UUIDs for shell flows that
+// exercise the real default generator through the provider.
+let mockCryptoCounter = 0;
+jest.mock("expo-crypto", () => ({
+  randomUUID: jest.fn(() => {
+    mockCryptoCounter += 1;
+    return `11111111-1111-4111-8111-${String(mockCryptoCounter).padStart(12, "0")}`;
+  }),
+}));
+
+const clearSecureStore = () => {
+  const secure = jest.requireMock("expo-secure-store") as { __clear?: () => void };
+  secure.__clear?.();
+};
 
 const liveClients: QueryClient[] = [];
 
@@ -124,6 +143,9 @@ afterEach(() => {
     client.unmount();
     client.clear();
   }
+  // The SecureStore mock outlives individual renders: a saved workflow
+  // request left behind by one shell test must not leak into the next.
+  clearSecureStore();
 });
 
 it("shows loading while the session state is unknown", async () => {
@@ -467,9 +489,15 @@ describe("workflow shell integration", () => {
     await fireEvent.press(screen.getByRole("button", { name: "Start planning" }));
 
     await waitFor(() =>
-      expect(transport.startTodoWorkflow).toHaveBeenCalledWith("Plan birthday party", {
-        token: "tok-A",
-      })
+      expect(transport.startTodoWorkflow).toHaveBeenCalledWith(
+        {
+          request_id: expect.stringMatching(
+            /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+          ),
+          title: "Plan birthday party",
+        },
+        { token: "tok-A" }
+      )
     );
     await waitFor(() =>
       expect(
