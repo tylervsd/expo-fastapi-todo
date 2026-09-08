@@ -50,6 +50,7 @@ const DISCARD_WARNING =
   "The saved request was discarded locally, but the server may already have applied it. Refresh the list to check.";
 const UNKNOWN_START_FAILURE = "Could not start planning. Retry the saved request.";
 const UNKNOWN_ADVANCE_FAILURE = "Could not update the plan. Retry the saved request.";
+const INVALID_RESPONSE = "The API returned invalid plan data.";
 
 type StartRecord = Extract<PendingWorkflowWrite, { operation: "start" }>;
 type AdvanceRecord = Extract<PendingWorkflowWrite, { operation: "advance" }>;
@@ -269,7 +270,7 @@ export function TodoWorkflowScreen({
       fetched === null ||
       (fetched as TodoWorkflow).workflow_id !== id
     ) {
-      return { ok: false, message: "The API returned invalid plan data." };
+      return { ok: false, message: INVALID_RESPONSE };
     }
     seedSnapshot(fetched);
     return { ok: true, snapshot: fetched };
@@ -278,11 +279,24 @@ export function TodoWorkflowScreen({
   const reconcileAfterWrite = async (
     id: string,
     captured: number,
-    options: { clearRecord: PendingWorkflowWrite | null; keepMessage: boolean }
+    options: {
+      clearRecord: PendingWorkflowWrite | null;
+      keepMessage: boolean;
+      clearFirst: boolean;
+    }
   ): Promise<void> => {
     if (!mountedRef.current || !isSessionCurrent(captured)) return;
     setReconciling(true);
     setReconcileFailed(false);
+    // Conflict paths clear the matching record before the reconciliation
+    // GET: a failed GET must not resurrect a Retry for a request the server
+    // already rejected. Success paths keep clear-after-GET so an unproven
+    // reconciliation retains its safe retry.
+    if (options.clearFirst && options.clearRecord !== null) {
+      const cleared = await clearPendingRecord(options.clearRecord, captured);
+      if (!mountedRef.current || !isSessionCurrent(captured)) return;
+      if (!cleared) return;
+    }
     const fetched = await fetchCurrentSnapshot(id, captured);
     if (!mountedRef.current || !isSessionCurrent(captured)) return;
     try {
@@ -295,7 +309,7 @@ export function TodoWorkflowScreen({
       noteTerminalOutcome(fetched.snapshot);
       setReconcileFailed(false);
       let cleared = true;
-      if (options.clearRecord !== null) {
+      if (!options.clearFirst && options.clearRecord !== null) {
         cleared = await clearPendingRecord(options.clearRecord, captured);
         if (!mountedRef.current || !isSessionCurrent(captured)) return;
       }
@@ -303,7 +317,7 @@ export function TodoWorkflowScreen({
       if (options.clearRecord !== null) setPendingRecord(null);
       if (!options.keepMessage) setWriteError(null);
     } finally {
-      if (mountedRef.current) setReconciling(false);
+      if (mountedRef.current && isSessionCurrent(captured)) setReconciling(false);
     }
   };
 
@@ -313,13 +327,21 @@ export function TodoWorkflowScreen({
     captured: number
   ): Promise<void> => {
     if (!mountedRef.current || !isSessionCurrent(captured)) return;
+    // The start protocol echoes no request ID: the recorded outcome is keyed
+    // by OUR request ID server-side, so the recovered workflow ID is trusted
+    // by construction. (Advance responses carry an expected workflow ID and
+    // are verified in settleAdvanceResponse.)
     const id = response.workflow_id;
     seedSnapshot(response);
     noteTerminalOutcome(response);
     void queryClient.invalidateQueries({
       queryKey: ["todo-workflows", userId, "active"],
     });
-    await reconcileAfterWrite(id, captured, { clearRecord: record, keepMessage: false });
+    await reconcileAfterWrite(id, captured, {
+      clearRecord: record,
+      keepMessage: false,
+      clearFirst: false,
+    });
     if (!mountedRef.current || !isSessionCurrent(captured)) return;
     setWorkflowId(id);
   };
@@ -363,7 +385,16 @@ export function TodoWorkflowScreen({
     captured: number
   ): Promise<void> => {
     if (!mountedRef.current || !isSessionCurrent(captured)) return;
-    seedSnapshot(response);
+    if (response.workflow_id !== record.workflowId) {
+      // A mutation response naming another workflow is invalid-response
+      // evidence, never a reason to switch plans: retain the pending record
+      // for an explicit retry and leave cache and selection untouched.
+      // Nothing renders here because only the reconciliation GET seeds.
+      setWriteError({ message: INVALID_RESPONSE, lock: true });
+      return;
+    }
+    // The response is recovery evidence only: rendering waits for the
+    // reconciliation GET below, which seeds via keepLatestWorkflow.
     noteTerminalOutcome(response);
     void queryClient.invalidateQueries({
       queryKey: ["todo-workflows", userId, "active"],
@@ -371,11 +402,8 @@ export function TodoWorkflowScreen({
     await reconcileAfterWrite(response.workflow_id, captured, {
       clearRecord: record,
       keepMessage: false,
+      clearFirst: false,
     });
-    if (!mountedRef.current || !isSessionCurrent(captured)) return;
-    if (response.workflow_id !== workflowId) {
-      setWorkflowId(response.workflow_id);
-    }
   };
 
   const settleAdvanceError = (record: AdvanceRecord, error: unknown, captured: number): void => {
@@ -386,6 +414,7 @@ export function TodoWorkflowScreen({
         void reconcileAfterWrite(record.workflowId, captured, {
           clearRecord: record,
           keepMessage: false,
+          clearFirst: true,
         });
         return;
       }
@@ -394,6 +423,7 @@ export function TodoWorkflowScreen({
         void reconcileAfterWrite(record.workflowId, captured, {
           clearRecord: null,
           keepMessage: true,
+          clearFirst: false,
         });
         return;
       }
@@ -401,6 +431,7 @@ export function TodoWorkflowScreen({
       void reconcileAfterWrite(record.workflowId, captured, {
         clearRecord: record,
         keepMessage: true,
+        clearFirst: true,
       });
       return;
     }
@@ -431,34 +462,36 @@ export function TodoWorkflowScreen({
     record: PendingWorkflowWrite,
     captured: number
   ): Promise<void> => {
+    // Settlement (including the reconciliation GET) is part of the returned
+    // promise, so the before-send sequence stays pending until the outcome
+    // is reconciled.
     if (record.operation === "start") {
       return startMutation.mutateAsync(record).then(
-        (response) => {
-          void settleStartResponse(record, response, captured);
-        },
+        (response) => settleStartResponse(record, response, captured),
         (error: unknown) => {
           settleStartError(record, error, captured);
         }
       );
     }
     return advanceMutation.mutateAsync(record).then(
-      (response) => {
-        void settleAdvanceResponse(record, response, captured);
-      },
+      (response) => settleAdvanceResponse(record, response, captured),
       (error: unknown) => {
         settleAdvanceError(record, error, captured);
       }
     );
   };
 
-  const handleSaveFailure = async (record: PendingWorkflowWrite): Promise<void> => {
+  const handleSaveFailure = async (
+    record: PendingWorkflowWrite,
+    captured: number
+  ): Promise<void> => {
     let existing: PendingWorkflowWrite | null = null;
     try {
       existing = await pendingStore.read(userId);
     } catch {
       existing = null;
     }
-    if (!mountedRef.current) return;
+    if (!mountedRef.current || !isSessionCurrent(captured)) return;
     if (existing !== null && existing.ownerId === userId) {
       setPendingRecord(existing);
       if (existing.requestId !== record.requestId) {
@@ -489,13 +522,17 @@ export function TodoWorkflowScreen({
           isSessionCurrent,
           send: (saved) => sendExactStoredRequest(saved, captured),
         });
-        if (outcome === "stale-session" && mountedRef.current) {
+        if (
+          outcome === "stale-session" &&
+          mountedRef.current &&
+          isSessionCurrent(captured)
+        ) {
           setPendingRecord(record);
         }
       } catch {
-        await handleSaveFailure(record);
+        await handleSaveFailure(record, captured);
       } finally {
-        if (mountedRef.current) setPersisting(false);
+        if (mountedRef.current && isSessionCurrent(captured)) setPersisting(false);
         busy.current = false;
       }
     })();
@@ -717,7 +754,7 @@ export function TodoWorkflowScreen({
         }
       } finally {
         busy.current = false;
-        if (mountedRef.current) setDiscarding(false);
+        if (mountedRef.current && isSessionCurrent(captured)) setDiscarding(false);
       }
     })();
   };
@@ -754,7 +791,7 @@ export function TodoWorkflowScreen({
         setWriteError(null);
         noteTerminalOutcome(result.data);
       } finally {
-        if (mountedRef.current) setReconciling(false);
+        if (mountedRef.current && isSessionCurrent(captured)) setReconciling(false);
       }
     })();
   };

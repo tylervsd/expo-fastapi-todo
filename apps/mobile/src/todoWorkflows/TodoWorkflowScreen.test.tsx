@@ -455,10 +455,10 @@ const startToAssess = async (api: MockWorkflowApi, title = "Plan birthday party"
       screen.getByRole("header", { name: "Does this task involve multiple steps?" })
     ).toBeTruthy()
   );
-  // Quiescence: the mutation response only renders after seeding, but the
-  // reconciliation GET and pending-record cleanup finish after that. Wait
-  // for the retry banner to clear so no reconciling GET is still in flight
-  // when the test registers its own staged mocks.
+  // Quiescence: the mutation response renders only after the
+  // reconciliation GET seeds it, and pending-record cleanup finishes after
+  // that. Wait for the retry banner to clear so no reconciling GET is
+  // still in flight when the test registers its own staged mocks.
   await waitFor(() =>
     expect(screen.queryByRole("button", { name: "Retry saved request" })).toBeNull()
   );
@@ -476,6 +476,7 @@ it("uses the shared yes/no template for both questions", async () => {
   await startToAssess(api);
   expect(screen.getByText("Assessment title from the view")).toBeTruthy();
   api.advanceWorkflow.mockResolvedValueOnce(offerWorkflow);
+  api.getWorkflow.mockResolvedValueOnce(offerWorkflow);
 
   await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
   await waitFor(() =>
@@ -488,6 +489,7 @@ it("uses the shared yes/no template for both questions", async () => {
   expect(screen.getByText("Breakdown offer title from the view")).toBeTruthy();
 
   api.advanceWorkflow.mockResolvedValueOnce(collectWorkflow);
+  api.getWorkflow.mockResolvedValueOnce(collectWorkflow);
   await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
   expect(api.advanceWorkflow).toHaveBeenLastCalledWith(WORKFLOW_ID, {
     request_id: REQUEST_ID,
@@ -505,6 +507,7 @@ it("answers No in offer and renders the server-returned review", async () => {
   await renderHost(api);
   await startToAssess(api);
   api.advanceWorkflow.mockResolvedValueOnce(offerWorkflow);
+  api.getWorkflow.mockResolvedValueOnce(offerWorkflow);
   await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
   await waitFor(() =>
     expect(
@@ -530,6 +533,7 @@ it("answers No in offer and renders the server-returned review", async () => {
     },
   };
   api.advanceWorkflow.mockResolvedValueOnce(declined);
+  api.getWorkflow.mockResolvedValueOnce(declined);
   await fireEvent.press(screen.getByRole("button", { name: "No" }));
   await waitFor(() => expect(api.advanceWorkflow).toHaveBeenLastCalledWith(WORKFLOW_ID, {
     request_id: REQUEST_ID,
@@ -570,6 +574,7 @@ it("answers No and renders the returned review", async () => {
       proposed_titles: ["Plan birthday party"],
     },
   };
+  api.getWorkflow.mockResolvedValueOnce(noReview);
   await act(async () => {
     answering.resolve(noReview);
   });
@@ -585,6 +590,7 @@ it("submits exact newline-separated titles", async () => {
   await renderHost(api);
   await startToAssess(api);
   api.advanceWorkflow.mockResolvedValueOnce(collectWorkflow);
+  api.getWorkflow.mockResolvedValueOnce(collectWorkflow);
   await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
   await waitFor(() =>
     expect(screen.getByRole("header", { name: "Break it into smaller todos" })).toBeTruthy()
@@ -607,6 +613,7 @@ it("submits exact newline-separated titles", async () => {
   }));
   expect(screen.queryByRole("header", { name: "Review your plan" })).toBeNull();
 
+  api.getWorkflow.mockResolvedValueOnce(reviewWorkflow);
   await act(async () => {
     submitting.resolve(reviewWorkflow);
   });
@@ -633,6 +640,7 @@ it("rejects out-of-bounds breakdowns using the view limits", async () => {
   await renderHost(api);
   await startToAssess(api);
   api.advanceWorkflow.mockResolvedValueOnce(offerWorkflow);
+  api.getWorkflow.mockResolvedValueOnce(offerWorkflow);
   await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
   await waitFor(() =>
     expect(
@@ -642,6 +650,7 @@ it("rejects out-of-bounds breakdowns using the view limits", async () => {
     ).toBeTruthy()
   );
   api.advanceWorkflow.mockResolvedValueOnce(customCollect);
+  api.getWorkflow.mockResolvedValueOnce(customCollect);
   await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
   await waitFor(() =>
     expect(screen.getByRole("header", { name: "Break it into smaller todos" })).toBeTruthy()
@@ -667,6 +676,7 @@ it("keeps the breakdown draft on 422 without optimistic review", async () => {
   await renderHost(api);
   await startToAssess(api);
   api.advanceWorkflow.mockResolvedValueOnce(collectWorkflow);
+  api.getWorkflow.mockResolvedValueOnce(collectWorkflow);
   await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
   await waitFor(() =>
     expect(screen.getByRole("header", { name: "Break it into smaller todos" })).toBeTruthy()
@@ -692,11 +702,13 @@ it("confirms the exact backend list and shows the persisted result", async () =>
   await renderHost(api);
   await startToAssess(api);
   api.advanceWorkflow.mockResolvedValueOnce(collectWorkflow);
+  api.getWorkflow.mockResolvedValueOnce(collectWorkflow);
   await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
   await waitFor(() =>
     expect(screen.getByRole("header", { name: "Break it into smaller todos" })).toBeTruthy()
   );
   api.advanceWorkflow.mockResolvedValueOnce(reviewWorkflow);
+  api.getWorkflow.mockResolvedValueOnce(reviewWorkflow);
   await fireEvent.changeText(
     screen.getByLabelText("Todo titles (one per line)"),
     "Send invitations\nBuy decorations\nBook venue"
@@ -716,6 +728,7 @@ it("confirms the exact backend list and shows the persisted result", async () =>
   }));
   expect(screen.getByRole("header", { name: "Review your plan" })).toBeTruthy();
 
+  api.getWorkflow.mockResolvedValueOnce(completedWorkflow);
   await act(async () => {
     confirming.resolve(completedWorkflow);
   });
@@ -729,6 +742,8 @@ it("confirms the exact backend list and shows the persisted result", async () =>
 const driveToCollect = async (api: MockWorkflowApi) => {
   await startToAssess(api);
   api.advanceWorkflow.mockResolvedValueOnce(offerWorkflow);
+  // Rendering waits for the reconciliation GET: stage it per advance.
+  api.getWorkflow.mockResolvedValueOnce(offerWorkflow);
   await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
   await waitFor(() =>
     expect(
@@ -739,6 +754,7 @@ const driveToCollect = async (api: MockWorkflowApi) => {
   );
   await waitForQuiescence();
   api.advanceWorkflow.mockResolvedValueOnce(collectWorkflow);
+  api.getWorkflow.mockResolvedValueOnce(collectWorkflow);
   await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
   await waitFor(() =>
     expect(screen.getByRole("header", { name: "Break it into smaller todos" })).toBeTruthy()
@@ -749,6 +765,7 @@ const driveToCollect = async (api: MockWorkflowApi) => {
 const driveToReview = async (api: MockWorkflowApi) => {
   await driveToCollect(api);
   api.advanceWorkflow.mockResolvedValueOnce(reviewWorkflow);
+  api.getWorkflow.mockResolvedValueOnce(reviewWorkflow);
   await fireEvent.changeText(
     screen.getByLabelText("Todo titles (one per line)"),
     "Send invitations\nBuy decorations\nBook venue"
@@ -781,6 +798,7 @@ it.each([["assess"], ["collect"], ["review"]])(
           ? { ...cancelledWorkflow, revision: 3 }
           : { ...cancelledWorkflow, revision: 4 };
     api.advanceWorkflow.mockResolvedValueOnce(cancelledAt);
+    api.getWorkflow.mockResolvedValueOnce(cancelledAt);
 
     await fireEvent.press(screen.getByRole("button", { name: "Cancel planning" }));
     const cancelStep =
@@ -809,6 +827,7 @@ it("terminal screens expose only Back and call onExit once", async () => {
   const { onExit } = await renderHost(api);
   await driveToReview(api);
   api.advanceWorkflow.mockResolvedValueOnce(completedWorkflow);
+  api.getWorkflow.mockResolvedValueOnce(completedWorkflow);
   await fireEvent.press(screen.getByRole("button", { name: "Confirm plan" }));
   await waitFor(() =>
     expect(screen.getByRole("header", { name: "Plan complete" })).toBeTruthy()
@@ -828,6 +847,7 @@ it("seeds the workflow cache on start and replaces it on advance", async () => {
   expect(client.getQueryData(workflowQueryKey(USER_ID, WORKFLOW_ID))).toEqual(assessWorkflow);
 
   api.advanceWorkflow.mockResolvedValueOnce(collectWorkflow);
+  api.getWorkflow.mockResolvedValueOnce(collectWorkflow);
   await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
   await waitFor(() =>
     expect(screen.getByRole("header", { name: "Break it into smaller todos" })).toBeTruthy()
@@ -903,6 +923,7 @@ it("invalidates todos on completion without a second todo array", async () => {
   client.setQueryData(["todos"], []);
   await driveToReview(api);
   api.advanceWorkflow.mockResolvedValueOnce(completedWorkflow);
+  api.getWorkflow.mockResolvedValueOnce(completedWorkflow);
 
   await fireEvent.press(screen.getByRole("button", { name: "Confirm plan" }));
   await waitFor(() =>
@@ -969,6 +990,7 @@ it("moves focus to the breakdown input, Confirm, and terminal Back", async () =>
 
   expect(mockInputFocus.mock.calls.length).toBeGreaterThan(focusAfterStart);
   api.advanceWorkflow.mockResolvedValueOnce(completedWorkflow);
+  api.getWorkflow.mockResolvedValueOnce(completedWorkflow);
   await fireEvent.press(screen.getByRole("button", { name: "Confirm plan" }));
   await waitFor(() =>
     expect(screen.getByRole("header", { name: "Plan complete" })).toBeTruthy()
@@ -1468,6 +1490,7 @@ it("offers a saved request after same-user re-login but never for another user",
   expect(api.advanceWorkflow).not.toHaveBeenCalled();
 
   api.advanceWorkflow.mockResolvedValueOnce(offerWorkflow);
+  api.getWorkflow.mockResolvedValueOnce(offerWorkflow);
   await fireEvent.press(screen.getByRole("button", { name: "Retry saved request" }));
   await waitFor(() =>
     expect(
@@ -1641,4 +1664,206 @@ it("keeps recovery locked when clearing the saved request fails", async () => {
   );
   expect(screen.getByRole("button", { name: "Retry saved request" })).toBeTruthy();
   expect((await store.read(USER_ID))?.requestId).toBe(REQUEST_ID);
+});
+
+it("rejects an advance response that names a different workflow", async () => {
+  const api = makeApi();
+  const { client, store } = await renderHost(api);
+  await startToAssess(api);
+  const callsBefore = api.getWorkflow.mock.calls.length;
+  // A rogue response for a workflow this request never targeted: valid
+  // UUID, but not the workflow the saved advance targeted.
+  const rogueWorkflow: TodoWorkflow = { ...offerWorkflow, workflow_id: OTHER_USER_ID };
+  api.advanceWorkflow.mockResolvedValueOnce(rogueWorkflow);
+  await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
+
+  await waitFor(() =>
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "The API returned invalid plan data."
+    )
+  );
+  // Invalid-response evidence: the pending record is retained for an
+  // explicit retry, and the rogue identity is never seeded, fetched, or
+  // adopted.
+  expect(screen.getByRole("button", { name: "Retry saved request" })).toBeTruthy();
+  expect((await store.read(USER_ID))?.requestId).toBe(REQUEST_ID);
+  expect(api.getWorkflow.mock.calls.length).toBe(callsBefore);
+  expect(
+    client.getQueryData(workflowQueryKey(USER_ID, OTHER_USER_ID))
+  ).toBeUndefined();
+  expect(
+    screen.getByRole("header", { name: "Does this task involve multiple steps?" })
+  ).toBeTruthy();
+  expect(
+    screen.queryByRole("header", {
+      name: "Would you like to split it into smaller todos?",
+    })
+  ).toBeNull();
+});
+
+it("clears the saved request before reconciling a stale conflict, even when the GET fails", async () => {
+  const api = makeApi();
+  const { store } = await renderHost(api);
+  await driveToReview(api);
+  api.advanceWorkflow.mockRejectedValueOnce(
+    new TodoApiError("conflict", "This plan changed. Reload it and try again.", "stale_step")
+  );
+  api.getWorkflow.mockRejectedValueOnce(
+    new TodoApiError("unavailable", "Could not reload the plan.")
+  );
+  await fireEvent.press(screen.getByRole("button", { name: "Confirm plan" }));
+
+  // The matching record is cleared first, so a failed reconciliation GET
+  // leaves no Retry behind: controls stay disabled with Reload offered.
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Reload plan" })).toBeTruthy()
+  );
+  await waitFor(() => expect(store.read(USER_ID)).resolves.toBeNull());
+  expect(screen.queryByRole("button", { name: "Retry saved request" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Confirm plan" })).toHaveProp(
+    "accessibilityState",
+    expect.objectContaining({ disabled: true })
+  );
+});
+
+it("ignores a failed save's storage read when the session changed", async () => {
+  // Deterministic gating: the save's own existence check always resolves,
+  // the save itself waits for release, and only reads after the release
+  // (the failure handler's follow-up read) stay deferred.
+  let releaseSave!: () => void;
+  const saveGate = new Promise<void>((resolve) => {
+    releaseSave = resolve;
+  });
+  let saveAttempted = false;
+  let gateReads = false;
+  let releaseRead!: () => void;
+  const store = createPendingWriteStore({
+    getItem: (key: string) => {
+      if (!gateReads) return Promise.resolve(null);
+      return new Promise<string | null>((resolve) => {
+        releaseRead = () => resolve(null);
+      });
+    },
+    setItem: async () => {
+      saveAttempted = true;
+      await saveGate;
+      throw new Error("disk full");
+    },
+    removeItem: async () => {},
+  });
+  let currentEpoch = 0;
+  const api = makeApi();
+  await renderHost(api, createAppQueryClient(), {
+    store,
+    sessionEpoch: 0,
+    isSessionCurrent: (epoch) => epoch === currentEpoch,
+  });
+
+  await fireEvent.changeText(screen.getByLabelText("Task title"), "Plan birthday party");
+  await fireEvent.press(screen.getByRole("button", { name: "Start planning" }));
+  await waitFor(() => expect(saveAttempted).toBe(true));
+  gateReads = true;
+  currentEpoch = 1;
+  await act(async () => {
+    releaseSave();
+  });
+  await act(async () => {
+    releaseRead();
+  });
+  await act(async () => {});
+
+  // The stale failure handler must not touch state: no alert, no send.
+  expect(api.startWorkflow).not.toHaveBeenCalled();
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+it("leaves reconciliation state untouched when the session changes mid-reconcile", async () => {
+  let currentEpoch = 0;
+  const api = makeApi();
+  const { client } = await renderHost(api, createAppQueryClient(), {
+    sessionEpoch: 0,
+    isSessionCurrent: (epoch) => epoch === currentEpoch,
+  });
+  await startToAssess(api);
+  const callsBefore = api.getWorkflow.mock.calls.length;
+  const advanceGate = deferred<TodoWorkflow>();
+  const getGate = deferred<TodoWorkflow>();
+  api.advanceWorkflow.mockReturnValueOnce(advanceGate.promise);
+  api.getWorkflow.mockReturnValueOnce(getGate.promise);
+  await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
+  await waitFor(() => expect(api.advanceWorkflow).toHaveBeenCalledTimes(1));
+  await act(async () => {
+    advanceGate.resolve(offerWorkflow);
+  });
+  await waitFor(() =>
+    expect(api.getWorkflow.mock.calls.length).toBe(callsBefore + 1)
+  );
+  // The session changes while the reconciliation GET is in flight.
+  currentEpoch = 1;
+  await act(async () => {
+    getGate.resolve(offerWorkflow);
+  });
+  await act(async () => {});
+
+  // The stale GET resolves into nothing: no render, no cache write.
+  expect(
+    screen.getByRole("header", { name: "Does this task involve multiple steps?" })
+  ).toBeTruthy();
+  expect(
+    screen.queryByRole("header", {
+      name: "Would you like to split it into smaller todos?",
+    })
+  ).toBeNull();
+  expect(client.getQueryData(workflowQueryKey(USER_ID, WORKFLOW_ID))).toEqual(
+    assessWorkflow
+  );
+  // And the stale completion must not reset the in-flight indicator:
+  // state updates require a current session, including finally blocks.
+  expect(screen.getByText("Reloading plan…")).toBeTruthy();
+});
+
+it("renders an advance only after its reconciliation GET resolves", async () => {
+  const api = makeApi();
+  await renderHost(api);
+  await startToAssess(api);
+  const advanceGate = deferred<TodoWorkflow>();
+  const getGate = deferred<TodoWorkflow>();
+  api.advanceWorkflow.mockReturnValueOnce(advanceGate.promise);
+  api.getWorkflow.mockReturnValueOnce(getGate.promise);
+  await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
+  await waitFor(() => expect(api.advanceWorkflow).toHaveBeenCalledTimes(1));
+  await act(async () => {
+    advanceGate.resolve(offerWorkflow);
+  });
+  await act(async () => {});
+
+  // The mutation response alone renders nothing and writes stay disabled
+  // until the reconciliation GET resolves.
+  expect(
+    screen.getByRole("header", { name: "Does this task involve multiple steps?" })
+  ).toBeTruthy();
+  expect(
+    screen.queryByRole("header", {
+      name: "Would you like to split it into smaller todos?",
+    })
+  ).toBeNull();
+  expect(screen.getByRole("button", { name: "Yes" })).toHaveProp(
+    "accessibilityState",
+    expect.objectContaining({ disabled: true })
+  );
+
+  await act(async () => {
+    getGate.resolve(offerWorkflow);
+  });
+  await waitFor(() =>
+    expect(
+      screen.getByRole("header", {
+        name: "Would you like to split it into smaller todos?",
+      })
+    ).toBeTruthy()
+  );
+  expect(screen.getByRole("button", { name: "Yes" })).toHaveProp(
+    "accessibilityState",
+    expect.objectContaining({ disabled: false })
+  );
 });

@@ -239,6 +239,8 @@ it("returns to todos after cancel", async () => {
       screen.getByRole("header", { name: "Does this task involve multiple steps?" })
     ).toBeTruthy()
   );
+  // Rendering waits for the reconciliation GET: stage it for the cancel.
+  ;(api.getWorkflow as jest.Mock).mockResolvedValueOnce(cancelledWorkflow);
   await fireEvent.press(screen.getByRole("button", { name: "Cancel planning" }));
   await waitFor(() =>
     expect(screen.getByRole("header", { name: "Plan cancelled" })).toBeTruthy()
@@ -332,6 +334,7 @@ it("returns after completion onto a refetching todo list", async () => {
       screen.getByRole("header", { name: "Does this task involve multiple steps?" })
     ).toBeTruthy()
   );
+  ;(api.getWorkflow as jest.Mock).mockResolvedValueOnce(offerWorkflow);
   await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
   await waitFor(() =>
     expect(
@@ -340,6 +343,7 @@ it("returns after completion onto a refetching todo list", async () => {
       })
     ).toBeTruthy()
   );
+  ;(api.getWorkflow as jest.Mock).mockResolvedValueOnce(collectWorkflow);
   await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
   await waitFor(() =>
     expect(screen.getByRole("header", { name: "Break it into smaller todos" })).toBeTruthy()
@@ -348,10 +352,12 @@ it("returns after completion onto a refetching todo list", async () => {
     screen.getByLabelText("Todo titles (one per line)"),
     "Send invitations\nBuy decorations"
   );
+  ;(api.getWorkflow as jest.Mock).mockResolvedValueOnce(reviewWorkflow);
   await fireEvent.press(screen.getByRole("button", { name: "Save tasks" }));
   await waitFor(() =>
     expect(screen.getByRole("header", { name: "Review your plan" })).toBeTruthy()
   );
+  ;(api.getWorkflow as jest.Mock).mockResolvedValueOnce(completedWorkflow);
   await fireEvent.press(screen.getByRole("button", { name: "Confirm plan" }));
   await waitFor(() =>
     expect(screen.getByRole("header", { name: "Plan complete" })).toBeTruthy()
