@@ -282,6 +282,48 @@ describe("session identity", () => {
     await fireEvent.press(screen.getByRole("button", { name: "Sign in" }));
   };
 
+  it("lets the latest login win when storage completions overlap", async () => {
+    const authApi = makeAuthApi();
+    authApi.login.mockResolvedValueOnce(sessionA).mockResolvedValueOnce(sessionB);
+    const storage = createMemoryTokenStorage();
+    const realSet = storage.set.bind(storage);
+    const pendingSets: (() => void)[] = [];
+    jest.spyOn(storage, "set").mockImplementation(
+      (token: string) =>
+        new Promise<void>((done) => {
+          pendingSets.push(() => {
+            void realSet(token).then(() => done());
+          });
+        }),
+    );
+    const client = createAppQueryClient();
+    const seededTodos = [{ id: "1", title: "Row", completed: false }];
+    client.setQueryData(["todos"], seededTodos);
+    await renderProvider({ authApi, storage, client });
+
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    await signInThroughForm("alice", "long-enough-password");
+    await signInThroughForm("bob", "long-enough-password");
+    expect(authApi.login).toHaveBeenCalledTimes(2);
+    // Completions serialize: the second login waits for the first
+    // persistence instead of racing it.
+    expect(pendingSets).toHaveLength(1);
+    await act(async () => {
+      pendingSets[0]();
+    });
+    await act(async () => {});
+    // The stale completion finished persisting but must not clear the
+    // cache or install its identity once superseded.
+    expect(client.getQueryData(["todos"])).toEqual(seededTodos);
+    expect(pendingSets).toHaveLength(2);
+    await act(async () => {
+      pendingSets[1]();
+    });
+    await act(async () => {});
+    expect(screen.getByText("Signed in as bob")).toBeTruthy();
+    expect(await storage.get()).toBe("tok-B");
+  });
+
   it("ignores a stale-token 401 after signing in as someone else", async () => {
     const authApi = makeAuthApi();
     authApi.login.mockResolvedValueOnce(sessionA).mockResolvedValueOnce(sessionB);

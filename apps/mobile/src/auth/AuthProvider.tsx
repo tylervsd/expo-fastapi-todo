@@ -68,6 +68,10 @@ export function AuthProvider({
   const liveRef = useRef<SessionIdentity | null>(null);
   const epochRef = useRef(0);
   const [sessionEpoch, setSessionEpoch] = useState(0);
+  // Serializes authentication completions in call order so overlapping
+  // logins persist their tokens deterministically (the latest call wins
+  // storage) and only the newest session touches cache and identity.
+  const completionChainRef = useRef<Promise<void>>(Promise.resolve());
 
   const bumpEpoch = useCallback(() => {
     epochRef.current += 1;
@@ -170,16 +174,30 @@ export function AuthProvider({
     [signingOut, cleanupSession]
   );
 
-  const handleAuthenticated = (session: Session) => {
-    if (signingOut) return;
+  const handleAuthenticated = (session: Session): Promise<void> => {
+    if (signingOut) return Promise.resolve();
     bumpEpoch();
-    void (async () => {
+    const capturedEpoch = epochRef.current;
+    const previous = completionChainRef.current;
+    const completion = (async () => {
+      await previous;
       await storage.set(session.token);
+      if (epochRef.current !== capturedEpoch) {
+        // Superseded by a newer login: completions persist in call order,
+        // so storage already holds the newer token. Leave cache, identity,
+        // and status to the winning session.
+        return;
+      }
       queryClient.clear();
       liveRef.current = { token: session.token, userId: session.user.id };
       setUser(session.user);
       setStatus("signed-in");
     })();
+    completionChainRef.current = completion.then(
+      () => undefined,
+      () => undefined,
+    );
+    return completionChainRef.current;
   };
 
   // eslint-disable-next-line react-hooks/refs -- both closures read identity at call time (query/event), never during render

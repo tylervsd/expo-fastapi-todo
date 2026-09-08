@@ -229,19 +229,111 @@ describe("pending workflow write store", () => {
     await expect(setup().clear(OWNER_A, REQUEST_A)).resolves.toBeUndefined();
   });
 
-  it("leaves a newer record alone when clearing a stale request ID", async () => {
+  it("rejects a second save with a different request ID and keeps the original", async () => {
     const store = setup();
     await store.save(startRecord());
-    await store.save({
+    await expect(
+      store.save({
+        version: 1,
+        ownerId: OWNER_A,
+        requestId: REQUEST_B,
+        operation: "start",
+        body: { request_id: REQUEST_B, title: "Second draft" },
+      }),
+    ).rejects.toThrow(/pending/i);
+    await expect(store.read(OWNER_A)).resolves.toEqual(startRecord());
+  });
+
+  it("allows re-saving the same request ID", async () => {
+    const store = setup();
+    await store.save(startRecord());
+    await expect(store.save(startRecord())).resolves.toBeUndefined();
+    await expect(store.read(OWNER_A)).resolves.toEqual(startRecord());
+  });
+
+  it("leaves the record alone when clearing a request ID that was never stored", async () => {
+    const store = setup();
+    await store.save(startRecord());
+    await store.clear(OWNER_A, REQUEST_B);
+    await expect(store.read(OWNER_A)).resolves.toEqual(startRecord());
+  });
+
+  it.each([["one", 1], ["eleven", 11]])(
+    "rejects a submit_tasks payload with %s titles on save",
+    async (_label, count) => {
+      const store = setup();
+      const titles = Array.from({ length: count as number }, (_, index) => `Task ${index + 1}`);
+      await expect(store.save(advanceRecord(titles))).rejects.toThrow();
+      await expect(store.read(OWNER_A)).resolves.toBeNull();
+    },
+  );
+
+  it("serializes a clear behind an in-flight save", async () => {
+    const backing = new Map<string, string>();
+    let releaseSet!: () => void;
+    const setGate = new Promise<void>((resolve) => {
+      releaseSet = resolve;
+    });
+    const removeItem = jest.fn(async (key: string) => {
+      backing.delete(key);
+    });
+    const store = createPendingWriteStore({
+      getItem: async (key) => backing.get(key) ?? null,
+      setItem: async (key, value) => {
+        await setGate;
+        backing.set(key, value);
+      },
+      removeItem,
+    });
+    const saving = store.save(startRecord());
+    const clearing = store.clear(OWNER_A, REQUEST_A);
+    // The clear must not run while the save is still persisting.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(removeItem).not.toHaveBeenCalled();
+    releaseSet();
+    await saving;
+    await clearing;
+    expect(removeItem).toHaveBeenCalledTimes(1);
+    await expect(store.read(OWNER_A)).resolves.toBeNull();
+  });
+
+  it("lets a newer save survive a concurrent stale clear", async () => {
+    const backing = new Map<string, string>([
+      [`todo.pending-workflow-write:${OWNER_A}`, JSON.stringify(startRecord())],
+    ]);
+    let releaseGet!: (value: string | null) => void;
+    const getGate = new Promise<string | null>((resolve) => {
+      releaseGet = resolve;
+    });
+    let getCalls = 0;
+    const staleBytes = JSON.stringify(startRecord());
+    const store = createPendingWriteStore({
+      getItem: async (key) => {
+        getCalls += 1;
+        if (getCalls === 1) return getGate;
+        return backing.get(key) ?? null;
+      },
+      setItem: async (key, value) => {
+        backing.set(key, value);
+      },
+      removeItem: async (key) => {
+        backing.delete(key);
+      },
+    });
+    const clearing = store.clear(OWNER_A, REQUEST_A);
+    const newer: PendingWorkflowWrite = {
       version: 1,
       ownerId: OWNER_A,
       requestId: REQUEST_B,
       operation: "start",
       body: { request_id: REQUEST_B, title: "Second draft" },
-    });
-    await store.clear(OWNER_A, REQUEST_A);
-    const loaded = await store.read(OWNER_A);
-    expect(loaded?.requestId).toBe(REQUEST_B);
+    };
+    const saving = store.save(newer);
+    releaseGet(staleBytes);
+    await clearing;
+    await saving;
+    await expect(store.read(OWNER_A)).resolves.toEqual(newer);
   });
 
   it("surfaces storage delete errors", async () => {

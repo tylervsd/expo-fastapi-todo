@@ -51,6 +51,45 @@ export const defaultUuidGenerator: UuidGenerator = () => Crypto.randomUUID();
 
 export const PENDING_WRITE_KEY_PREFIX = "todo.pending-workflow-write:";
 
+/**
+ * Mirrors backend workflow_domain.MIN/MAX_BREAKDOWN_TITLES. The server
+ * remains authoritative; the client refuses to persist a payload the
+ * server would reject so a durable retry can never carry it.
+ */
+const MIN_BREAKDOWN_TITLES = 2;
+const MAX_BREAKDOWN_TITLES = 10;
+
+/**
+ * Per-owner operation queue shared by every store over the same raw
+ * backend. Each owner's save/clear/read-back sequences run atomically
+ * with respect to other operations for that owner, so a clear can never
+ * slip between a save's write and its read-back and a mismatch cleanup
+ * can never delete a newer record. Different owners proceed independently.
+ */
+const ownerQueues = new WeakMap<RawPendingWriteStorage, Map<string, Promise<void>>>();
+
+function runOwnerExclusive<T>(
+  raw: RawPendingWriteStorage,
+  ownerId: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  let perOwner = ownerQueues.get(raw);
+  if (!perOwner) {
+    perOwner = new Map();
+    ownerQueues.set(raw, perOwner);
+  }
+  const previous = perOwner.get(ownerId) ?? Promise.resolve();
+  const result = previous.then(operation, operation);
+  perOwner.set(
+    ownerId,
+    result.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return result;
+}
+
 const pendingWriteKey = (ownerId: string): string =>
   `${PENDING_WRITE_KEY_PREFIX}${ownerId}`;
 
@@ -82,7 +121,8 @@ const isValidAction = (value: unknown): value is TodoWorkflowAction => {
       return (
         exactObject(record, ["action", "titles"]) &&
         Array.isArray(record.titles) &&
-        record.titles.length >= 1 &&
+        record.titles.length >= MIN_BREAKDOWN_TITLES &&
+        record.titles.length <= MAX_BREAKDOWN_TITLES &&
         record.titles.every(isCanonicalTitle)
       );
     case "confirm":
@@ -176,13 +216,55 @@ export function createPendingWriteStore(raw: RawPendingWriteStorage): PendingWri
       if (!isPendingWorkflowWrite(parsed) || parsed.ownerId !== ownerId) return null;
       return parsed;
     },
-    save: async (record: PendingWorkflowWrite) => {
-      assertValidRecord(record);
-      const key = pendingWriteKey(record.ownerId);
-      const serialized = JSON.stringify(record);
-      await raw.setItem(key, serialized);
-      const readBack = await raw.getItem(key);
-      if (readBack !== serialized) {
+    save: (record: PendingWorkflowWrite) =>
+      runOwnerExclusive(raw, record.ownerId, async () => {
+        assertValidRecord(record);
+        const key = pendingWriteKey(record.ownerId);
+        const serialized = JSON.stringify(record);
+        const existingRaw = await raw.getItem(key);
+        if (existingRaw !== null) {
+          let existing: unknown = null;
+          try {
+            existing = JSON.parse(existingRaw);
+          } catch {
+            existing = null;
+          }
+          if (
+            isPendingWorkflowWrite(existing) &&
+            existing.ownerId === record.ownerId &&
+            existing.requestId !== record.requestId
+          ) {
+            throw new PendingWriteStoreError(
+              "Another workflow write is still pending. Retry or discard it before sending a new one.",
+            );
+          }
+        }
+        await raw.setItem(key, serialized);
+        const readBack = await raw.getItem(key);
+        if (readBack === serialized) return;
+        // Recheck before any cleanup: the stored bytes may have changed
+        // since the write (transient platform read or an out-of-band
+        // write). A transient that resolved is a success; a valid newer
+        // record is left alone. Only garbage is removed best-effort.
+        const current = await raw.getItem(key);
+        if (current === serialized) return;
+        if (current !== null) {
+          let competing: unknown = null;
+          try {
+            competing = JSON.parse(current);
+          } catch {
+            competing = null;
+          }
+          if (
+            isPendingWorkflowWrite(competing) &&
+            competing.ownerId === record.ownerId &&
+            competing.requestId !== record.requestId
+          ) {
+            throw new PendingWriteStoreError(
+              "This device could not save a safe retry. The plan was not sent. Try again.",
+            );
+          }
+        }
         try {
           await raw.removeItem(key);
         } catch {
@@ -191,22 +273,22 @@ export function createPendingWriteStore(raw: RawPendingWriteStorage): PendingWri
         throw new PendingWriteStoreError(
           "This device could not save a safe retry. The plan was not sent. Try again.",
         );
-      }
-    },
-    clear: async (ownerId: string, requestId: string) => {
-      const key = pendingWriteKey(ownerId);
-      const stored = await raw.getItem(key);
-      if (stored === null) return;
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(stored);
-      } catch {
-        return;
-      }
-      if (!isPendingWorkflowWrite(parsed) || parsed.ownerId !== ownerId) return;
-      if (parsed.requestId !== requestId) return;
-      await raw.removeItem(key);
-    },
+      }),
+    clear: (ownerId: string, requestId: string) =>
+      runOwnerExclusive(raw, ownerId, async () => {
+        const key = pendingWriteKey(ownerId);
+        const stored = await raw.getItem(key);
+        if (stored === null) return;
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(stored);
+        } catch {
+          return;
+        }
+        if (!isPendingWorkflowWrite(parsed) || parsed.ownerId !== ownerId) return;
+        if (parsed.requestId !== requestId) return;
+        await raw.removeItem(key);
+      }),
   };
 }
 
