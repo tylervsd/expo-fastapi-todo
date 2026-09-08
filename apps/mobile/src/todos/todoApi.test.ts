@@ -509,6 +509,44 @@ describe("todo workflow transport", () => {
     });
   });
 
+  it.each([
+    [
+      "task breakdown",
+      {
+        ...assessWorkflow,
+        state: "COLLECT_TASKS",
+        context: { involves_multiple_steps: true, proposed_todo_titles: [] },
+        view: {
+          type: "task_breakdown" as const,
+          step_id: `${workflowId}:COLLECT_TASKS`,
+          title: "Break it down",
+          min_titles: 2,
+          max_titles: 10,
+        },
+      },
+    ],
+    [
+      "review",
+      {
+        ...assessWorkflow,
+        state: "REVIEW",
+        context: { involves_multiple_steps: false, proposed_todo_titles: ["Plan birthday party"] },
+        view: {
+          type: "review" as const,
+          step_id: `${workflowId}:REVIEW`,
+          title: "Review the plan",
+          proposed_titles: ["Plan birthday party"],
+        },
+      },
+    ],
+  ])("accepts a valid %s workflow view", async (_name, body) => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(200, body));
+
+    await expect(
+      getTodoWorkflow(workflowId, { apiUrl, token: "tok", fetchImpl })
+    ).resolves.toEqual(body);
+  });
+
   it("advances with exact action bodies", async () => {
     const fetchImpl = jest.fn().mockResolvedValue(response(200, completedWorkflow));
 
@@ -601,6 +639,56 @@ describe("todo workflow transport", () => {
     }],
   ])("rejects %s", async (_name, body) => {
     const fetchImpl = jest.fn().mockResolvedValue(response(200, body));
+    await expect(
+      getTodoWorkflow(workflowId, { apiUrl, token: "tok", fetchImpl })
+    ).rejects.toMatchObject({ kind: "invalid-data" });
+  });
+
+  it.each([
+    [
+      "breakdown with invalid bounds",
+      {
+        ...assessWorkflow,
+        state: "COLLECT_TASKS",
+        view: {
+          type: "task_breakdown",
+          step_id: `${workflowId}:COLLECT_TASKS`,
+          title: "Break it down",
+          min_titles: 10,
+          max_titles: 2,
+        },
+      },
+    ],
+    [
+      "review with noncanonical title",
+      {
+        ...assessWorkflow,
+        state: "REVIEW",
+        view: {
+          type: "review",
+          step_id: `${workflowId}:REVIEW`,
+          title: "Review the plan",
+          proposed_titles: [" Plan birthday party "],
+        },
+      },
+    ],
+    [
+      "review with an extra key",
+      {
+        ...assessWorkflow,
+        state: "REVIEW",
+        view: {
+          type: "review",
+          step_id: `${workflowId}:REVIEW`,
+          title: "Review the plan",
+          proposed_titles: ["Plan birthday party"],
+          extra: true,
+        },
+      },
+    ],
+  ])("rejects malformed %s view", async (_name, body) => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(200, body));
+
     await expect(
       getTodoWorkflow(workflowId, { apiUrl, token: "tok", fetchImpl })
     ).rejects.toMatchObject({ kind: "invalid-data" });

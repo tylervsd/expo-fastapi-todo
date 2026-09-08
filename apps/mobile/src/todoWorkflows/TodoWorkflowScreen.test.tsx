@@ -112,7 +112,7 @@ const assessWorkflow: TodoWorkflow = {
   view: {
     type: "yes_no",
     step_id: `${WORKFLOW_ID}:ASSESS_TASK`,
-    title: "Plan birthday party",
+    title: "Assessment title from the view",
     question: "Does this task involve multiple steps?",
     actions: [
       { id: "yes", label: "Yes" },
@@ -128,7 +128,7 @@ const offerWorkflow: TodoWorkflow = {
   view: {
     type: "yes_no",
     step_id: `${WORKFLOW_ID}:OFFER_BREAKDOWN`,
-    title: "Plan birthday party",
+    title: "Breakdown offer title from the view",
     question: "Would you like to split it into smaller todos?",
     actions: [
       { id: "yes", label: "Yes" },
@@ -407,6 +407,7 @@ it("uses the shared yes/no template for both questions", async () => {
   const api = makeApi();
   await renderHost(api);
   await startToAssess(api);
+  expect(screen.getByText("Assessment title from the view")).toBeTruthy();
   api.advanceWorkflow.mockResolvedValueOnce(offerWorkflow);
 
   await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
@@ -417,6 +418,7 @@ it("uses the shared yes/no template for both questions", async () => {
       })
     ).toBeTruthy()
   );
+  expect(screen.getByText("Breakdown offer title from the view")).toBeTruthy();
 
   api.advanceWorkflow.mockResolvedValueOnce(collectWorkflow);
   await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
@@ -1038,8 +1040,62 @@ it("renders an unsupported view without submitting", async () => {
   await fireEvent.changeText(screen.getByLabelText("Task title"), "Plan birthday party");
   await fireEvent.press(screen.getByRole("button", { name: "Start planning" }));
 
+  await waitFor(() => expect(screen.getByRole("header", { name: "Unsupported step" })).toBeTruthy());
   expect(screen.getByText("This planning step needs a newer app version.")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Back to todos" })).toBeTruthy();
   expect(screen.getByRole("button", { name: "Reload plan" })).toBeTruthy();
+  expect(mockControlFocus[mockControlFocus.length - 1]).toBe("Back to todos");
+  expect(api.advanceWorkflow).not.toHaveBeenCalled();
+});
+
+it("keeps one reload for an unsupported stale view through failed and working reloads", async () => {
+  const api = makeApi();
+  const { client } = await renderHost(api);
+  api.startWorkflow.mockResolvedValueOnce({
+    ...assessWorkflow,
+    state: "FUTURE_STATE",
+    view: {
+      type: "unsupported",
+      server_type: "future_template",
+      step_id: `${WORKFLOW_ID}:FUTURE_STATE`,
+    },
+  });
+  await fireEvent.changeText(screen.getByLabelText("Task title"), "Plan birthday party");
+  await fireEvent.press(screen.getByRole("button", { name: "Start planning" }));
+  await waitFor(() => expect(screen.getByRole("header", { name: "Unsupported step" })).toBeTruthy());
+
+  await act(async () => {
+    await client.invalidateQueries({
+      queryKey: workflowQueryKey(USER_ID, WORKFLOW_ID),
+      refetchType: "none",
+    });
+  });
+  await waitFor(() =>
+    expect(screen.getAllByRole("button", { name: "Reload plan" })).toHaveLength(1)
+  );
+
+  api.getWorkflow.mockRejectedValueOnce(
+    new TodoApiError("invalid-data", "The API returned invalid plan data.")
+  );
+  await fireEvent.press(screen.getAllByRole("button", { name: "Reload plan" })[0]);
+  await waitFor(() => expect(api.getWorkflow).toHaveBeenCalledTimes(1));
+  await waitFor(() =>
+    expect(client.getQueryState(workflowQueryKey(USER_ID, WORKFLOW_ID))?.fetchStatus).toBe("idle")
+  );
+  await waitFor(() =>
+    expect(screen.getAllByRole("button", { name: "Reload plan" })).toHaveLength(1)
+  );
+  expect(api.advanceWorkflow).not.toHaveBeenCalled();
+
+  api.getWorkflow.mockResolvedValueOnce(assessWorkflow);
+  await fireEvent.press(screen.getAllByRole("button", { name: "Reload plan" })[0]);
+  await waitFor(() => expect(api.getWorkflow).toHaveBeenCalledTimes(2));
+  await waitFor(() =>
+    expect(client.getQueryState(workflowQueryKey(USER_ID, WORKFLOW_ID))?.fetchStatus).toBe("idle")
+  );
+  await waitFor(() =>
+    expect(screen.getByRole("header", { name: "Does this task involve multiple steps?" })).toBeTruthy()
+  );
+  expect(screen.queryAllByRole("button", { name: "Reload plan" })).toHaveLength(0);
   expect(api.advanceWorkflow).not.toHaveBeenCalled();
 });

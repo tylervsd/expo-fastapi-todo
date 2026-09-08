@@ -286,7 +286,7 @@ export function TodoWorkflowScreen({
     writeError !== null && (!writeError.lock || !fresh);
   const alert = localError ?? (showWriteError && writeError ? writeError.message : null);
 
-  const reloadVisible = hasData && isStale && !isFetching;
+  const reloadVisible = hasData && isStale && !isFetching && view?.type !== "unsupported";
 
   const renderView = () => {
     if (view === undefined) {
@@ -354,7 +354,14 @@ export function TodoWorkflowScreen({
         return <Template key={view.step_id} view={view} onExit={onExit} backRef={backButton} />;
       }
       case "unsupported":
-        return <UnsupportedTemplate key={view.step_id} onExit={onExit} onReload={reload} />;
+        return (
+          <UnsupportedTemplate
+            key={view.step_id}
+            onExit={onExit}
+            onReload={reload}
+            backRef={backButton}
+          />
+        );
     }
   };
 
@@ -472,6 +479,7 @@ function YesNoTemplate({
 }) {
   return (
     <View style={styles.screen}>
+      <Text style={styles.fieldLabel}>{view.title}</Text>
       <Text accessibilityRole="header" accessibilityLiveRegion="polite" style={styles.heading}>
         {view.question}
       </Text>
@@ -659,9 +667,11 @@ function CompletionTemplate({
 function UnsupportedTemplate({
   onExit,
   onReload,
+  backRef,
 }: {
   onExit: () => void;
   onReload: () => void;
+  backRef: ControlRef;
 }) {
   return (
     <View style={styles.screen}>
@@ -670,6 +680,7 @@ function UnsupportedTemplate({
       </Text>
       <Text style={styles.empty}>This planning step needs a newer app version.</Text>
       <Pressable
+        ref={backRef}
         accessibilityRole="button"
         accessibilityLabel="Back to todos"
         style={styles.refreshButton}
