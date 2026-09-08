@@ -7,8 +7,8 @@ import { TodoApiError, type TodoWorkflow } from "../todos/todoApi";
 import {
   TodoWorkflowScreen,
   workflowQueryKey,
-  type TodoWorkflowScreenApi,
 } from "./TodoWorkflowScreen";
+import type { TodoWorkflowScreenApi } from "../auth/authenticatedApi";
 
 const mockInputFocus = jest.fn();
 const mockControlFocus: (unknown[] | undefined)[] = [];
@@ -82,12 +82,14 @@ type MockWorkflowApi = {
   startWorkflow: jest.MockedFunction<TodoWorkflowScreenApi["startWorkflow"]>;
   getWorkflow: jest.MockedFunction<TodoWorkflowScreenApi["getWorkflow"]>;
   advanceWorkflow: jest.MockedFunction<TodoWorkflowScreenApi["advanceWorkflow"]>;
+  listWorkflows: jest.MockedFunction<TodoWorkflowScreenApi["listWorkflows"]>;
 };
 
 const makeApi = (): MockWorkflowApi => ({
   startWorkflow: jest.fn() as MockWorkflowApi["startWorkflow"],
   getWorkflow: jest.fn() as MockWorkflowApi["getWorkflow"],
   advanceWorkflow: jest.fn() as MockWorkflowApi["advanceWorkflow"],
+  listWorkflows: jest.fn() as MockWorkflowApi["listWorkflows"],
 });
 
 const deferred = <T,>() => {
@@ -105,6 +107,9 @@ const USER_ID = "user-1";
 
 const assessWorkflow: TodoWorkflow = {
   workflow_id: WORKFLOW_ID,
+  revision: 0,
+  definition_version: 1,
+  view_contract_version: 1,
   state: "ASSESS_TASK",
   title: "Plan birthday party",
   context: { involves_multiple_steps: null, proposed_todo_titles: [] },
@@ -123,6 +128,7 @@ const assessWorkflow: TodoWorkflow = {
 
 const offerWorkflow: TodoWorkflow = {
   ...assessWorkflow,
+  revision: 1,
   state: "OFFER_BREAKDOWN",
   context: { involves_multiple_steps: true, proposed_todo_titles: [] },
   view: {
@@ -139,6 +145,7 @@ const offerWorkflow: TodoWorkflow = {
 
 const collectWorkflow: TodoWorkflow = {
   ...assessWorkflow,
+  revision: 2,
   state: "COLLECT_TASKS",
   context: { involves_multiple_steps: true, proposed_todo_titles: [] },
   view: {
@@ -152,6 +159,7 @@ const collectWorkflow: TodoWorkflow = {
 
 const reviewWorkflow: TodoWorkflow = {
   ...assessWorkflow,
+  revision: 3,
   state: "REVIEW",
   context: {
     involves_multiple_steps: true,
@@ -167,6 +175,7 @@ const reviewWorkflow: TodoWorkflow = {
 
 const completedWorkflow: TodoWorkflow = {
   ...reviewWorkflow,
+  revision: 4,
   state: "COMPLETED",
   result: {
     created_todos: [
@@ -214,6 +223,7 @@ const completedWorkflow: TodoWorkflow = {
 
 const cancelledWorkflow: TodoWorkflow = {
   ...assessWorkflow,
+  revision: 1,
   state: "CANCELLED",
   view: {
     type: "completion",
@@ -447,6 +457,7 @@ it("answers No in offer and renders the server-returned review", async () => {
 
   const declined: TodoWorkflow = {
     ...offerWorkflow,
+    revision: 2,
     state: "REVIEW",
     context: {
       involves_multiple_steps: true,
@@ -486,6 +497,7 @@ it("answers No and renders the returned review", async () => {
 
   const noReview: TodoWorkflow = {
     ...assessWorkflow,
+    revision: 1,
     state: "REVIEW",
     context: { involves_multiple_steps: false, proposed_todo_titles: ["Plan birthday party"] },
     view: {

@@ -69,6 +69,9 @@ const todo = (id: string, title: string): Todo => ({ id, title, completed: false
 
 const assessWorkflow: TodoWorkflow = {
   workflow_id: WORKFLOW_ID,
+  revision: 0,
+  definition_version: 1,
+  view_contract_version: 1,
   state: "ASSESS_TASK",
   title: "Plan birthday party",
   context: { involves_multiple_steps: null, proposed_todo_titles: [] },
@@ -87,6 +90,7 @@ const assessWorkflow: TodoWorkflow = {
 
 const cancelledWorkflow: TodoWorkflow = {
   ...assessWorkflow,
+  revision: 1,
   state: "CANCELLED",
   view: {
     type: "completion",
@@ -231,6 +235,7 @@ it("returns to todos after cancel", async () => {
 it("returns after completion onto a refetching todo list", async () => {
   const offerWorkflow: TodoWorkflow = {
     ...assessWorkflow,
+    revision: 1,
     state: "OFFER_BREAKDOWN",
     context: { involves_multiple_steps: true, proposed_todo_titles: [] },
     view: {
@@ -246,6 +251,7 @@ it("returns after completion onto a refetching todo list", async () => {
   };
   const collectWorkflow: TodoWorkflow = {
     ...assessWorkflow,
+    revision: 2,
     state: "COLLECT_TASKS",
     context: { involves_multiple_steps: true, proposed_todo_titles: [] },
     view: {
@@ -258,6 +264,7 @@ it("returns after completion onto a refetching todo list", async () => {
   };
   const reviewWorkflow: TodoWorkflow = {
     ...assessWorkflow,
+    revision: 3,
     state: "REVIEW",
     context: {
       involves_multiple_steps: true,
@@ -272,6 +279,7 @@ it("returns after completion onto a refetching todo list", async () => {
   };
   const completedWorkflow: TodoWorkflow = {
     ...reviewWorkflow,
+    revision: 4,
     state: "COMPLETED",
     result: {
       created_todos: [

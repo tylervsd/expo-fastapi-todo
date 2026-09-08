@@ -12,10 +12,19 @@ export type TodoApiErrorKind =
   | "auth-required"
   | "conflict";
 
+export type WorkflowConflictCode =
+  | "stale_step"
+  | "request_id_reused"
+  | "invalid_action"
+  | "terminal_workflow"
+  | "unsupported_workflow_definition"
+  | "revision_exhausted";
+
 export class TodoApiError extends Error {
   constructor(
     readonly kind: TodoApiErrorKind,
     message: string,
+    readonly conflictCode?: WorkflowConflictCode,
   ) {
     super(message);
     this.name = "TodoApiError";
@@ -41,11 +50,19 @@ type TodoOperation =
   | "me"
   | "start-workflow"
   | "get-workflow"
-  | "advance-workflow";
+  | "advance-workflow"
+  | "list-workflows";
 type RequestBody =
   | { title: string }
   | { completed: boolean }
   | { username: string; password: string }
+  | { request_id: string; title: string }
+  | {
+      request_id: string;
+      expected_revision: number;
+      step_id: string;
+      action: TodoWorkflowAction;
+    }
   | { action: "answer_multiple_steps"; answer: boolean }
   | { action: "submit_tasks"; titles: string[] }
   | { action: "confirm" }
@@ -121,9 +138,51 @@ const operationMessages: Record<
     validation: "Check the plan details and try again.",
     authRequired: "Please sign in again.",
   },
+  "list-workflows": {
+    unavailable: "Could not load saved plans.",
+    invalidData: "The API returned invalid plan data.",
+    validation: "Check the plan details and try again.",
+    authRequired: "Please sign in again.",
+  },
 };
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const workflowOperations: ReadonlySet<TodoOperation> = new Set([
+  "start-workflow",
+  "get-workflow",
+  "advance-workflow",
+  "list-workflows",
+]);
+
+const workflowConflictMessages: Record<WorkflowConflictCode, string> = {
+  stale_step: "This plan changed. Reload it and try again.",
+  request_id_reused: "This request ID was already used with different details.",
+  invalid_action: "Action is not valid for the current workflow state.",
+  terminal_workflow: "Todo workflow is already terminal.",
+  unsupported_workflow_definition: "This plan uses an unsupported workflow definition.",
+  revision_exhausted: "This plan has reached its revision limit.",
+};
+
+function parseWorkflowConflictCode(value: unknown): WorkflowConflictCode | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const detail = (value as Record<string, unknown>).detail;
+  if (typeof detail !== "object" || detail === null || Array.isArray(detail)) {
+    return undefined;
+  }
+  const code = (detail as Record<string, unknown>).code;
+  switch (code) {
+    case "stale_step":
+    case "request_id_reused":
+    case "invalid_action":
+    case "terminal_workflow":
+    case "unsupported_workflow_definition":
+    case "revision_exhausted":
+      return code;
+    default:
+      return undefined;
+  }
+}
 
 export function normalizeTodoTitle(input: string): string | null {
   if (typeof input !== "string") return null;
@@ -240,15 +299,34 @@ function requestJson(
         const result = await (options.fetchImpl ?? fetch)(url, request);
         if (settled) return;
         if (result.status !== expectedStatus) {
+          if (result.status === 409 && workflowOperations.has(operation)) {
+            let code: WorkflowConflictCode | undefined;
+            try {
+              code = parseWorkflowConflictCode(await result.json());
+            } catch {
+              code = undefined;
+            }
+            if (settled) return;
+            finish(
+              code === undefined
+                ? new TodoApiError("conflict", "The plan changed. Reload to continue.")
+                : new TodoApiError("conflict", workflowConflictMessages[code], code)
+            );
+            controller.abort();
+            return;
+          }
           const error = result.status === 422
             ? new TodoApiError("validation", operationMessages[operation].validation)
             : result.status === 401
               ? new TodoApiError("auth-required", operationMessages[operation].authRequired)
               : result.status === 409
                 ? new TodoApiError("conflict", "The plan changed. Reload to continue.")
-                : (operation === "update" || operation === "delete") && result.status === 404
-                  ? new TodoApiError("not-found", "That todo no longer exists. Refresh the list.")
-                  : new TodoApiError("unavailable", operationMessages[operation].unavailable);
+                : (operation === "get-workflow" || operation === "advance-workflow") &&
+                    result.status === 404
+                  ? new TodoApiError("not-found", "That plan no longer exists. Refresh the list.")
+                  : (operation === "update" || operation === "delete") && result.status === 404
+                    ? new TodoApiError("not-found", "That todo no longer exists. Refresh the list.")
+                    : new TodoApiError("unavailable", operationMessages[operation].unavailable);
           finish(error);
           controller.abort();
           return;
@@ -397,8 +475,13 @@ export async function fetchMe(options: TodoRequestOptions = {}): Promise<AuthUse
 
 export type TodoWorkflowState = string;
 
-export type TodoWorkflow = {
+export const MAX_WORKFLOW_REVISION = 2147483647;
+
+export type KnownTodoWorkflow = {
   workflow_id: string;
+  revision: number;
+  definition_version: 1;
+  view_contract_version: 1;
   state: TodoWorkflowState;
   title: string;
   context: {
@@ -407,6 +490,29 @@ export type TodoWorkflow = {
   };
   result: { created_todos: Todo[] } | null;
   view: TodoWorkflowView;
+};
+
+export type UnsupportedContractWorkflow = {
+  workflow_id: string;
+  revision: number;
+  definition_version: number;
+  view_contract_version: number;
+  view: {
+    type: "unsupported";
+    server_type: string;
+    step_id: string;
+  };
+};
+
+export type TodoWorkflow = KnownTodoWorkflow | UnsupportedContractWorkflow;
+
+export type WorkflowStartRequest = { request_id: string; title: string };
+
+export type WorkflowActionRequest = {
+  request_id: string;
+  expected_revision: number;
+  step_id: string;
+  action: TodoWorkflowAction;
 };
 
 export type TodoWorkflowAction =
@@ -511,13 +617,66 @@ function parseWorkflowView(
   }
 }
 
-function parseTodoWorkflow(value: unknown): TodoWorkflow | null {
-  if (!exactObject(value, ["workflow_id", "state", "title", "context", "result", "view"])) {
+type WorkflowMetadata = {
+  workflow_id: string;
+  revision: number;
+  definition_version: number;
+  view_contract_version: number;
+};
+
+function parseWorkflowMetadata(value: unknown): WorkflowMetadata | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const { workflow_id, revision, definition_version, view_contract_version } = record;
+  if (typeof workflow_id !== "string" || !uuidPattern.test(workflow_id)) return null;
+  if (
+    !Number.isInteger(revision) ||
+    (revision as number) < 0 ||
+    (revision as number) > MAX_WORKFLOW_REVISION
+  ) {
+    return null;
+  }
+  if (!Number.isSafeInteger(definition_version) || (definition_version as number) < 1) {
     return null;
   }
   if (
-    typeof value.workflow_id !== "string" ||
-    !uuidPattern.test(value.workflow_id) ||
+    !Number.isSafeInteger(view_contract_version) ||
+    (view_contract_version as number) < 1
+  ) {
+    return null;
+  }
+  return {
+    workflow_id,
+    revision: revision as number,
+    definition_version: definition_version as number,
+    view_contract_version: view_contract_version as number,
+  };
+}
+
+function parseTodoWorkflow(value: unknown): TodoWorkflow | null {
+  const metadata = parseWorkflowMetadata(value);
+  if (metadata === null) return null;
+  if (
+    metadata.view_contract_version !== 1 ||
+    metadata.definition_version !== 1
+  ) {
+    if (metadata.view_contract_version === 1) return null;
+    return {
+      workflow_id: metadata.workflow_id,
+      revision: metadata.revision,
+      definition_version: metadata.definition_version,
+      view_contract_version: metadata.view_contract_version,
+      view: {
+        type: "unsupported",
+        server_type: `contract:${metadata.view_contract_version}`,
+        step_id: `${metadata.workflow_id}:unsupported-contract:${metadata.view_contract_version}`,
+      },
+    };
+  }
+  if (!exactObject(value, ["workflow_id", "revision", "definition_version", "view_contract_version", "state", "title", "context", "result", "view"])) {
+    return null;
+  }
+  if (
     typeof value.state !== "string" ||
     value.state.length === 0 ||
     !isCanonicalTitle(value.title) ||
@@ -536,7 +695,7 @@ function parseTodoWorkflow(value: unknown): TodoWorkflow | null {
     return null;
   }
 
-  let result: TodoWorkflow["result"] = null;
+  let result: KnownTodoWorkflow["result"] = null;
   if (value.result !== null) {
     if (!exactObject(value.result, ["created_todos"])) return null;
     if (!Array.isArray(value.result.created_todos) || !value.result.created_todos.every(isTodo)) {
@@ -551,7 +710,10 @@ function parseTodoWorkflow(value: unknown): TodoWorkflow | null {
   );
   if (view === null) return null;
   return {
-    workflow_id: value.workflow_id,
+    workflow_id: metadata.workflow_id,
+    revision: metadata.revision,
+    definition_version: 1,
+    view_contract_version: 1,
     state: value.state,
     title: value.title,
     context: {
@@ -563,21 +725,8 @@ function parseTodoWorkflow(value: unknown): TodoWorkflow | null {
   };
 }
 
-function workflowActionBody(action: TodoWorkflowAction): RequestBody {
-  switch (action.action) {
-    case "answer_multiple_steps":
-      return { action: "answer_multiple_steps", answer: action.answer };
-    case "submit_tasks":
-      return { action: "submit_tasks", titles: action.titles };
-    case "confirm":
-      return { action: "confirm" };
-    case "cancel":
-      return { action: "cancel" };
-  }
-}
-
 export async function startTodoWorkflow(
-  title: string,
+  request: WorkflowStartRequest,
   options: TodoRequestOptions = {}
 ): Promise<TodoWorkflow> {
   const body = await requestJson(
@@ -586,7 +735,7 @@ export async function startTodoWorkflow(
     201,
     "start-workflow",
     options,
-    { title }
+    { request_id: request.request_id, title: request.title }
   );
   const parsed = parseTodoWorkflow(body);
   if (parsed === null) {
@@ -609,7 +758,7 @@ export async function getTodoWorkflow(
 
 export async function advanceTodoWorkflow(
   id: string,
-  action: TodoWorkflowAction,
+  request: WorkflowActionRequest,
   options: TodoRequestOptions = {}
 ): Promise<TodoWorkflow> {
   const body = await requestJson(
@@ -618,11 +767,40 @@ export async function advanceTodoWorkflow(
     200,
     "advance-workflow",
     options,
-    workflowActionBody(action)
+    {
+      request_id: request.request_id,
+      expected_revision: request.expected_revision,
+      step_id: request.step_id,
+      action: request.action,
+    }
   );
   const parsed = parseTodoWorkflow(body);
   if (parsed === null) {
     throw new TodoApiError("invalid-data", operationMessages["advance-workflow"].invalidData);
   }
   return parsed;
+}
+
+export async function listTodoWorkflows(
+  options: TodoRequestOptions = {}
+): Promise<{ items: TodoWorkflow[] }> {
+  const body = await requestJson(
+    "/todo-workflows?status=active",
+    "GET",
+    200,
+    "list-workflows",
+    options
+  );
+  if (!exactObject(body, ["items"]) || !Array.isArray(body.items)) {
+    throw new TodoApiError("invalid-data", operationMessages["list-workflows"].invalidData);
+  }
+  const items: TodoWorkflow[] = [];
+  for (const item of body.items) {
+    const parsed = parseTodoWorkflow(item);
+    if (parsed === null) {
+      throw new TodoApiError("invalid-data", operationMessages["list-workflows"].invalidData);
+    }
+    items.push(parsed);
+  }
+  return { items };
 }

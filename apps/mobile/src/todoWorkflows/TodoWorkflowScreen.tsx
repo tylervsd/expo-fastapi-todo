@@ -18,15 +18,7 @@ import {
   type TodoWorkflow,
   type TodoWorkflowAction,
 } from "../todos/todoApi";
-
-export type TodoWorkflowScreenApi = {
-  startWorkflow: (title: string) => Promise<TodoWorkflow>;
-  getWorkflow: (
-    id: string,
-    options: { signal: AbortSignal }
-  ) => Promise<TodoWorkflow>;
-  advanceWorkflow: (id: string, action: TodoWorkflowAction) => Promise<TodoWorkflow>;
-};
+import type { TodoWorkflowScreenApi } from "../auth/authenticatedApi";
 
 export function workflowQueryKey(userId: string, workflowId: string) {
   return ["todo-workflow", userId, workflowId] as const;

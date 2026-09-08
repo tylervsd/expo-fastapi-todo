@@ -92,6 +92,7 @@ const makeTransport = (): TodoTransport & {
   startTodoWorkflow: jest.fn(),
   getTodoWorkflow: jest.fn(),
   advanceTodoWorkflow: jest.fn(),
+  listTodoWorkflows: jest.fn(),
 });
 
 const renderProvider = async (options?: {
@@ -369,6 +370,9 @@ describe("workflow shell integration", () => {
   };
   const assessWorkflow = {
     workflow_id: WORKFLOW_ID,
+    revision: 0,
+    definition_version: 1,
+    view_contract_version: 1,
     state: "ASSESS_TASK",
     title: "Plan birthday party",
     context: { involves_multiple_steps: null, proposed_todo_titles: [] },

@@ -4,6 +4,7 @@ import {
   deleteTodo,
   fetchMe,
   getTodoWorkflow,
+  listTodoWorkflows,
   listTodos,
   login,
   logout,
@@ -13,6 +14,7 @@ import {
   signup,
   startTodoWorkflow,
   TodoApiError,
+  type WorkflowConflictCode,
 } from "./todoApi";
 
 const apiUrl = "http://127.0.0.1:8000";
@@ -441,6 +443,7 @@ describe("auth transport", () => {
 
 describe("todo workflow transport", () => {
   const workflowId = "6fc33b84-16a8-4d8e-ae94-fc50bb457d72";
+  const requestId = "30bfb542-17f1-48a0-9fd8-3930379d5974";
   const assessView = {
     type: "yes_no" as const,
     step_id: `${workflowId}:ASSESS_TASK`,
@@ -453,6 +456,9 @@ describe("todo workflow transport", () => {
   };
   const assessWorkflow = {
     workflow_id: workflowId,
+    revision: 0,
+    definition_version: 1,
+    view_contract_version: 1,
     state: "ASSESS_TASK",
     title: "Plan birthday party",
     context: { involves_multiple_steps: null, proposed_todo_titles: [] },
@@ -461,6 +467,9 @@ describe("todo workflow transport", () => {
   };
   const completedWorkflow = {
     workflow_id: workflowId,
+    revision: 2,
+    definition_version: 1,
+    view_contract_version: 1,
     state: "COMPLETED",
     title: "Plan birthday party",
     context: {
@@ -482,16 +491,18 @@ describe("todo workflow transport", () => {
       ],
     },
   };
-  it("starts a workflow with an exact POST request", async () => {
+  const startRequest = { request_id: requestId, title: "Plan birthday party" };
+
+  it("starts a workflow with an exact request envelope", async () => {
     const fetchImpl = jest.fn().mockResolvedValue(response(201, assessWorkflow));
 
     await expect(
-      startTodoWorkflow("Plan birthday party", { apiUrl, token: "tok", fetchImpl })
+      startTodoWorkflow(startRequest, { apiUrl, token: "tok", fetchImpl })
     ).resolves.toEqual(assessWorkflow);
     expect(fetchImpl).toHaveBeenCalledWith(`${apiUrl}/todo-workflows`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: "Bearer tok" },
-      body: JSON.stringify({ title: "Plan birthday party" }),
+      body: JSON.stringify({ request_id: requestId, title: "Plan birthday party" }),
       signal: expect.any(AbortSignal),
     });
   });
@@ -530,7 +541,6 @@ describe("todo workflow transport", () => {
       {
         ...assessWorkflow,
         state: "REVIEW",
-        context: { involves_multiple_steps: false, proposed_todo_titles: ["Plan birthday party"] },
         view: {
           type: "review" as const,
           step_id: `${workflowId}:REVIEW`,
@@ -547,21 +557,79 @@ describe("todo workflow transport", () => {
     ).resolves.toEqual(body);
   });
 
-  it("advances with exact action bodies", async () => {
+  it("advances with the exact nested action envelope", async () => {
+    const actionRequestId = "f019129d-1936-4a5d-9de8-3da5aa01ccb1";
     const fetchImpl = jest.fn().mockResolvedValue(response(200, completedWorkflow));
 
     await expect(
-      advanceTodoWorkflow(workflowId, { action: "confirm" }, { apiUrl, token: "tok", fetchImpl })
+      advanceTodoWorkflow(
+        workflowId,
+        {
+          request_id: actionRequestId,
+          expected_revision: 2,
+          step_id: `${workflowId}:COLLECT_TASKS`,
+          action: { action: "submit_tasks", titles: ["Invite guests", "Buy cake"] },
+        },
+        { apiUrl, token: "tok", fetchImpl }
+      )
     ).resolves.toEqual(completedWorkflow);
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toEqual({
+      request_id: actionRequestId,
+      expected_revision: 2,
+      step_id: `${workflowId}:COLLECT_TASKS`,
+      action: { action: "submit_tasks", titles: ["Invite guests", "Buy cake"] },
+    });
     expect(fetchImpl).toHaveBeenCalledWith(
       `${apiUrl}/todo-workflows/${workflowId}/actions`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: "Bearer tok" },
-        body: JSON.stringify({ action: "confirm" }),
+        body: expect.any(String),
         signal: expect.any(AbortSignal),
       }
     );
+  });
+
+  it("lists active workflows with an exact discovery request", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(200, { items: [assessWorkflow] }));
+
+    await expect(listTodoWorkflows({ apiUrl, token: "tok", fetchImpl })).resolves.toEqual({
+      items: [assessWorkflow],
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(`${apiUrl}/todo-workflows?status=active`, {
+      method: "GET",
+      headers: { Authorization: "Bearer tok" },
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it.each([
+    ["missing items", {}],
+    ["non-array items", { items: assessWorkflow }],
+    ["malformed item", { items: [{ ...assessWorkflow, revision: "zero" }] }],
+    ["extra envelope key", { items: [], extra: true }],
+  ])("rejects %s discovery bodies as invalid-data", async (_case, body) => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(200, body));
+
+    const pending = listTodoWorkflows({ apiUrl, token: "tok", fetchImpl });
+    await expect(pending).rejects.toMatchObject({ kind: "invalid-data" });
+    await expect(pending).rejects.not.toMatchObject({
+      message: expect.stringContaining("birthday"),
+    });
+  });
+
+  it("relays caller cancellation on discovery GET", async () => {
+    const controller = new AbortController();
+    const fetchImpl = jest.fn(() => new Promise<Response>(() => undefined));
+    const pending = listTodoWorkflows({
+      apiUrl,
+      token: "tok",
+      signal: controller.signal,
+      fetchImpl,
+    });
+
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
   });
 
   it("relays caller cancellation on workflow GET", async () => {
@@ -601,7 +669,86 @@ describe("todo workflow transport", () => {
     });
   });
 
-  it("accepts an opaque state and normalizes an unknown view", async () => {
+  it.each([
+    ["missing revision", { ...assessWorkflow, revision: undefined }],
+    ["missing definition version", { ...assessWorkflow, definition_version: undefined }],
+    ["missing view contract version", { ...assessWorkflow, view_contract_version: undefined }],
+  ])("rejects workflow bodies with %s as invalid-data", async (_case, body) => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(200, body));
+
+    await expect(
+      getTodoWorkflow(workflowId, { apiUrl, token: "tok", fetchImpl })
+    ).rejects.toMatchObject({ kind: "invalid-data" });
+  });
+
+  it.each([
+    ["float revision", 1.5],
+    ["string revision", "1"],
+    ["negative revision", -1],
+    ["exhausted-plus-one revision", 2147483648],
+    ["boolean revision", true],
+  ])("rejects %s as invalid-data", async (_name, revision) => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(200, { ...assessWorkflow, revision }));
+
+    await expect(
+      getTodoWorkflow(workflowId, { apiUrl, token: "tok", fetchImpl })
+    ).rejects.toMatchObject({ kind: "invalid-data" });
+  });
+
+  it.each([
+    ["zero view contract version", 0],
+    ["string view contract version", "1"],
+    ["float view contract version", 1.5],
+  ])("rejects %s as invalid-data", async (_name, view_contract_version) => {
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValue(response(200, { ...assessWorkflow, view_contract_version }));
+
+    await expect(
+      getTodoWorkflow(workflowId, { apiUrl, token: "tok", fetchImpl })
+    ).rejects.toMatchObject({ kind: "invalid-data" });
+  });
+
+  it("returns a metadata-only member for an unknown view contract", async () => {
+    const body = {
+      workflow_id: workflowId,
+      revision: 4,
+      definition_version: 1,
+      view_contract_version: 2,
+      state: "FUTURE_STATE",
+      title: "Unknowable",
+      context: { involves_multiple_steps: true, proposed_todo_titles: ["X"] },
+      result: null,
+      view: { type: "future", step_id: `${workflowId}:FUTURE_STATE` },
+    };
+    const fetchImpl = jest.fn().mockResolvedValue(response(200, body));
+
+    await expect(
+      getTodoWorkflow(workflowId, { apiUrl, token: "tok", fetchImpl })
+    ).resolves.toEqual({
+      workflow_id: workflowId,
+      revision: 4,
+      definition_version: 1,
+      view_contract_version: 2,
+      view: {
+        type: "unsupported",
+        server_type: "contract:2",
+        step_id: `${workflowId}:unsupported-contract:2`,
+      },
+    });
+  });
+
+  it("rejects an unknown definition version under contract 1 as invalid-data", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(
+      response(200, { ...assessWorkflow, definition_version: 2 })
+    );
+
+    await expect(
+      getTodoWorkflow(workflowId, { apiUrl, token: "tok", fetchImpl })
+    ).rejects.toMatchObject({ kind: "invalid-data" });
+  });
+
+  it("accepts an opaque state and normalizes an unknown version-1 view", async () => {
     const body = {
       ...assessWorkflow,
       state: "FUTURE_STATE",
@@ -723,6 +870,18 @@ describe("todo workflow transport", () => {
     ).rejects.toEqual(new TodoApiError("auth-required", "Please sign in again."));
   });
 
+  it("maps a missing workflow GET to safe not-found copy", async () => {
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValue(response(404, { detail: "Todo workflow not found." }));
+
+    const pending = getTodoWorkflow(workflowId, { apiUrl, token: "tok", fetchImpl });
+    await expect(pending).rejects.toMatchObject({ kind: "not-found" });
+    await expect(pending).rejects.not.toMatchObject({
+      message: expect.stringContaining("Todo workflow"),
+    });
+  });
+
   it("maps workflow 409 to conflict without leaking", async () => {
     const fetchImpl = jest
       .fn()
@@ -730,7 +889,12 @@ describe("todo workflow transport", () => {
 
     const pending = advanceTodoWorkflow(
       workflowId,
-      { action: "confirm" },
+      {
+        request_id: requestId,
+        expected_revision: 0,
+        step_id: `${workflowId}:ASSESS_TASK`,
+        action: { action: "confirm" },
+      },
       { apiUrl, token: "tok", fetchImpl }
     );
     await expect(pending).rejects.toMatchObject({ kind: "conflict" });
@@ -739,11 +903,56 @@ describe("todo workflow transport", () => {
     });
   });
 
+  const conflictCases: [WorkflowConflictCode, string][] = [
+    ["stale_step", "This plan changed. Reload it and try again."],
+    ["request_id_reused", "This request ID was already used with different details."],
+    ["invalid_action", "Action is not valid for the current workflow state."],
+    ["terminal_workflow", "Todo workflow is already terminal."],
+    ["unsupported_workflow_definition", "This plan uses an unsupported workflow definition."],
+    ["revision_exhausted", "This plan has reached its revision limit."],
+  ];
+  it.each(conflictCases)("maps conflict code %s to its typed copy", async (code, message) => {
+    const fetchImpl = jest.fn().mockResolvedValue(
+      response(409, { detail: { code, message: `server says ${code} loudly` } })
+    );
+
+    const pending = advanceTodoWorkflow(
+      workflowId,
+      {
+        request_id: requestId,
+        expected_revision: 0,
+        step_id: `${workflowId}:ASSESS_TASK`,
+        action: { action: "confirm" },
+      },
+      { apiUrl, token: "tok", fetchImpl }
+    );
+    await expect(pending).rejects.toMatchObject({ kind: "conflict", conflictCode: code });
+    await expect(pending).rejects.toEqual(new TodoApiError("conflict", message, code));
+    await expect(pending).rejects.not.toMatchObject({
+      message: expect.stringContaining("loudly"),
+    });
+  });
+
+  it("maps an unknown conflict code to the generic conflict copy", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(
+      response(409, { detail: { code: "future_code", message: "secret future" } })
+    );
+
+    const pending = getTodoWorkflow(workflowId, { apiUrl, token: "tok", fetchImpl });
+    await expect(pending).rejects.toMatchObject({ kind: "conflict" });
+    const error = await pending.catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(TodoApiError);
+    expect((error as TodoApiError).conflictCode).toBeUndefined();
+    await expect(pending).rejects.not.toMatchObject({
+      message: expect.stringContaining("secret"),
+    });
+  });
+
   it("maps workflow 422 to the safe validation copy", async () => {
     const fetchImpl = jest.fn().mockResolvedValue(response(422, { detail: "x" }));
 
     await expect(
-      startTodoWorkflow("", { apiUrl, token: "tok", fetchImpl })
+      startTodoWorkflow(startRequest, { apiUrl, token: "tok", fetchImpl })
     ).rejects.toEqual(
       new TodoApiError("validation", "Check the plan details and try again.")
     );
@@ -754,7 +963,12 @@ describe("todo workflow transport", () => {
 
     const pending = advanceTodoWorkflow(
       workflowId,
-      { action: "cancel" },
+      {
+        request_id: requestId,
+        expected_revision: 0,
+        step_id: `${workflowId}:ASSESS_TASK`,
+        action: { action: "cancel" },
+      },
       { apiUrl, token: "tok", fetchImpl }
     );
     await expect(pending).rejects.toMatchObject({ kind: "unavailable" });

@@ -4,9 +4,12 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.main import YesNoWorkflowView, create_app
+
+MAX_REVISION = 2147483647
 
 
 @pytest.fixture
@@ -35,18 +38,67 @@ def auth_headers(client: TestClient, username: str = "alice") -> dict[str, str]:
     return {"Authorization": f"Bearer {login.json()['token']}"}
 
 
+def start_workflow_request(
+    client: TestClient,
+    headers: dict[str, str],
+    title: str = "Plan birthday party",
+    request_id: UUID | None = None,
+) -> tuple[object, UUID]:
+    request_id = request_id or uuid4()
+    response = client.post(
+        "/todo-workflows",
+        json={"request_id": str(request_id), "title": title},
+        headers=headers,
+    )
+    return response, request_id
+
+
+def advance_workflow_request(
+    client: TestClient,
+    headers: dict[str, str],
+    last: dict[str, object],
+    action: dict[str, object],
+    request_id: UUID | None = None,
+) -> tuple[object, UUID]:
+    request_id = request_id or uuid4()
+    view = last["view"]
+    assert isinstance(view, dict)
+    response = client.post(
+        f"/todo-workflows/{last['workflow_id']}/actions",
+        json={
+            "request_id": str(request_id),
+            "expected_revision": last["revision"],
+            "step_id": view["step_id"],
+            "action": action,
+        },
+        headers=headers,
+    )
+    return response, request_id
+
+
 def test_start_returns_assess_task_without_todos(
     client: TestClient, session_factory: sessionmaker[Session]
 ) -> None:
     headers = auth_headers(client)
 
-    response = client.post(
-        "/todo-workflows", json={"title": "Plan birthday party"}, headers=headers
-    )
+    response, _ = start_workflow_request(client, headers)
 
     assert response.status_code == 201
     body = response.json()
-    assert set(body) == {"workflow_id", "state", "title", "context", "result", "view"}
+    assert set(body) == {
+        "workflow_id",
+        "revision",
+        "definition_version",
+        "view_contract_version",
+        "state",
+        "title",
+        "context",
+        "result",
+        "view",
+    }
+    assert body["revision"] == 0
+    assert body["definition_version"] == 1
+    assert body["view_contract_version"] == 1
     assert body["state"] == "ASSESS_TASK"
     assert body["title"] == "Plan birthday party"
     assert body["context"] == {
@@ -65,33 +117,82 @@ def test_start_returns_assess_task_without_todos(
     assert client.get("/todos", headers=headers).json() == []
 
 
+def test_start_replay_returns_identical_201_without_duplicate(
+    client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    from app.workflow_repository import WorkflowRow
+
+    headers = auth_headers(client)
+    request_id = uuid4()
+
+    first, _ = start_workflow_request(client, headers, request_id=request_id)
+    assert first.status_code == 201
+    replay, _ = start_workflow_request(client, headers, request_id=request_id)
+
+    assert replay.status_code == 201
+    assert replay.json() == first.json()
+    with session_factory() as verification_session:
+        rows = verification_session.scalars(select(WorkflowRow)).all()
+        assert len(rows) == 1
+
+
+def test_start_request_id_reuse_with_different_title_conflicts(
+    client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    from app.workflow_repository import WorkflowRow
+
+    headers = auth_headers(client)
+    request_id = uuid4()
+    first, _ = start_workflow_request(
+        client, headers, title="Plan birthday party", request_id=request_id
+    )
+    assert first.status_code == 201
+
+    response = client.post(
+        "/todo-workflows",
+        json={"request_id": str(request_id), "title": "Different plan"},
+        headers=headers,
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": {
+            "code": "request_id_reused",
+            "message": "This request ID was already used with different details.",
+        }
+    }
+    with session_factory() as verification_session:
+        rows = verification_session.scalars(select(WorkflowRow)).all()
+        assert len(rows) == 1
+
+
 def test_yes_branch_collects_then_confirms_three_todos(
     client: TestClient,
 ) -> None:
     headers = auth_headers(client)
-    workflow_id = client.post(
-        "/todo-workflows", json={"title": "Plan birthday party"}, headers=headers
-    ).json()["workflow_id"]
+    started, _ = start_workflow_request(client, headers)
+    last = started.json()
+    workflow_id = last["workflow_id"]
 
-    collecting = client.post(
-        f"/todo-workflows/{workflow_id}/actions",
-        json={"action": "answer_multiple_steps", "answer": True},
-        headers=headers,
+    collecting, _ = advance_workflow_request(
+        client, headers, last, {"action": "answer_multiple_steps", "answer": True}
     )
     assert collecting.status_code == 200
-    assert collecting.json()["state"] == "OFFER_BREAKDOWN"
-    assert collecting.json()["view"]["question"] == (
+    last = collecting.json()
+    assert last["revision"] == 1
+    assert last["state"] == "OFFER_BREAKDOWN"
+    assert last["view"]["question"] == (
         "Would you like to split it into smaller todos?"
     )
-    assert collecting.json()["view"]["step_id"] == f"{workflow_id}:OFFER_BREAKDOWN"
+    assert last["view"]["step_id"] == f"{workflow_id}:OFFER_BREAKDOWN"
 
-    breakdown = client.post(
-        f"/todo-workflows/{workflow_id}/actions",
-        json={"action": "answer_multiple_steps", "answer": True},
-        headers=headers,
+    breakdown, _ = advance_workflow_request(
+        client, headers, last, {"action": "answer_multiple_steps", "answer": True}
     )
-    assert breakdown.json()["state"] == "COLLECT_TASKS"
-    assert breakdown.json()["view"] == {
+    last = breakdown.json()
+    assert last["revision"] == 2
+    assert last["state"] == "COLLECT_TASKS"
+    assert last["view"] == {
         "type": "task_breakdown",
         "step_id": f"{workflow_id}:COLLECT_TASKS",
         "title": "Break it into smaller todos",
@@ -99,43 +200,48 @@ def test_yes_branch_collects_then_confirms_three_todos(
         "max_titles": 10,
     }
 
-    review = client.post(
-        f"/todo-workflows/{workflow_id}/actions",
-        json={
+    review, _ = advance_workflow_request(
+        client,
+        headers,
+        last,
+        {
             "action": "submit_tasks",
             "titles": ["Send invitations", "Buy decorations", "Book venue"],
         },
-        headers=headers,
     )
     assert review.status_code == 200
-    assert review.json()["state"] == "REVIEW"
-    assert review.json()["context"]["proposed_todo_titles"] == [
+    last = review.json()
+    assert last["revision"] == 3
+    assert last["state"] == "REVIEW"
+    assert last["context"]["proposed_todo_titles"] == [
         "Send invitations",
         "Buy decorations",
         "Book venue",
     ]
-    assert review.json()["view"] == {
+    assert last["view"] == {
         "type": "review",
         "step_id": f"{workflow_id}:REVIEW",
         "title": "Review your plan",
         "proposed_titles": ["Send invitations", "Buy decorations", "Book venue"],
     }
 
-    completed = client.post(
-        f"/todo-workflows/{workflow_id}/actions",
-        json={"action": "confirm"},
-        headers=headers,
+    completed, _ = advance_workflow_request(
+        client, headers, last, {"action": "confirm"}
     )
     assert completed.status_code == 200
-    assert completed.json()["state"] == "COMPLETED"
-    created = completed.json()["result"]["created_todos"]
+    last = completed.json()
+    assert last["revision"] == 4
+    assert last["state"] == "COMPLETED"
+    assert last["definition_version"] == 1
+    assert last["view_contract_version"] == 1
+    created = last["result"]["created_todos"]
     assert [todo["title"] for todo in created] == [
         "Send invitations",
         "Buy decorations",
         "Book venue",
     ]
     assert [todo["completed"] for todo in created] == [False, False, False]
-    assert completed.json()["view"] == {
+    assert last["view"] == {
         "type": "completion",
         "step_id": f"{workflow_id}:COMPLETED",
         "title": "Plan complete",
@@ -151,42 +257,172 @@ def test_yes_branch_collects_then_confirms_three_todos(
     ]
 
 
+def test_action_replay_returns_identical_200_without_second_effect(
+    client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    from app.workflow_repository import WorkflowRow
+
+    headers = auth_headers(client)
+    started, _ = start_workflow_request(client, headers)
+    last = started.json()
+    request_id = uuid4()
+
+    first, _ = advance_workflow_request(
+        client,
+        headers,
+        last,
+        {"action": "answer_multiple_steps", "answer": True},
+        request_id=request_id,
+    )
+    assert first.status_code == 200
+    replay, _ = advance_workflow_request(
+        client,
+        headers,
+        last,
+        {"action": "answer_multiple_steps", "answer": True},
+        request_id=request_id,
+    )
+
+    assert replay.status_code == 200
+    assert replay.json() == first.json()
+    assert replay.json()["revision"] == 1
+    with session_factory() as verification_session:
+        row = verification_session.scalar(
+            select(WorkflowRow).where(
+                WorkflowRow.public_id == UUID(last["workflow_id"])
+            )
+        )
+        assert row is not None
+        assert row.revision == 1
+
+
+def test_action_request_id_reuse_with_different_payload_conflicts(
+    client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    from app.workflow_repository import WorkflowRow
+
+    headers = auth_headers(client)
+    started, _ = start_workflow_request(client, headers)
+    last = started.json()
+    request_id = uuid4()
+    first, _ = advance_workflow_request(
+        client,
+        headers,
+        last,
+        {"action": "answer_multiple_steps", "answer": True},
+        request_id=request_id,
+    )
+    assert first.status_code == 200
+
+    response, _ = advance_workflow_request(
+        client,
+        headers,
+        last,
+        {"action": "answer_multiple_steps", "answer": False},
+        request_id=request_id,
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": {
+            "code": "request_id_reused",
+            "message": "This request ID was already used with different details.",
+        }
+    }
+    with session_factory() as verification_session:
+        row = verification_session.scalar(
+            select(WorkflowRow).where(
+                WorkflowRow.public_id == UUID(last["workflow_id"])
+            )
+        )
+        assert row is not None
+        assert row.revision == 1
+        assert row.state == "OFFER_BREAKDOWN"
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        {"expected_revision": 999},
+        {"step_id": "00000000-0000-0000-0000-000000000000:ASSESS_TASK"},
+    ],
+)
+def test_stale_revision_or_step_conflicts_without_mutation(
+    client: TestClient, session_factory: sessionmaker[Session], tamper: dict[str, object]
+) -> None:
+    from app.workflow_repository import WorkflowRow
+
+    headers = auth_headers(client)
+    started, _ = start_workflow_request(client, headers)
+    last = started.json()
+    view = last["view"]
+    assert isinstance(view, dict)
+    payload = {
+        "request_id": str(uuid4()),
+        "expected_revision": last["revision"],
+        "step_id": view["step_id"],
+        "action": {"action": "answer_multiple_steps", "answer": True},
+    }
+    payload.update(tamper)
+
+    response = client.post(
+        f"/todo-workflows/{last['workflow_id']}/actions",
+        json=payload,
+        headers=headers,
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": {
+            "code": "stale_step",
+            "message": "This plan changed. Reload it and try again.",
+        }
+    }
+    with session_factory() as verification_session:
+        row = verification_session.scalar(
+            select(WorkflowRow).where(
+                WorkflowRow.public_id == UUID(last["workflow_id"])
+            )
+        )
+        assert row is not None
+        assert row.revision == 0
+        assert row.state == "ASSESS_TASK"
+
+
 def test_offer_no_reviews_original_with_views(
     client: TestClient,
 ) -> None:
     headers = auth_headers(client)
-    workflow_id = client.post(
-        "/todo-workflows", json={"title": "Plan birthday party"}, headers=headers
-    ).json()["workflow_id"]
+    started, _ = start_workflow_request(client, headers)
+    last = started.json()
+    workflow_id = last["workflow_id"]
 
-    offered = client.post(
-        f"/todo-workflows/{workflow_id}/actions",
-        json={"action": "answer_multiple_steps", "answer": True},
-        headers=headers,
+    offered, _ = advance_workflow_request(
+        client, headers, last, {"action": "answer_multiple_steps", "answer": True}
     )
     assert offered.status_code == 200
-    assert offered.json()["state"] == "OFFER_BREAKDOWN"
-    assert offered.json()["context"] == {
+    last = offered.json()
+    assert last["state"] == "OFFER_BREAKDOWN"
+    assert last["context"] == {
         "involves_multiple_steps": True,
         "proposed_todo_titles": [],
     }
-    assert offered.json()["view"]["question"] == (
+    assert last["view"]["question"] == (
         "Would you like to split it into smaller todos?"
     )
-    assert offered.json()["view"]["step_id"] == f"{workflow_id}:OFFER_BREAKDOWN"
+    assert last["view"]["step_id"] == f"{workflow_id}:OFFER_BREAKDOWN"
 
-    review = client.post(
-        f"/todo-workflows/{workflow_id}/actions",
-        json={"action": "answer_multiple_steps", "answer": False},
-        headers=headers,
+    review, _ = advance_workflow_request(
+        client, headers, last, {"action": "answer_multiple_steps", "answer": False}
     )
+    last = review.json()
     assert review.status_code == 200
-    assert review.json()["state"] == "REVIEW"
-    assert review.json()["context"] == {
+    assert last["state"] == "REVIEW"
+    assert last["context"] == {
         "involves_multiple_steps": True,
         "proposed_todo_titles": ["Plan birthday party"],
     }
-    assert review.json()["view"] == {
+    assert last["view"] == {
         "type": "review",
         "step_id": f"{workflow_id}:REVIEW",
         "title": "Review your plan",
@@ -199,26 +435,23 @@ def test_no_branch_reviews_and_creates_original_title(
     client: TestClient,
 ) -> None:
     headers = auth_headers(client)
-    workflow_id = client.post(
-        "/todo-workflows", json={"title": "Plan birthday party"}, headers=headers
-    ).json()["workflow_id"]
+    started, _ = start_workflow_request(client, headers)
+    last = started.json()
 
-    review = client.post(
-        f"/todo-workflows/{workflow_id}/actions",
-        json={"action": "answer_multiple_steps", "answer": False},
-        headers=headers,
+    review, _ = advance_workflow_request(
+        client, headers, last, {"action": "answer_multiple_steps", "answer": False}
     )
+    last = review.json()
     assert review.status_code == 200
-    assert review.json()["state"] == "REVIEW"
-    assert review.json()["context"]["proposed_todo_titles"] == ["Plan birthday party"]
+    assert last["state"] == "REVIEW"
+    assert last["context"]["proposed_todo_titles"] == ["Plan birthday party"]
 
-    completed = client.post(
-        f"/todo-workflows/{workflow_id}/actions",
-        json={"action": "confirm"},
-        headers=headers,
+    completed, _ = advance_workflow_request(
+        client, headers, last, {"action": "confirm"}
     )
+    last = completed.json()
     assert completed.status_code == 200
-    assert [todo["title"] for todo in completed.json()["result"]["created_todos"]] == [
+    assert [todo["title"] for todo in last["result"]["created_todos"]] == [
         "Plan birthday party"
     ]
     assert [todo["title"] for todo in client.get("/todos", headers=headers).json()] == [
@@ -229,45 +462,41 @@ def test_no_branch_reviews_and_creates_original_title(
 @pytest.mark.parametrize("path", ["assess", "offer", "collect", "review"])
 def test_cancel_from_each_active_state(client: TestClient, path: str) -> None:
     headers = auth_headers(client)
-    first = client.post(
-        "/todo-workflows", json={"title": "Plan birthday party"}, headers=headers
-    ).json()["workflow_id"]
-    second = client.post(
-        "/todo-workflows", json={"title": "Plan birthday party"}, headers=headers
-    ).json()["workflow_id"]
-    third = client.post(
-        "/todo-workflows", json={"title": "Plan birthday party"}, headers=headers
-    ).json()["workflow_id"]
-    fourth = client.post(
-        "/todo-workflows", json={"title": "Plan birthday party"}, headers=headers
-    ).json()["workflow_id"]
-    client.post(
-        f"/todo-workflows/{second}/actions",
-        json={"action": "answer_multiple_steps", "answer": True},
-        headers=headers,
+    first, _ = start_workflow_request(client, headers)
+    second, _ = start_workflow_request(client, headers)
+    third, _ = start_workflow_request(client, headers)
+    fourth, _ = start_workflow_request(client, headers)
+    bodies = [first.json(), second.json(), third.json(), fourth.json()]
+    answered, _ = advance_workflow_request(
+        client, headers, bodies[1], {"action": "answer_multiple_steps", "answer": True}
     )
-    for target_id in (third, fourth):
-        client.post(
-            f"/todo-workflows/{target_id}/actions",
-            json={"action": "answer_multiple_steps", "answer": True},
-            headers=headers,
+    bodies[1] = answered.json()
+    for index in (2, 3):
+        answered, _ = advance_workflow_request(
+            client,
+            headers,
+            bodies[index],
+            {"action": "answer_multiple_steps", "answer": True},
         )
-        client.post(
-            f"/todo-workflows/{target_id}/actions",
-            json={"action": "answer_multiple_steps", "answer": True},
-            headers=headers,
+        bodies[index] = answered.json()
+        offered, _ = advance_workflow_request(
+            client,
+            headers,
+            bodies[index],
+            {"action": "answer_multiple_steps", "answer": True},
         )
-    client.post(
-        f"/todo-workflows/{fourth}/actions",
-        json={"action": "submit_tasks", "titles": ["Send invitations", "Buy cake"]},
-        headers=headers,
+        bodies[index] = offered.json()
+    submitted, _ = advance_workflow_request(
+        client,
+        headers,
+        bodies[3],
+        {"action": "submit_tasks", "titles": ["Send invitations", "Buy cake"]},
     )
-    target = {"assess": first, "offer": second, "collect": third, "review": fourth}[path]
+    bodies[3] = submitted.json()
+    target = {"assess": 0, "offer": 1, "collect": 2, "review": 3}[path]
 
-    cancelled = client.post(
-        f"/todo-workflows/{target}/actions",
-        json={"action": "cancel"},
-        headers=headers,
+    cancelled, _ = advance_workflow_request(
+        client, headers, bodies[target], {"action": "cancel"}
     )
 
     assert cancelled.status_code == 200
@@ -280,26 +509,25 @@ def test_offer_rejects_misplaced_actions(
     client: TestClient,
 ) -> None:
     headers = auth_headers(client)
-    workflow_id = client.post(
-        "/todo-workflows", json={"title": "Plan birthday party"}, headers=headers
-    ).json()["workflow_id"]
-    client.post(
-        f"/todo-workflows/{workflow_id}/actions",
-        json={"action": "answer_multiple_steps", "answer": True},
-        headers=headers,
+    started, _ = start_workflow_request(client, headers)
+    last = started.json()
+    offered, _ = advance_workflow_request(
+        client, headers, last, {"action": "answer_multiple_steps", "answer": True}
     )
+    last = offered.json()
 
     for action in (
         {"action": "submit_tasks", "titles": ["Send invitations", "Buy cake"]},
         {"action": "confirm"},
     ):
-        response = client.post(
-            f"/todo-workflows/{workflow_id}/actions", json=action, headers=headers
-        )
+        response, _ = advance_workflow_request(client, headers, last, action)
 
         assert response.status_code == 409
         assert response.json() == {
-            "detail": "Action is not valid for the current workflow state."
+            "detail": {
+                "code": "invalid_action",
+                "message": "Action is not valid for the current workflow state.",
+            }
         }
 
 
@@ -334,47 +562,196 @@ def test_terminal_states_reject_every_action(
     client: TestClient, state: str, action: dict[str, object]
 ) -> None:
     headers = auth_headers(client)
-    workflow_id = client.post(
-        "/todo-workflows", json={"title": "Plan birthday party"}, headers=headers
-    ).json()["workflow_id"]
+    started, _ = start_workflow_request(client, headers)
+    last = started.json()
     if state == "COMPLETED":
-        client.post(
-            f"/todo-workflows/{workflow_id}/actions",
-            json={"action": "answer_multiple_steps", "answer": False},
-            headers=headers,
+        reviewed, _ = advance_workflow_request(
+            client, headers, last, {"action": "answer_multiple_steps", "answer": False}
         )
-        client.post(
-            f"/todo-workflows/{workflow_id}/actions",
-            json={"action": "confirm"},
-            headers=headers,
+        last = reviewed.json()
+        confirmed, _ = advance_workflow_request(
+            client, headers, last, {"action": "confirm"}
         )
+        last = confirmed.json()
     else:
-        client.post(
-            f"/todo-workflows/{workflow_id}/actions",
-            json={"action": "cancel"},
-            headers=headers,
+        cancelled, _ = advance_workflow_request(
+            client, headers, last, {"action": "cancel"}
         )
+        last = cancelled.json()
 
-    response = client.post(
-        f"/todo-workflows/{workflow_id}/actions", json=action, headers=headers
-    )
+    response, _ = advance_workflow_request(client, headers, last, action)
 
     assert response.status_code == 409
-    assert response.json() == {"detail": "Todo workflow is already terminal."}
+    assert response.json() == {
+        "detail": {
+            "code": "terminal_workflow",
+            "message": "Todo workflow is already terminal.",
+        }
+    }
+
+
+def test_unsupported_definition_conflicts_on_fetch_discovery_and_advance(
+    client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    from app.workflow_repository import WorkflowRow
+
+    headers = auth_headers(client)
+    started, _ = start_workflow_request(client, headers)
+    last = started.json()
+    workflow_id = last["workflow_id"]
+    with session_factory() as setup_session:
+        setup_session.execute(
+            update(WorkflowRow)
+            .where(WorkflowRow.public_id == UUID(workflow_id))
+            .values(definition_version=2)
+        )
+        setup_session.commit()
+
+    fetched = client.get(f"/todo-workflows/{workflow_id}", headers=headers)
+    assert fetched.status_code == 409
+    assert fetched.json() == {
+        "detail": {
+            "code": "unsupported_workflow_definition",
+            "message": "This plan uses an unsupported workflow definition.",
+        }
+    }
+
+    discovered = client.get("/todo-workflows", headers=headers)
+    assert discovered.status_code == 409
+    assert discovered.json()["detail"]["code"] == "unsupported_workflow_definition"
+
+    request_id = uuid4()
+    view = last["view"]
+    assert isinstance(view, dict)
+    advanced = client.post(
+        f"/todo-workflows/{workflow_id}/actions",
+        json={
+            "request_id": str(request_id),
+            "expected_revision": last["revision"],
+            "step_id": view["step_id"],
+            "action": {"action": "answer_multiple_steps", "answer": True},
+        },
+        headers=headers,
+    )
+    assert advanced.status_code == 409
+    assert advanced.json()["detail"]["code"] == "unsupported_workflow_definition"
+
+    with session_factory() as restore_session:
+        restore_session.execute(
+            update(WorkflowRow)
+            .where(WorkflowRow.public_id == UUID(workflow_id))
+            .values(definition_version=1)
+        )
+        restore_session.commit()
+    retried = client.post(
+        f"/todo-workflows/{workflow_id}/actions",
+        json={
+            "request_id": str(request_id),
+            "expected_revision": last["revision"],
+            "step_id": view["step_id"],
+            "action": {"action": "answer_multiple_steps", "answer": True},
+        },
+        headers=headers,
+    )
+    assert retried.status_code == 200
+    assert retried.json()["revision"] == last["revision"] + 1
+    assert retried.json()["state"] == "OFFER_BREAKDOWN"
+
+
+def test_revision_exhausted_rejects_new_action_but_replays_recorded(
+    client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    from app.workflow_repository import WorkflowRow
+
+    headers = auth_headers(client)
+    started, _ = start_workflow_request(client, headers)
+    last = started.json()
+    request_id = uuid4()
+    first, _ = advance_workflow_request(
+        client,
+        headers,
+        last,
+        {"action": "answer_multiple_steps", "answer": True},
+        request_id=request_id,
+    )
+    assert first.status_code == 200
+    accepted = first.json()
+    with session_factory() as setup_session:
+        setup_session.execute(
+            update(WorkflowRow)
+            .where(WorkflowRow.public_id == UUID(last["workflow_id"]))
+            .values(revision=MAX_REVISION)
+        )
+        setup_session.commit()
+
+    fresh_view = accepted["view"]
+    assert isinstance(fresh_view, dict)
+    fresh = client.post(
+        f"/todo-workflows/{last['workflow_id']}/actions",
+        json={
+            "request_id": str(uuid4()),
+            "expected_revision": MAX_REVISION,
+            "step_id": fresh_view["step_id"],
+            "action": {"action": "answer_multiple_steps", "answer": True},
+        },
+        headers=headers,
+    )
+    assert fresh.status_code == 409
+    assert fresh.json() == {
+        "detail": {
+            "code": "revision_exhausted",
+            "message": "This plan has reached its revision limit.",
+        }
+    }
+
+    replay, _ = advance_workflow_request(
+        client,
+        headers,
+        last,
+        {"action": "answer_multiple_steps", "answer": True},
+        request_id=request_id,
+    )
+    assert replay.status_code == 200
+    assert replay.json() == accepted
+
+
+def test_corrupt_recorded_snapshot_returns_503_on_replay(
+    client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    from app.workflow_repository import WorkflowStartRequestRow
+
+    headers = auth_headers(client)
+    request_id = uuid4()
+    first, _ = start_workflow_request(client, headers, request_id=request_id)
+    assert first.status_code == 201
+    with session_factory() as setup_session:
+        setup_session.execute(
+            update(WorkflowStartRequestRow)
+            .where(WorkflowStartRequestRow.request_id == request_id)
+            .values(accepted_snapshot={"bogus": True})
+        )
+        setup_session.commit()
+
+    replay, _ = start_workflow_request(client, headers, request_id=request_id)
+
+    assert replay.status_code == 503
+    assert replay.json() == {"detail": "Database unavailable."}
 
 
 @pytest.mark.parametrize(
     "payload",
     [
         {},
-        {"title": ""},
-        {"title": "x" * 121},
-        {"title": "Bad\x00title"},
-        {"title": 42},
-        {"title": "Known", "extra": 1},
+        {"title": "Plan birthday party"},
+        {"request_id": "not-a-uuid", "title": "Plan birthday party"},
+        {"request_id": str(uuid4()), "title": ""},
+        {"request_id": str(uuid4()), "title": "x" * 121},
+        {"request_id": str(uuid4()), "title": "Bad\x00title"},
+        {"request_id": str(uuid4()), "title": 42},
+        {"request_id": str(uuid4()), "title": "Known", "extra": 1},
     ],
 )
-def test_start_rejects_invalid_titles(client: TestClient, payload: object) -> None:
+def test_start_rejects_invalid_envelopes(client: TestClient, payload: object) -> None:
     headers = auth_headers(client)
 
     response = client.post("/todo-workflows", json=payload, headers=headers)
@@ -397,12 +774,56 @@ def test_start_rejects_invalid_titles(client: TestClient, payload: object) -> No
 )
 def test_actions_reject_malformed_bodies(client: TestClient, payload: object) -> None:
     headers = auth_headers(client)
-    workflow_id = client.post(
-        "/todo-workflows", json={"title": "Plan birthday party"}, headers=headers
-    ).json()["workflow_id"]
+    started, _ = start_workflow_request(client, headers)
+    last = started.json()
+    view = last["view"]
+    assert isinstance(view, dict)
 
     response = client.post(
-        f"/todo-workflows/{workflow_id}/actions", json=payload, headers=headers
+        f"/todo-workflows/{last['workflow_id']}/actions",
+        json={
+            "request_id": str(uuid4()),
+            "expected_revision": last["revision"],
+            "step_id": view["step_id"],
+            "action": payload,
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "envelope",
+    [
+        {"expected_revision": 0, "step_id": "step", "action": {"action": "cancel"}},
+        {"request_id": str(uuid4()), "step_id": "step", "action": {"action": "cancel"}},
+        {"request_id": str(uuid4()), "expected_revision": 0, "action": {"action": "cancel"}},
+        {
+            "request_id": str(uuid4()),
+            "expected_revision": 0,
+            "step_id": "step",
+            "action": {"action": "cancel"},
+            "extra": True,
+        },
+        {"request_id": "not-a-uuid", "expected_revision": 0, "step_id": "step", "action": {"action": "cancel"}},
+        {"request_id": str(uuid4()), "expected_revision": True, "step_id": "step", "action": {"action": "cancel"}},
+        {"request_id": str(uuid4()), "expected_revision": 1.5, "step_id": "step", "action": {"action": "cancel"}},
+        {"request_id": str(uuid4()), "expected_revision": "0", "step_id": "step", "action": {"action": "cancel"}},
+        {"request_id": str(uuid4()), "expected_revision": -1, "step_id": "step", "action": {"action": "cancel"}},
+        {"request_id": str(uuid4()), "expected_revision": MAX_REVISION + 1, "step_id": "step", "action": {"action": "cancel"}},
+        {"request_id": str(uuid4()), "expected_revision": 0, "step_id": 42, "action": {"action": "cancel"}},
+    ],
+)
+def test_action_envelope_rejects_strict_shape_violations(
+    client: TestClient, envelope: dict[str, object]
+) -> None:
+    headers = auth_headers(client)
+    started, _ = start_workflow_request(client, headers)
+    workflow_id = started.json()["workflow_id"]
+
+    response = client.post(
+        f"/todo-workflows/{workflow_id}/actions", json=envelope, headers=headers
     )
 
     assert response.status_code == 422
@@ -411,15 +832,13 @@ def test_actions_reject_malformed_bodies(client: TestClient, payload: object) ->
 def test_confirm_in_assess_task_returns_409_without_mutation(
     client: TestClient, session_factory: sessionmaker[Session]
 ) -> None:
-    from sqlalchemy import select
-
     from app.todo_repository import TodoRow
     from app.workflow_repository import WorkflowRow
 
     headers = auth_headers(client)
-    workflow_id = client.post(
-        "/todo-workflows", json={"title": "Plan birthday party"}, headers=headers
-    ).json()["workflow_id"]
+    started, _ = start_workflow_request(client, headers)
+    last = started.json()
+    workflow_id = last["workflow_id"]
     public_id = UUID(workflow_id)
 
     def read_row() -> tuple[object, ...]:
@@ -435,20 +854,22 @@ def test_confirm_in_assess_task_returns_409_without_mutation(
                 row.involves_multiple_steps,
                 tuple(row.proposed_todo_titles),
                 row.completion_result,
+                row.revision,
                 tuple(todo.public_id for todo in todos),
             )
 
     before = read_row()
 
-    response = client.post(
-        f"/todo-workflows/{workflow_id}/actions",
-        json={"action": "confirm"},
-        headers=headers,
+    response, _ = advance_workflow_request(
+        client, headers, last, {"action": "confirm"}
     )
 
     assert response.status_code == 409
     assert response.json() == {
-        "detail": "Action is not valid for the current workflow state."
+        "detail": {
+            "code": "invalid_action",
+            "message": "Action is not valid for the current workflow state.",
+        }
     }
     assert read_row() == before
 
@@ -456,15 +877,13 @@ def test_confirm_in_assess_task_returns_409_without_mutation(
 def test_other_owner_workflows_are_missing(client: TestClient) -> None:
     alice_headers = auth_headers(client, "alice")
     bob_headers = auth_headers(client, "bob")
-    workflow_id = client.post(
-        "/todo-workflows", json={"title": "Plan birthday party"}, headers=alice_headers
-    ).json()["workflow_id"]
+    started, _ = start_workflow_request(client, alice_headers)
+    last = started.json()
+    workflow_id = last["workflow_id"]
 
     assert client.get(f"/todo-workflows/{workflow_id}", headers=bob_headers).status_code == 404
-    response = client.post(
-        f"/todo-workflows/{workflow_id}/actions",
-        json={"action": "cancel"},
-        headers=bob_headers,
+    response, _ = advance_workflow_request(
+        client, bob_headers, last, {"action": "cancel"}
     )
 
     assert response.status_code == 404
@@ -475,6 +894,92 @@ def test_other_owner_workflows_are_missing(client: TestClient) -> None:
     )
 
 
+def test_discovery_returns_active_workflows_newest_first(client: TestClient) -> None:
+    headers = auth_headers(client)
+
+    empty = client.get("/todo-workflows", headers=headers)
+    assert empty.status_code == 200
+    assert empty.json() == {"items": []}
+
+    explicit = client.get("/todo-workflows?status=active", headers=headers)
+    assert explicit.status_code == 200
+    assert explicit.json() == {"items": []}
+
+    first, _ = start_workflow_request(client, headers, title="First plan")
+    second, _ = start_workflow_request(client, headers, title="Second plan")
+    third, _ = start_workflow_request(client, headers, title="Third plan")
+    first_body, second_body, third_body = first.json(), second.json(), third.json()
+
+    discovered = client.get("/todo-workflows", headers=headers)
+    assert discovered.status_code == 200
+    items = discovered.json()["items"]
+    assert [item["workflow_id"] for item in items] == [
+        third_body["workflow_id"],
+        second_body["workflow_id"],
+        first_body["workflow_id"],
+    ]
+    assert items[0] == third_body
+    for item in items:
+        assert item["revision"] == 0
+        assert item["definition_version"] == 1
+        assert item["view_contract_version"] == 1
+
+    confirmed, _ = advance_workflow_request(
+        client, headers, first_body, {"action": "answer_multiple_steps", "answer": False}
+    )
+    done, _ = advance_workflow_request(
+        client, headers, confirmed.json(), {"action": "confirm"}
+    )
+    assert done.json()["state"] == "COMPLETED"
+    cancelled, _ = advance_workflow_request(
+        client, headers, second_body, {"action": "cancel"}
+    )
+    assert cancelled.json()["state"] == "CANCELLED"
+
+    remaining = client.get("/todo-workflows", headers=headers).json()["items"]
+    assert [item["workflow_id"] for item in remaining] == [third_body["workflow_id"]]
+
+
+def test_discovery_rejects_unknown_status_and_hides_other_owners(
+    client: TestClient,
+) -> None:
+    alice_headers = auth_headers(client, "alice")
+    bob_headers = auth_headers(client, "bob")
+    started, _ = start_workflow_request(client, alice_headers)
+    assert started.status_code == 201
+
+    assert client.get("/todo-workflows?status=all", headers=alice_headers).status_code == 422
+    assert client.get("/todo-workflows?status=", headers=alice_headers).status_code == 422
+    assert client.get("/todo-workflows", headers=bob_headers).json() == {"items": []}
+    assert (
+        client.get("/todo-workflows?status=active", headers=bob_headers).json()
+        == {"items": []}
+    )
+
+
+def test_discovery_reads_without_side_effects(
+    client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    from app.workflow_repository import WorkflowRow
+
+    headers = auth_headers(client)
+    started, _ = start_workflow_request(client, headers)
+    last = started.json()
+
+    first = client.get("/todo-workflows", headers=headers)
+    second = client.get("/todo-workflows", headers=headers)
+
+    assert first.json() == second.json()
+    with session_factory() as verification_session:
+        row = verification_session.scalar(
+            select(WorkflowRow).where(
+                WorkflowRow.public_id == UUID(last["workflow_id"])
+            )
+        )
+        assert row is not None
+        assert row.revision == 0
+
+
 def test_workflow_uuid_shapes(client: TestClient) -> None:
     headers = auth_headers(client)
 
@@ -483,7 +988,12 @@ def test_workflow_uuid_shapes(client: TestClient) -> None:
     assert (
         client.post(
             "/todo-workflows/not-a-uuid/actions",
-            json={"action": "cancel"},
+            json={
+                "request_id": str(uuid4()),
+                "expected_revision": 0,
+                "step_id": "not-a-uuid:ASSESS_TASK",
+                "action": {"action": "cancel"},
+            },
             headers=headers,
         ).status_code
         == 422
@@ -491,10 +1001,26 @@ def test_workflow_uuid_shapes(client: TestClient) -> None:
 
 
 def test_workflow_routes_reject_unauthenticated(client: TestClient) -> None:
-    assert client.post("/todo-workflows", json={"title": "Plan birthday party"}).status_code == 401
-    assert client.get(f"/todo-workflows/{uuid4()}").status_code == 401
+    request_id = str(uuid4())
     assert (
-        client.post(f"/todo-workflows/{uuid4()}/actions", json={"action": "cancel"}).status_code
+        client.post(
+            "/todo-workflows",
+            json={"request_id": request_id, "title": "Plan birthday party"},
+        ).status_code
+        == 401
+    )
+    assert client.get(f"/todo-workflows/{uuid4()}").status_code == 401
+    assert client.get("/todo-workflows").status_code == 401
+    assert (
+        client.post(
+            f"/todo-workflows/{uuid4()}/actions",
+            json={
+                "request_id": request_id,
+                "expected_revision": 0,
+                "step_id": f"{uuid4()}:ASSESS_TASK",
+                "action": {"action": "cancel"},
+            },
+        ).status_code
         == 401
     )
 
@@ -505,19 +1031,17 @@ def test_progress_survives_fresh_client_without_side_effects(
     from app.main import create_app
 
     headers = auth_headers(client)
-    workflow_id = client.post(
-        "/todo-workflows", json={"title": "Plan birthday party"}, headers=headers
-    ).json()["workflow_id"]
-    client.post(
-        f"/todo-workflows/{workflow_id}/actions",
-        json={"action": "answer_multiple_steps", "answer": True},
-        headers=headers,
+    started, _ = start_workflow_request(client, headers)
+    last = started.json()
+    workflow_id = last["workflow_id"]
+    answered, _ = advance_workflow_request(
+        client, headers, last, {"action": "answer_multiple_steps", "answer": True}
     )
-    client.post(
-        f"/todo-workflows/{workflow_id}/actions",
-        json={"action": "answer_multiple_steps", "answer": True},
-        headers=headers,
+    last = answered.json()
+    offered, _ = advance_workflow_request(
+        client, headers, last, {"action": "answer_multiple_steps", "answer": True}
     )
+    assert offered.json()["state"] == "COLLECT_TASKS"
     before_todos = client.get("/todos", headers=headers).json()
 
     with TestClient(create_app(session_factory)) as fresh_client:
@@ -525,6 +1049,7 @@ def test_progress_survives_fresh_client_without_side_effects(
 
     assert fetched.status_code == 200
     assert fetched.json()["state"] == "COLLECT_TASKS"
+    assert fetched.json()["revision"] == 2
     assert fetched.json()["context"]["proposed_todo_titles"] == []
     assert client.get("/todos", headers=headers).json() == before_todos
 
@@ -538,27 +1063,38 @@ def test_workflow_routes_return_503_when_database_unavailable() -> None:
         "postgresql+psycopg://todo_test:todo_test@127.0.0.1:65534/todo_test"
     )
     session_factory = create_session_factory(engine)
+    request_id = str(uuid4())
+    workflow_id = uuid4()
     try:
         with TestClient(create_app(session_factory)) as bad_client:
             dead_headers = {"Authorization": "Bearer " + "0" * 64}
             assert (
                 bad_client.post(
                     "/todo-workflows",
-                    json={"title": "Plan birthday party"},
+                    json={"request_id": request_id, "title": "Plan birthday party"},
                     headers=dead_headers,
                 ).status_code
                 == 503
             )
             assert (
                 bad_client.get(
-                    f"/todo-workflows/{uuid4()}", headers=dead_headers
+                    f"/todo-workflows/{workflow_id}", headers=dead_headers
                 ).status_code
                 == 503
             )
             assert (
+                bad_client.get("/todo-workflows", headers=dead_headers).status_code
+                == 503
+            )
+            assert (
                 bad_client.post(
-                    f"/todo-workflows/{uuid4()}/actions",
-                    json={"action": "cancel"},
+                    f"/todo-workflows/{workflow_id}/actions",
+                    json={
+                        "request_id": request_id,
+                        "expected_revision": 0,
+                        "step_id": f"{workflow_id}:ASSESS_TASK",
+                        "action": {"action": "cancel"},
+                    },
                     headers=dead_headers,
                 ).status_code
                 == 503
@@ -575,6 +1111,11 @@ def test_openapi_publishes_workflow_contract(client: TestClient) -> None:
         "/todo-workflows/{workflow_id}",
         "/todo-workflows/{workflow_id}/actions",
     }
+    discovery = document["paths"]["/todo-workflows"]["get"]
+    assert (
+        discovery["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+        == "#/components/schemas/TodoWorkflowList"
+    )
     start = document["paths"]["/todo-workflows"]["post"]
     assert (
         start["requestBody"]["content"]["application/json"]["schema"]["$ref"]
@@ -584,8 +1125,22 @@ def test_openapi_publishes_workflow_contract(client: TestClient) -> None:
         start["responses"]["201"]["content"]["application/json"]["schema"]["$ref"]
         == "#/components/schemas/TodoWorkflowResponse"
     )
+    assert set(document["components"]["schemas"]["TodoWorkflowStart"]["required"]) == {
+        "request_id",
+        "title",
+    }
     actions = document["paths"]["/todo-workflows/{workflow_id}/actions"]["post"]
-    action_schema = actions["requestBody"]["content"]["application/json"]["schema"]
+    assert (
+        actions["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+        == "#/components/schemas/TodoWorkflowActionRequest"
+    )
+    envelope_required = set(
+        document["components"]["schemas"]["TodoWorkflowActionRequest"]["required"]
+    )
+    assert envelope_required == {"request_id", "expected_revision", "step_id", "action"}
+    action_schema = document["components"]["schemas"]["TodoWorkflowActionRequest"][
+        "properties"
+    ]["action"]
     assert action_schema["discriminator"]["propertyName"] == "action"
     assert action_schema["discriminator"]["mapping"] == {
         "answer_multiple_steps": "#/components/schemas/AnswerMultipleStepsAction",
@@ -599,6 +1154,20 @@ def test_openapi_publishes_workflow_contract(client: TestClient) -> None:
         "ConfirmAction",
         "CancelAction",
     } <= set(document["components"]["schemas"])
+    response_required = set(
+        document["components"]["schemas"]["TodoWorkflowResponse"]["required"]
+    )
+    assert {
+        "workflow_id",
+        "revision",
+        "definition_version",
+        "view_contract_version",
+        "state",
+        "title",
+        "context",
+        "result",
+        "view",
+    } <= response_required
     view_schema = document["components"]["schemas"]["TodoWorkflowResponse"][
         "properties"
     ]["view"]
@@ -621,6 +1190,7 @@ def test_openapi_publishes_workflow_contract(client: TestClient) -> None:
 def test_workflow_preflight_allows_bearer_and_json(client: TestClient) -> None:
     for path, method in [
         ("/todo-workflows", "POST"),
+        ("/todo-workflows", "GET"),
         ("/todo-workflows/00000000-0000-0000-0000-000000000000", "GET"),
         (
             "/todo-workflows/00000000-0000-0000-0000-000000000000/actions",
