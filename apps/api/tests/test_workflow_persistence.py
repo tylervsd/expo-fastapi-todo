@@ -980,6 +980,210 @@ def test_snapshot_from_record_accepts_single_proposal_multi_step_review() -> Non
     assert snapshot_from_record(snapshot_to_record(completed)) == completed
 
 
+def _assess_snapshot(workflow_id: UUID) -> WorkflowSnapshot:
+    return WorkflowSnapshot(
+        id=workflow_id,
+        state=WorkflowState.ASSESS_TASK,
+        title="Plan birthday party",
+        involves_multiple_steps=None,
+        proposed_todo_titles=(),
+        created_todos=None,
+        revision=0,
+        definition_version=CURRENT_WORKFLOW_DEFINITION_VERSION,
+    )
+
+
+def _offer_snapshot(workflow_id: UUID) -> WorkflowSnapshot:
+    return WorkflowSnapshot(
+        id=workflow_id,
+        state=WorkflowState.OFFER_BREAKDOWN,
+        title="Plan birthday party",
+        involves_multiple_steps=True,
+        proposed_todo_titles=(),
+        created_todos=None,
+        revision=1,
+        definition_version=CURRENT_WORKFLOW_DEFINITION_VERSION,
+    )
+
+
+def test_snapshot_from_record_accepts_every_domain_produced_shape() -> None:
+    # Guards the fail-closed tightening below: every shape the version-1
+    # graph (or cancellation of one) can produce must still decode.
+    workflow_id = uuid4()
+    assess = _assess_snapshot(workflow_id)
+    assert snapshot_from_record(snapshot_to_record(assess)) == assess
+    offer = _offer_snapshot(workflow_id)
+    assert snapshot_from_record(snapshot_to_record(offer)) == offer
+    cancelled_from_collect = WorkflowSnapshot(
+        id=workflow_id,
+        state=WorkflowState.CANCELLED,
+        title="Plan birthday party",
+        involves_multiple_steps=True,
+        proposed_todo_titles=(),
+        created_todos=None,
+        revision=2,
+        definition_version=CURRENT_WORKFLOW_DEFINITION_VERSION,
+    )
+    assert (
+        snapshot_from_record(snapshot_to_record(cancelled_from_collect))
+        == cancelled_from_collect
+    )
+    cancelled_no_breakdown = WorkflowSnapshot(
+        id=workflow_id,
+        state=WorkflowState.CANCELLED,
+        title="Plan birthday party",
+        involves_multiple_steps=False,
+        proposed_todo_titles=("Plan birthday party",),
+        created_todos=None,
+        revision=2,
+        definition_version=CURRENT_WORKFLOW_DEFINITION_VERSION,
+    )
+    assert (
+        snapshot_from_record(snapshot_to_record(cancelled_no_breakdown))
+        == cancelled_no_breakdown
+    )
+
+
+@pytest.mark.parametrize(
+    "make, mutate",
+    [
+        # CANCELLED preserves the exact flag/proposals of the cancelled
+        # state: None only ever pairs with empty proposals.
+        (
+            "cancelled",
+            lambda record: record.update(
+                {
+                    "involves_multiple_steps": None,
+                    "proposed_todo_titles": ["Send invitations"],
+                }
+            ),
+        ),
+        # CANCELLED with False only ever carries the single workflow title.
+        (
+            "cancelled",
+            lambda record: record.update(
+                {
+                    "involves_multiple_steps": False,
+                    "proposed_todo_titles": ["Send invitations", "Buy cake"],
+                }
+            ),
+        ),
+        (
+            "cancelled",
+            lambda record: record.update(
+                {
+                    "involves_multiple_steps": False,
+                    "proposed_todo_titles": ["Buy cake"],
+                }
+            ),
+        ),
+        # A lone proposal is only produced on the no-breakdown path, where
+        # it equals the workflow title, for either flag.
+        (
+            "review",
+            lambda record: record.update({"proposed_todo_titles": ["Buy cake"]}),
+        ),
+        (
+            "review-false",
+            lambda record: record.update({"proposed_todo_titles": ["Buy cake"]}),
+        ),
+        # COMPLETED todos mirror the accepted proposals in order.
+        (
+            "completed",
+            lambda record: record["created_todos"].__setitem__(
+                0, {**record["created_todos"][0], "title": "Buy cake"}
+            ),
+        ),
+        (
+            "completed-two",
+            lambda record: record.update(
+                {
+                    "created_todos": [
+                        record["created_todos"][1],
+                        record["created_todos"][0],
+                    ]
+                }
+            ),
+        ),
+        # Newly created todos are always incomplete.
+        (
+            "completed",
+            lambda record: record["created_todos"].__setitem__(
+                0, {**record["created_todos"][0], "completed": True}
+            ),
+        ),
+        # ASSESS_TASK only ever carries (None, ()); OFFER/COLLECT only True.
+        ("assess", lambda record: record.update({"involves_multiple_steps": True})),
+        ("offer", lambda record: record.update({"involves_multiple_steps": None})),
+        ("active", lambda record: record.update({"involves_multiple_steps": None})),
+    ],
+    ids=[
+        "cancelled-missing-flag-with-proposals",
+        "cancelled-single-step-flag-with-two-proposals",
+        "cancelled-single-step-flag-proposal-not-title",
+        "review-lone-proposal-not-title",
+        "review-false-lone-proposal-not-title",
+        "completed-todo-title-mismatch",
+        "completed-todo-order-mismatch",
+        "completed-todo-marked-complete",
+        "assess-flag-present",
+        "offer-flag-missing",
+        "collect-flag-missing",
+    ],
+)
+def test_snapshot_from_record_rejects_impossible_state_context(
+    make: str, mutate: Callable[[dict[str, object]], None]
+) -> None:
+    workflow_id = uuid4()
+    if make == "cancelled":
+        record = snapshot_to_record(cancelled_snapshot(workflow_id))
+    elif make == "review":
+        record = snapshot_to_record(_review_snapshot(workflow_id))
+    elif make == "review-false":
+        base = _review_snapshot(workflow_id)
+        record = snapshot_to_record(
+            WorkflowSnapshot(
+                id=base.id,
+                state=base.state,
+                title=base.title,
+                involves_multiple_steps=False,
+                proposed_todo_titles=("Plan birthday party",),
+                created_todos=None,
+                revision=base.revision,
+                definition_version=base.definition_version,
+            )
+        )
+    elif make == "completed":
+        record = snapshot_to_record(completed_snapshot(workflow_id, uuid4()))
+    elif make == "completed-two":
+        base = _review_snapshot(workflow_id)
+        record = snapshot_to_record(
+            WorkflowSnapshot(
+                id=base.id,
+                state=WorkflowState.COMPLETED,
+                title=base.title,
+                involves_multiple_steps=True,
+                proposed_todo_titles=base.proposed_todo_titles,
+                created_todos=tuple(
+                    CreatedTodo(id=uuid4(), title=title, completed=False)
+                    for title in base.proposed_todo_titles
+                ),
+                revision=2,
+                definition_version=CURRENT_WORKFLOW_DEFINITION_VERSION,
+            )
+        )
+    elif make == "assess":
+        record = snapshot_to_record(_assess_snapshot(workflow_id))
+    elif make == "offer":
+        record = snapshot_to_record(_offer_snapshot(workflow_id))
+    else:
+        record = snapshot_to_record(active_snapshot(workflow_id))
+    mutate(record)
+
+    with pytest.raises(ValueError):
+        snapshot_from_record(record)
+
+
 def _phase8_insert(connection, owner_id: int, public_id: UUID, state: str,
                    involves: bool | None, proposals: str,
                    completion: str | None) -> None:
@@ -1057,12 +1261,33 @@ def test_reliability_migration_backfills_each_state(database_engine: Engine) -> 
                 assert row.definition_version == 1
                 assert row.title == "Plan birthday party"
             by_state = {row.state: row for row in rows}
-            assert by_state["REVIEW"].proposed_todo_titles == (
-                '["Send invitations", "Buy decorations"]'
-            )
-            assert "5f699d61-9449-407e-aa37-89e759b78df0" in (
-                by_state["COMPLETED"].completion_result or ""
-            )
+            expected_context = {
+                "ASSESS_TASK": (None, "[]", None),
+                "OFFER_BREAKDOWN": (True, "[]", None),
+                "COLLECT_TASKS": (True, "[]", None),
+                "REVIEW": (
+                    True,
+                    '["Send invitations", "Buy decorations"]',
+                    None,
+                ),
+                "COMPLETED": (
+                    False,
+                    '["Plan birthday party"]',
+                    (
+                        '{"created_todos": [{"id": '
+                        '"5f699d61-9449-407e-aa37-89e759b78df0", '
+                        '"title": "Plan birthday party", '
+                        '"completed": false}]}'
+                    ),
+                ),
+                "CANCELLED": (None, "[]", None),
+            }
+            assert set(by_state) == set(expected_context)
+            for state, (involves, proposals, completion) in expected_context.items():
+                row = by_state[state]
+                assert row.involves_multiple_steps == involves, state
+                assert row.proposed_todo_titles == proposals, state
+                assert (row.completion_result or None) == (completion or None), state
             for bad_sql, params, expected in [
                 (
                     (
@@ -1156,13 +1381,22 @@ def test_reliability_rollback_and_reupgrade_preserve_data(
             command.upgrade(config, "head")
             row = connection.execute(
                 text(
-                    "SELECT state, revision, definition_version, "
-                    "proposed_todo_titles::text FROM todo_workflows "
-                    "WHERE public_id = :public_id"
+                    "SELECT state, revision, definition_version, title, "
+                    "involves_multiple_steps, "
+                    "proposed_todo_titles::text, completion_result::text "
+                    "FROM todo_workflows WHERE public_id = :public_id"
                 ),
                 {"public_id": public_id},
             ).one()
-            assert tuple(row) == ("REVIEW", 0, 1, '["Send invitations"]')
+            assert tuple(row) == (
+                "REVIEW",
+                0,
+                1,
+                "Plan birthday party",
+                True,
+                '["Send invitations"]',
+                None,
+            )
             assert connection.execute(
                 text("SELECT count(*) FROM todos WHERE public_id = :public_id"),
                 {"public_id": todo_id},

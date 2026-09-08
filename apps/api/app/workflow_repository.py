@@ -298,18 +298,22 @@ def snapshot_from_record(record: Mapping[str, object]) -> WorkflowSnapshot:
         _require_canonical_title(item, field="proposed_todo_titles")
         for item in proposals
     )
-    if state in (
-        WorkflowState.ASSESS_TASK,
-        WorkflowState.OFFER_BREAKDOWN,
-        WorkflowState.COLLECT_TASKS,
-    ):
-        if canonical_proposals:
-            raise InvalidStoredSnapshot("stored snapshot has invalid proposals")
+    if state == WorkflowState.ASSESS_TASK:
+        # create_initial_snapshot is the only producer: (None, ()).
+        if involves is not None or canonical_proposals:
+            raise InvalidStoredSnapshot("stored snapshot has invalid context")
+    elif state in (WorkflowState.OFFER_BREAKDOWN, WorkflowState.COLLECT_TASKS):
+        # Both states are only entered with involves_multiple_steps=True
+        # (ASSESS_TASK answered "yes") and carry no proposals yet.
+        if involves is not True or canonical_proposals:
+            raise InvalidStoredSnapshot("stored snapshot has invalid context")
     elif state in (WorkflowState.REVIEW, WorkflowState.COMPLETED):
         # Mirror the domain's flag/count rule: involves_multiple_steps=False
         # yields exactly the single title proposal, while True yields one
         # proposal (OFFER_BREAKDOWN answered "no") or 2..10 breakdown
-        # titles. A missing flag never occurs at these states.
+        # titles. A lone proposal only ever comes from the no-breakdown
+        # path, where it equals the workflow title. A missing flag never
+        # occurs at these states.
         if involves is False:
             if len(canonical_proposals) != 1:
                 raise InvalidStoredSnapshot("stored snapshot has invalid proposals")
@@ -318,9 +322,28 @@ def snapshot_from_record(record: Mapping[str, object]) -> WorkflowSnapshot:
                 raise InvalidStoredSnapshot("stored snapshot has invalid proposals")
         else:
             raise InvalidStoredSnapshot("stored snapshot has invalid flag")
+        if len(canonical_proposals) == 1 and canonical_proposals[0] != title:
+            raise InvalidStoredSnapshot("stored snapshot has invalid proposals")
+    elif state == WorkflowState.CANCELLED:
+        # Cancellation preserves the exact flag/proposals of the cancelled
+        # state: None pairs only with empty proposals (ASSESS_TASK),
+        # False only with the single workflow title (no-breakdown REVIEW),
+        # True with empty (OFFER/COLLECT), the single title (OFFER "no" or
+        # no-breakdown REVIEW), or 2..10 breakdown titles.
+        if involves is None:
+            if canonical_proposals:
+                raise InvalidStoredSnapshot("stored snapshot has invalid context")
+        elif involves is False:
+            if (
+                len(canonical_proposals) != 1
+                or canonical_proposals[0] != title
+            ):
+                raise InvalidStoredSnapshot("stored snapshot has invalid proposals")
+        elif len(canonical_proposals) > MAX_BREAKDOWN_TITLES or (
+            len(canonical_proposals) == 1 and canonical_proposals[0] != title
+        ):
+            raise InvalidStoredSnapshot("stored snapshot has invalid proposals")
     elif len(canonical_proposals) > MAX_BREAKDOWN_TITLES:
-        # CANCELLED preserves the proposals of the cancelled state, which
-        # is empty, a single title, or 2 through 10 breakdown titles.
         raise InvalidStoredSnapshot("stored snapshot has invalid proposals")
     created: tuple[CreatedTodo, ...] | None = None
     stored_todos = record["created_todos"]
@@ -344,12 +367,18 @@ def snapshot_from_record(record: Mapping[str, object]) -> WorkflowSnapshot:
             todo_title = _require_canonical_title(entry["title"], field="created_todos")
             if not isinstance(entry["completed"], bool):
                 raise InvalidStoredSnapshot("stored snapshot has invalid created_todos")
+            # Confirm preserves the accepted proposals and the service
+            # creates one incomplete todo per proposal, in order.
+            if entry["completed"]:
+                raise InvalidStoredSnapshot("stored snapshot has invalid created_todos")
             items.append(
                 CreatedTodo(
                     id=todo_id, title=todo_title, completed=entry["completed"]
                 )
             )
         if len(items) != len(canonical_proposals):
+            raise InvalidStoredSnapshot("stored snapshot has invalid created_todos")
+        if any(item.title != proposal for item, proposal in zip(items, canonical_proposals)):
             raise InvalidStoredSnapshot("stored snapshot has invalid created_todos")
         created = tuple(items)
     elif stored_todos is not None:
