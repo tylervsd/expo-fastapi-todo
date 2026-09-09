@@ -1,7 +1,15 @@
+from uuid import uuid4
+
 import pytest
 from pydantic import ValidationError
 
-from app.main import TodoCreate, UserLogin, UserSignup
+from app.main import (
+    TodoCreate,
+    TodoWorkflowActionRequest,
+    TodoWorkflowStart,
+    UserLogin,
+    UserSignup,
+)
 from app.passwords import hash_password, verify_password
 from app.title_validation import canonicalize_title
 
@@ -164,6 +172,61 @@ def test_user_signup_does_not_trim_password() -> None:
         UserSignup(username="alice", password="  padded-password  ").password
         == "  padded-password  "
     )
+
+
+def test_workflow_start_envelope_requires_request_id_and_title() -> None:
+    request_id = uuid4()
+    assert TodoWorkflowStart(
+        request_id=request_id, title="  Plan birthday party  "
+    ).title == "Plan birthday party"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"title": "Plan birthday party"},
+        {"request_id": "not-a-uuid", "title": "Plan birthday party"},
+        {"request_id": str(uuid4()), "title": ""},
+        {"request_id": str(uuid4()), "title": "Known", "extra": 1},
+    ],
+)
+def test_workflow_start_envelope_rejects_malformed(payload: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        TodoWorkflowStart.model_validate(payload)
+
+
+def test_workflow_action_envelope_accepts_exact_shape() -> None:
+    envelope = TodoWorkflowActionRequest.model_validate(
+        {
+            "request_id": str(uuid4()),
+            "expected_revision": 2,
+            "step_id": f"{uuid4()}:COLLECT_TASKS",
+            "action": {"action": "confirm"},
+        }
+    )
+    assert envelope.expected_revision == 2
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"expected_revision": 0, "step_id": "s", "action": {"action": "cancel"}},
+        {"request_id": "not-a-uuid", "expected_revision": 0, "step_id": "s", "action": {"action": "cancel"}},
+        {"request_id": "00000000-0000-0000-0000-000000000000", "expected_revision": True, "step_id": "s", "action": {"action": "cancel"}},
+        {"request_id": "00000000-0000-0000-0000-000000000000", "expected_revision": 1.5, "step_id": "s", "action": {"action": "cancel"}},
+        {"request_id": "00000000-0000-0000-0000-000000000000", "expected_revision": "0", "step_id": "s", "action": {"action": "cancel"}},
+        {"request_id": "00000000-0000-0000-0000-000000000000", "expected_revision": -1, "step_id": "s", "action": {"action": "cancel"}},
+        {"request_id": "00000000-0000-0000-0000-000000000000", "expected_revision": 2147483648, "step_id": "s", "action": {"action": "cancel"}},
+        {"request_id": "00000000-0000-0000-0000-000000000000", "expected_revision": 0, "step_id": "s", "action": {"action": "cancel"}, "extra": 1},
+    ],
+)
+def test_workflow_action_envelope_rejects_strict_shape_violations(
+    payload: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        TodoWorkflowActionRequest.model_validate(payload)
 
 
 @pytest.mark.parametrize("model", [UserSignup, UserLogin])

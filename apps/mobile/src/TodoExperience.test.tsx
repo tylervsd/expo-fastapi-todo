@@ -1,10 +1,14 @@
 import * as mockReact from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import { QueryClientProvider, timeoutManager, type QueryClient } from "@tanstack/react-query";
 import { createAppQueryClient } from "../App";
 import type { AuthenticatedApi } from "./auth/authenticatedApi";
 import type { Todo, TodoWorkflow } from "./todos/todoApi";
 import { TodoExperience } from "./TodoExperience";
+import {
+  createMemoryPendingWriteStorage,
+  createPendingWriteStore,
+} from "./todoWorkflows/pendingWorkflowWrite";
 
 jest.mock("react-native", () => {
   const actual = jest.requireActual("react-native");
@@ -64,11 +68,18 @@ timeoutManager.setTimeoutProvider({
 const liveClients: QueryClient[] = [];
 
 const WORKFLOW_ID = "6fc33b84-16a8-4d8e-ae94-fc50bb457d72";
+const OTHER_WORKFLOW_ID = "7dd44c95-27b9-5e8f-bf05-0d61cc568e83";
+const USER_ID = "9a4b3c2d-1e2f-4a5b-8c6d-7e8f9a0b1c2d";
+const OTHER_USER_ID = "8b3a2c1d-9e8f-4a5b-8c6d-7e8f9a0b1c2e";
+const REQUEST_ID = "30bfb542-17f1-48a0-9fd8-3930379d5974";
 
 const todo = (id: string, title: string): Todo => ({ id, title, completed: false });
 
 const assessWorkflow: TodoWorkflow = {
   workflow_id: WORKFLOW_ID,
+  revision: 0,
+  definition_version: 1,
+  view_contract_version: 1,
   state: "ASSESS_TASK",
   title: "Plan birthday party",
   context: { involves_multiple_steps: null, proposed_todo_titles: [] },
@@ -87,6 +98,7 @@ const assessWorkflow: TodoWorkflow = {
 
 const cancelledWorkflow: TodoWorkflow = {
   ...assessWorkflow,
+  revision: 1,
   state: "CANCELLED",
   view: {
     type: "completion",
@@ -109,19 +121,27 @@ const makeShellApi = (): MockShellApi =>
     setCompleted: jest.fn(),
     remove: jest.fn(),
     startWorkflow: jest.fn(),
-    getWorkflow: jest.fn(),
+    getWorkflow: jest.fn(async () => assessWorkflow),
     advanceWorkflow: jest.fn(),
+    listWorkflows: jest.fn(async () => ({ items: [] })),
   }) as unknown as MockShellApi;
 
 const renderShell = async (
   api: MockShellApi,
-  userId = "user-1",
+  userId = USER_ID,
   client = createAppQueryClient()
 ) => {
   liveClients.push(client);
   const view = await render(
     <QueryClientProvider client={client}>
-      <TodoExperience userId={userId} api={api} />
+      <TodoExperience
+        userId={userId}
+        api={api}
+        pendingStore={createPendingWriteStore(createMemoryPendingWriteStorage())}
+        generateRequestId={() => REQUEST_ID}
+        sessionEpoch={0}
+        isSessionCurrent={() => true}
+      />
     </QueryClientProvider>
   );
   return { view, client };
@@ -219,6 +239,8 @@ it("returns to todos after cancel", async () => {
       screen.getByRole("header", { name: "Does this task involve multiple steps?" })
     ).toBeTruthy()
   );
+  // Rendering waits for the reconciliation GET: stage it for the cancel.
+  ;(api.getWorkflow as jest.Mock).mockResolvedValueOnce(cancelledWorkflow);
   await fireEvent.press(screen.getByRole("button", { name: "Cancel planning" }));
   await waitFor(() =>
     expect(screen.getByRole("header", { name: "Plan cancelled" })).toBeTruthy()
@@ -231,6 +253,7 @@ it("returns to todos after cancel", async () => {
 it("returns after completion onto a refetching todo list", async () => {
   const offerWorkflow: TodoWorkflow = {
     ...assessWorkflow,
+    revision: 1,
     state: "OFFER_BREAKDOWN",
     context: { involves_multiple_steps: true, proposed_todo_titles: [] },
     view: {
@@ -246,6 +269,7 @@ it("returns after completion onto a refetching todo list", async () => {
   };
   const collectWorkflow: TodoWorkflow = {
     ...assessWorkflow,
+    revision: 2,
     state: "COLLECT_TASKS",
     context: { involves_multiple_steps: true, proposed_todo_titles: [] },
     view: {
@@ -258,6 +282,7 @@ it("returns after completion onto a refetching todo list", async () => {
   };
   const reviewWorkflow: TodoWorkflow = {
     ...assessWorkflow,
+    revision: 3,
     state: "REVIEW",
     context: {
       involves_multiple_steps: true,
@@ -272,6 +297,7 @@ it("returns after completion onto a refetching todo list", async () => {
   };
   const completedWorkflow: TodoWorkflow = {
     ...reviewWorkflow,
+    revision: 4,
     state: "COMPLETED",
     result: {
       created_todos: [
@@ -308,6 +334,7 @@ it("returns after completion onto a refetching todo list", async () => {
       screen.getByRole("header", { name: "Does this task involve multiple steps?" })
     ).toBeTruthy()
   );
+  ;(api.getWorkflow as jest.Mock).mockResolvedValueOnce(offerWorkflow);
   await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
   await waitFor(() =>
     expect(
@@ -316,6 +343,7 @@ it("returns after completion onto a refetching todo list", async () => {
       })
     ).toBeTruthy()
   );
+  ;(api.getWorkflow as jest.Mock).mockResolvedValueOnce(collectWorkflow);
   await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
   await waitFor(() =>
     expect(screen.getByRole("header", { name: "Break it into smaller todos" })).toBeTruthy()
@@ -324,10 +352,12 @@ it("returns after completion onto a refetching todo list", async () => {
     screen.getByLabelText("Todo titles (one per line)"),
     "Send invitations\nBuy decorations"
   );
+  ;(api.getWorkflow as jest.Mock).mockResolvedValueOnce(reviewWorkflow);
   await fireEvent.press(screen.getByRole("button", { name: "Save tasks" }));
   await waitFor(() =>
     expect(screen.getByRole("header", { name: "Review your plan" })).toBeTruthy()
   );
+  ;(api.getWorkflow as jest.Mock).mockResolvedValueOnce(completedWorkflow);
   await fireEvent.press(screen.getByRole("button", { name: "Confirm plan" }));
   await waitFor(() =>
     expect(screen.getByRole("header", { name: "Plan complete" })).toBeTruthy()
@@ -363,7 +393,7 @@ it("hides shell Back on a persisted active workflow", async () => {
 it("switching users through remount cannot render the prior workflow key", async () => {
   const api = makeShellApi();
   ;(api.startWorkflow as jest.Mock).mockResolvedValue(assessWorkflow);
-  const { view, client } = await renderShell(api, "user-1");
+  const { view, client } = await renderShell(api, USER_ID);
   await waitFor(() => expect(screen.queryByText("Loading todos…")).toBeNull());
 
   await fireEvent.press(screen.getByRole("button", { name: "Help me plan a task" }));
@@ -375,14 +405,150 @@ it("switching users through remount cannot render the prior workflow key", async
     ).toBeTruthy()
   );
   expect(
-    client.getQueryData(["todo-workflow", "user-1", WORKFLOW_ID])
+    client.getQueryData(["todo-workflow", USER_ID, WORKFLOW_ID])
   ).toEqual(assessWorkflow);
+  const getsAfterFirstUser = (api.getWorkflow as jest.Mock).mock.calls.length;
 
   await view.unmount();
-  await renderShell(api, "user-2", client);
+  await renderShell(api, OTHER_USER_ID, client);
   await waitFor(() => expect(screen.queryByText("Loading todos…")).toBeNull());
 
   await fireEvent.press(screen.getByRole("button", { name: "Help me plan a task" }));
   expect(screen.getByRole("header", { name: "Help me plan a task" })).toBeTruthy();
-  expect(api.getWorkflow).not.toHaveBeenCalled();
+  expect((api.getWorkflow as jest.Mock).mock.calls.length).toBe(getsAfterFirstUser);
+  expect(
+    client.getQueryData(["todo-workflow", OTHER_USER_ID, WORKFLOW_ID])
+  ).toBeUndefined();
+});
+
+const reviewItem: TodoWorkflow = {
+  ...assessWorkflow,
+  workflow_id: OTHER_WORKFLOW_ID,
+  revision: 3,
+  state: "REVIEW",
+  context: {
+    involves_multiple_steps: true,
+    proposed_todo_titles: ["Send invitations", "Buy decorations"],
+  },
+  view: {
+    type: "review",
+    step_id: `${OTHER_WORKFLOW_ID}:REVIEW`,
+    title: "Review your plan",
+    proposed_titles: ["Send invitations", "Buy decorations"],
+  },
+};
+
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((onResolve, onReject) => {
+    resolve = onResolve;
+    reject = onReject;
+  });
+  return { promise, resolve, reject };
+};
+
+it("lists active plans with quick add intact and resumes without advancing", async () => {
+  const api = makeShellApi();
+  ;(api.listWorkflows as jest.Mock).mockResolvedValue({
+    items: [assessWorkflow, reviewItem],
+  });
+  const { client } = await renderShell(api);
+  await waitFor(() => expect(screen.queryByText("Loading todos…")).toBeNull());
+
+  await waitFor(() =>
+    expect(screen.getByRole("header", { name: "Resume plans" })).toBeTruthy()
+  );
+  expect(screen.getByRole("header", { name: "Todos" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Add todo" })).toBeTruthy();
+  const resumeButton = screen.getByRole("button", {
+    name: "Plan birthday party, Does this task involve multiple steps?",
+  });
+  expect(resumeButton).toBeTruthy();
+  expect(
+    screen.getByRole("button", { name: "Plan birthday party, Review your plan" })
+  ).toBeTruthy();
+  // Discovery seeds per-workflow entries for instant resume.
+  expect(
+    client.getQueryData(["todo-workflow", USER_ID, OTHER_WORKFLOW_ID])
+  ).toEqual(reviewItem);
+
+  await fireEvent.press(resumeButton);
+  await waitFor(() =>
+    expect(
+      screen.getByRole("header", { name: "Does this task involve multiple steps?" })
+    ).toBeTruthy()
+  );
+  expect(api.startWorkflow).not.toHaveBeenCalled();
+  expect(api.advanceWorkflow).not.toHaveBeenCalled();
+});
+
+it("hides the resume section when no plans are active", async () => {
+  const api = makeShellApi();
+  await renderShell(api);
+  await waitFor(() => expect(screen.queryByText("Loading todos…")).toBeNull());
+  await waitFor(() =>
+    expect((api.listWorkflows as jest.Mock).mock.calls.length).toBeGreaterThan(0)
+  );
+  expect(screen.queryByRole("header", { name: "Resume plans" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Add todo" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Help me plan a task" })).toBeTruthy();
+});
+
+it("shows loading, error, and retry states for discovery", async () => {
+  const api = makeShellApi();
+  const pending = deferred<{ items: TodoWorkflow[] }>();
+  ;(api.listWorkflows as jest.Mock).mockReturnValueOnce(pending.promise);
+  await renderShell(api);
+  await waitFor(() => expect(screen.queryByText("Loading todos…")).toBeNull());
+
+  await waitFor(() =>
+    expect(screen.getByText("Loading saved plans…")).toBeTruthy()
+  );
+
+  await act(async () => {
+    pending.reject(new Error("offline"));
+  });
+  await waitFor(() =>
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not load saved plans.")
+  );
+  ;(api.listWorkflows as jest.Mock).mockResolvedValueOnce({ items: [assessWorkflow] });
+  await fireEvent.press(screen.getByRole("button", { name: "Retry loading saved plans" }));
+  await waitFor(() =>
+    expect(
+      screen.getByRole("button", {
+        name: "Plan birthday party, Does this task involve multiple steps?",
+      })
+    ).toBeTruthy()
+  );
+});
+
+it("resumes an unsupported saved plan without submitting", async () => {
+  const api = makeShellApi();
+  const unsupported = {
+    workflow_id: OTHER_WORKFLOW_ID,
+    revision: 1,
+    definition_version: 1,
+    view_contract_version: 2,
+    view: {
+      type: "unsupported",
+      server_type: "contract:2",
+      step_id: `${OTHER_WORKFLOW_ID}:unsupported-contract:2`,
+    },
+  } as unknown as TodoWorkflow;
+  ;(api.listWorkflows as jest.Mock).mockResolvedValue({ items: [unsupported] });
+  ;(api.getWorkflow as jest.Mock).mockResolvedValue(unsupported);
+  await renderShell(api);
+  await waitFor(() => expect(screen.queryByText("Loading todos…")).toBeNull());
+
+  const resumeButton = await waitFor(() =>
+    screen.getByRole("button", {
+      name: `Unsupported saved plan, ${OTHER_WORKFLOW_ID}`,
+    })
+  );
+  await fireEvent.press(resumeButton);
+  await waitFor(() =>
+    expect(screen.getByRole("header", { name: "Unsupported step" })).toBeTruthy()
+  );
+  expect(api.advanceWorkflow).not.toHaveBeenCalled();
 });

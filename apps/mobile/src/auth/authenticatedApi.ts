@@ -3,6 +3,7 @@ import {
   createTodo,
   deleteTodo,
   getTodoWorkflow,
+  listTodoWorkflows,
   listTodos,
   setTodoCompleted,
   setTodoTitle,
@@ -10,7 +11,8 @@ import {
   TodoApiError,
   type TodoRequestOptions,
   type TodoWorkflow,
-  type TodoWorkflowAction,
+  type WorkflowActionRequest,
+  type WorkflowStartRequest,
 } from "../todos/todoApi";
 import type { TodoScreenApi } from "../TodoScreen";
 
@@ -23,6 +25,7 @@ export type TodoTransport = {
   startTodoWorkflow: typeof startTodoWorkflow;
   getTodoWorkflow: typeof getTodoWorkflow;
   advanceTodoWorkflow: typeof advanceTodoWorkflow;
+  listTodoWorkflows: typeof listTodoWorkflows;
 };
 
 export const defaultTransport: TodoTransport = {
@@ -34,18 +37,17 @@ export const defaultTransport: TodoTransport = {
   startTodoWorkflow,
   getTodoWorkflow,
   advanceTodoWorkflow,
+  listTodoWorkflows,
 };
 
 export type TodoWorkflowScreenApi = {
-  startWorkflow: (title: string) => Promise<TodoWorkflow>;
+  startWorkflow: (request: WorkflowStartRequest) => Promise<TodoWorkflow>;
   getWorkflow: (
     id: string,
     options: { signal: AbortSignal }
   ) => Promise<TodoWorkflow>;
-  advanceWorkflow: (
-    id: string,
-    action: TodoWorkflowAction
-  ) => Promise<TodoWorkflow>;
+  advanceWorkflow: (id: string, request: WorkflowActionRequest) => Promise<TodoWorkflow>;
+  listWorkflows: (options: { signal: AbortSignal }) => Promise<{ items: TodoWorkflow[] }>;
 };
 
 export type AuthenticatedApi = TodoScreenApi & TodoWorkflowScreenApi;
@@ -84,15 +86,19 @@ export function createAuthenticatedApi(
         transport.setTodoCompleted(id, completed, opts(requestToken))
       ),
     remove: (id) => guard((requestToken) => transport.deleteTodo(id, opts(requestToken))),
-    startWorkflow: (title) =>
-      guard((requestToken) => transport.startTodoWorkflow(title, opts(requestToken))),
+    startWorkflow: (request) =>
+      guard((requestToken) => transport.startTodoWorkflow(request, opts(requestToken))),
     getWorkflow: (id, options) =>
       guard((requestToken) =>
         transport.getTodoWorkflow(id, { ...options, ...opts(requestToken) })
       ),
-    advanceWorkflow: (id, action) =>
+    advanceWorkflow: (id, request) =>
       guard((requestToken) =>
-        transport.advanceTodoWorkflow(id, action, opts(requestToken))
+        transport.advanceTodoWorkflow(id, request, opts(requestToken))
+      ),
+    listWorkflows: (options) =>
+      guard((requestToken) =>
+        transport.listTodoWorkflows({ ...options, ...opts(requestToken) })
       ),
   };
 }

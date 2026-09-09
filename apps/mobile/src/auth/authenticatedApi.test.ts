@@ -14,6 +14,7 @@ const makeTransport = (): TodoTransport & {
   startTodoWorkflow: jest.fn(),
   getTodoWorkflow: jest.fn(),
   advanceTodoWorkflow: jest.fn(),
+  listTodoWorkflows: jest.fn(),
 });
 
 it("injects the token into every call", async () => {
@@ -68,8 +69,21 @@ it("sends no token when signed out", async () => {
 
 describe("workflow calls", () => {
   const workflowId = "6fc33b84-16a8-4d8e-ae94-fc50bb457d72";
+  const startRequest = {
+    request_id: "30bfb542-17f1-48a0-9fd8-3930379d5974",
+    title: "Plan birthday party",
+  };
+  const actionRequest = {
+    request_id: "f019129d-1936-4a5d-9de8-3da5aa01ccb1",
+    expected_revision: 0,
+    step_id: `${workflowId}:ASSESS_TASK`,
+    action: { action: "confirm" as const },
+  };
   const assessWorkflow: TodoWorkflow = {
     workflow_id: workflowId,
+    revision: 0,
+    definition_version: 1,
+    view_contract_version: 1,
     state: "ASSESS_TASK",
     title: "Plan birthday party",
     context: { involves_multiple_steps: null, proposed_todo_titles: [] },
@@ -88,20 +102,23 @@ describe("workflow calls", () => {
 
   const makeWorkflowTransport = () => ({
     ...makeTransport(),
-    startTodoWorkflow: jest.fn(async () => assessWorkflow),
-    getTodoWorkflow: jest.fn(async () => assessWorkflow),
-    advanceTodoWorkflow: jest.fn(async () => assessWorkflow),
+    startTodoWorkflow: jest.fn(async (): Promise<TodoWorkflow> => assessWorkflow),
+    getTodoWorkflow: jest.fn(async (): Promise<TodoWorkflow> => assessWorkflow),
+    advanceTodoWorkflow: jest.fn(async (): Promise<TodoWorkflow> => assessWorkflow),
+    listTodoWorkflows: jest.fn(async (): Promise<{ items: TodoWorkflow[] }> => ({ items: [] })),
   });
 
-  it("sends the current token on all three workflow calls", async () => {
+  it("sends the current token on all workflow calls", async () => {
     const transport = makeWorkflowTransport();
     const api = createAuthenticatedApi(() => "tok", jest.fn(), transport);
+    const listSignal = new AbortController().signal;
 
-    await api.startWorkflow("Plan birthday party");
+    await api.startWorkflow(startRequest);
     await api.getWorkflow(workflowId, { signal: new AbortController().signal });
-    await api.advanceWorkflow(workflowId, { action: "confirm" });
+    await api.advanceWorkflow(workflowId, actionRequest);
+    await api.listWorkflows({ signal: listSignal });
 
-    expect(transport.startTodoWorkflow).toHaveBeenCalledWith("Plan birthday party", {
+    expect(transport.startTodoWorkflow).toHaveBeenCalledWith(startRequest, {
       token: "tok",
     });
     expect(transport.getTodoWorkflow).toHaveBeenCalledWith(workflowId, {
@@ -110,9 +127,13 @@ describe("workflow calls", () => {
     });
     expect(transport.advanceTodoWorkflow).toHaveBeenCalledWith(
       workflowId,
-      { action: "confirm" },
+      actionRequest,
       { token: "tok" }
     );
+    expect(transport.listTodoWorkflows).toHaveBeenCalledWith({
+      signal: listSignal,
+      token: "tok",
+    });
   });
 
   it("captures the token once and reports it on later auth-required", async () => {
@@ -145,7 +166,7 @@ describe("workflow calls", () => {
     const api = createAuthenticatedApi(() => "tok", onAuthRequired, transport);
 
     await expect(
-      api.advanceWorkflow(workflowId, { action: "cancel" })
+      api.advanceWorkflow(workflowId, actionRequest)
     ).rejects.toBe(failure);
     expect(onAuthRequired).not.toHaveBeenCalled();
   });

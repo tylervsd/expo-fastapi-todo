@@ -104,6 +104,7 @@ export function AuthScreen({
             editable={!pending}
             value={username}
             autoCapitalize="none"
+            autoCorrect={false}
             onChangeText={setUsername}
             placeholder="Username"
             style={styles.input}
@@ -114,6 +115,8 @@ export function AuthScreen({
             editable={!pending}
             value={password}
             secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
             onChangeText={setPassword}
             onSubmitEditing={submit}
             placeholder="Password"

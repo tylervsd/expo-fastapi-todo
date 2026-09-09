@@ -49,18 +49,29 @@ from app.todo_repository import TodoRow, delete_todo, set_completed, set_title
 from app.todo_repository import create_todo as create_todo_row
 from app.todo_repository import list_todos as list_todo_rows
 from app.workflow_domain import (
+    MAX_WORKFLOW_REVISION,
     AnswerMultipleSteps,
     Cancel,
     Confirm,
     InvalidWorkflowAction,
     SubmitTasks,
     TerminalWorkflow,
+    UnsupportedWorkflowDefinition,
     WorkflowCommand,
     WorkflowSnapshot,
     create_submit_tasks,
 )
 from app.workflow_presentation import WorkflowView, present_workflow
-from app.workflow_service import advance_workflow, get_workflow, start_workflow
+from app.workflow_repository import InvalidStoredSnapshot
+from app.workflow_service import (
+    RequestIdReused,
+    RevisionExhausted,
+    StaleWorkflowStep,
+    advance_workflow,
+    get_workflow,
+    list_active_workflows,
+    start_workflow,
+)
 
 EXPO_WEB_ORIGIN = "http://localhost:8081"
 
@@ -146,6 +157,7 @@ class SessionResponse(BaseModel):
 class TodoWorkflowStart(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    request_id: UUID
     title: StrictStr
 
     @field_validator("title")
@@ -191,6 +203,15 @@ TodoWorkflowAction = Annotated[
 ]
 
 
+class TodoWorkflowActionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: UUID
+    expected_revision: StrictInt = Field(ge=0, le=MAX_WORKFLOW_REVISION)
+    step_id: StrictStr
+    action: TodoWorkflowAction
+
+
 class TodoWorkflowContext(BaseModel):
     involves_multiple_steps: StrictBool | None
     proposed_todo_titles: list[str]
@@ -202,11 +223,18 @@ class TodoWorkflowResult(BaseModel):
 
 class TodoWorkflowResponse(BaseModel):
     workflow_id: UUID
+    revision: StrictInt
+    definition_version: StrictInt
+    view_contract_version: Literal[1]
     state: str
     title: str
     context: TodoWorkflowContext
     result: TodoWorkflowResult | None
     view: TodoWorkflowView
+
+
+class TodoWorkflowList(BaseModel):
+    items: list[TodoWorkflowResponse]
 
 
 class WorkflowChoice(BaseModel):
@@ -444,6 +472,9 @@ def create_app(session_factory: sessionmaker[Session] | None = None) -> FastAPI:
         view: WorkflowView = present_workflow(snapshot)
         return TodoWorkflowResponse(
             workflow_id=snapshot.id,
+            revision=snapshot.revision,
+            definition_version=snapshot.definition_version,
+            view_contract_version=1,
             state=snapshot.state.value,
             title=snapshot.title,
             context=TodoWorkflowContext(
@@ -484,6 +515,12 @@ def create_app(session_factory: sessionmaker[Session] | None = None) -> FastAPI:
     def workflow_not_found() -> HTTPException:
         return HTTPException(status_code=404, detail="Todo workflow not found.")
 
+    def workflow_conflict(code: str, message: str) -> HTTPException:
+        return HTTPException(status_code=409, detail={"code": code, "message": message})
+
+    def database_unavailable() -> HTTPException:
+        return HTTPException(status_code=503, detail="Database unavailable.")
+
     @app.post(
         "/todo-workflows", response_model=TodoWorkflowResponse, status_code=201
     )
@@ -494,8 +531,41 @@ def create_app(session_factory: sessionmaker[Session] | None = None) -> FastAPI:
     ) -> TodoWorkflowResponse:
         try:
             return as_workflow_response(
-                start_workflow(session, user.id, payload.title)
+                start_workflow(session, user.id, payload.title, payload.request_id)
             )
+        except RequestIdReused as exc:
+            raise workflow_conflict(
+                "request_id_reused",
+                "This request ID was already used with different details.",
+            ) from exc
+        except InvalidStoredSnapshot as exc:
+            raise database_unavailable() from exc
+        except (OperationalError, SQLAlchemyTimeoutError) as exc:
+            raise HTTPException(
+                status_code=503, detail="Database unavailable."
+            ) from exc
+
+    @app.get("/todo-workflows", response_model=TodoWorkflowList)
+    def list_todo_workflows(
+        user: Annotated[UserRow, Depends(get_current_user)],
+        session: Annotated[Session, Depends(get_session)],
+        status: Literal["active"] = "active",
+    ) -> TodoWorkflowList:
+        del status
+        try:
+            return TodoWorkflowList(
+                items=[
+                    as_workflow_response(snapshot)
+                    for snapshot in list_active_workflows(session, user.id)
+                ]
+            )
+        except UnsupportedWorkflowDefinition as exc:
+            raise workflow_conflict(
+                "unsupported_workflow_definition",
+                "This plan uses an unsupported workflow definition.",
+            ) from exc
+        except InvalidStoredSnapshot as exc:
+            raise database_unavailable() from exc
         except (OperationalError, SQLAlchemyTimeoutError) as exc:
             raise HTTPException(
                 status_code=503, detail="Database unavailable."
@@ -511,6 +581,11 @@ def create_app(session_factory: sessionmaker[Session] | None = None) -> FastAPI:
     ) -> TodoWorkflowResponse:
         try:
             snapshot = get_workflow(session, user.id, workflow_id)
+        except UnsupportedWorkflowDefinition as exc:
+            raise workflow_conflict(
+                "unsupported_workflow_definition",
+                "This plan uses an unsupported workflow definition.",
+            ) from exc
         except (OperationalError, SQLAlchemyTimeoutError) as exc:
             raise HTTPException(
                 status_code=503, detail="Database unavailable."
@@ -524,23 +599,50 @@ def create_app(session_factory: sessionmaker[Session] | None = None) -> FastAPI:
     )
     def advance_todo_workflow(
         workflow_id: UUID,
-        payload: TodoWorkflowAction,
+        payload: TodoWorkflowActionRequest,
         user: Annotated[UserRow, Depends(get_current_user)],
         session: Annotated[Session, Depends(get_session)],
     ) -> TodoWorkflowResponse:
         try:
             snapshot = advance_workflow(
-                session, user.id, workflow_id, to_domain_command(payload)
+                session,
+                user.id,
+                workflow_id,
+                to_domain_command(payload.action),
+                request_id=payload.request_id,
+                expected_revision=payload.expected_revision,
+                step_id=payload.step_id,
             )
+        except RequestIdReused as exc:
+            raise workflow_conflict(
+                "request_id_reused",
+                "This request ID was already used with different details.",
+            ) from exc
+        except StaleWorkflowStep as exc:
+            raise workflow_conflict(
+                "stale_step",
+                "This plan changed. Reload it and try again.",
+            ) from exc
         except TerminalWorkflow as exc:
-            raise HTTPException(
-                status_code=409, detail="Todo workflow is already terminal."
+            raise workflow_conflict(
+                "terminal_workflow", "Todo workflow is already terminal."
             ) from exc
         except InvalidWorkflowAction as exc:
-            raise HTTPException(
-                status_code=409,
-                detail="Action is not valid for the current workflow state.",
+            raise workflow_conflict(
+                "invalid_action",
+                "Action is not valid for the current workflow state.",
             ) from exc
+        except UnsupportedWorkflowDefinition as exc:
+            raise workflow_conflict(
+                "unsupported_workflow_definition",
+                "This plan uses an unsupported workflow definition.",
+            ) from exc
+        except RevisionExhausted as exc:
+            raise workflow_conflict(
+                "revision_exhausted", "This plan has reached its revision limit."
+            ) from exc
+        except InvalidStoredSnapshot as exc:
+            raise database_unavailable() from exc
         except (OperationalError, SQLAlchemyTimeoutError) as exc:
             raise HTTPException(
                 status_code=503, detail="Database unavailable."

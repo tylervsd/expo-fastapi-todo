@@ -1,8 +1,11 @@
+from dataclasses import replace
 from uuid import UUID
 
 import pytest
 
 from app.workflow_domain import (
+    CURRENT_WORKFLOW_DEFINITION_VERSION,
+    MAX_WORKFLOW_REVISION,
     AnswerMultipleSteps,
     Cancel,
     Confirm,
@@ -10,6 +13,7 @@ from app.workflow_domain import (
     InvalidWorkflowInput,
     SubmitTasks,
     TerminalWorkflow,
+    UnsupportedWorkflowDefinition,
     WorkflowCommand,
     WorkflowSnapshot,
     WorkflowState,
@@ -36,6 +40,8 @@ def offer_snapshot() -> WorkflowSnapshot:
         involves_multiple_steps=decision.involves_multiple_steps,
         proposed_todo_titles=decision.proposed_todo_titles,
         created_todos=None,
+        revision=0,
+        definition_version=CURRENT_WORKFLOW_DEFINITION_VERSION,
     )
 
 
@@ -49,6 +55,8 @@ def collect_snapshot() -> WorkflowSnapshot:
         involves_multiple_steps=decision.involves_multiple_steps,
         proposed_todo_titles=decision.proposed_todo_titles,
         created_todos=None,
+        revision=0,
+        definition_version=CURRENT_WORKFLOW_DEFINITION_VERSION,
     )
 
 
@@ -60,6 +68,8 @@ def review_snapshot(proposals: tuple[str, ...] = (TITLE,)) -> WorkflowSnapshot:
         involves_multiple_steps=False,
         proposed_todo_titles=proposals,
         created_todos=None,
+        revision=0,
+        definition_version=CURRENT_WORKFLOW_DEFINITION_VERSION,
     )
 
 
@@ -214,6 +224,8 @@ def test_terminal_states_reject_every_command(
         involves_multiple_steps=False,
         proposed_todo_titles=(TITLE,),
         created_todos=None,
+        revision=0,
+        definition_version=CURRENT_WORKFLOW_DEFINITION_VERSION,
     )
 
     with pytest.raises(TerminalWorkflow):
@@ -281,6 +293,8 @@ def test_valid_paths_never_repeat_a_state() -> None:
                     involves_multiple_steps=decision.involves_multiple_steps,
                     proposed_todo_titles=decision.proposed_todo_titles,
                     created_todos=() if decision.state == WorkflowState.COMPLETED else None,
+                    revision=0,
+                    definition_version=CURRENT_WORKFLOW_DEFINITION_VERSION,
                 ),
                 seen | {snapshot.state},
             )
@@ -294,3 +308,20 @@ def test_submit_tasks_or_confirm_in_offer_is_wrong_state() -> None:
         transition(snapshot, create_submit_tasks(("Send invitations", "Order birthday cake")))
     with pytest.raises(InvalidWorkflowAction):
         transition(snapshot, Confirm())
+
+
+def test_initial_snapshot_carries_revision_zero_and_definition_one() -> None:
+    snapshot = assess_snapshot()
+
+    assert snapshot.revision == 0
+    assert snapshot.definition_version == CURRENT_WORKFLOW_DEFINITION_VERSION
+    assert MAX_WORKFLOW_REVISION == 2147483647
+    assert CURRENT_WORKFLOW_DEFINITION_VERSION == 1
+
+
+def test_transition_rejects_unsupported_definition_version() -> None:
+    snapshot = assess_snapshot()
+
+    assert snapshot.revision == 0
+    with pytest.raises(UnsupportedWorkflowDefinition):
+        transition(replace(snapshot, definition_version=2), Cancel())

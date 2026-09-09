@@ -27,6 +27,14 @@ class InvalidWorkflowInput(ValueError):
     """Titles or title lists that fail shared canonical validation."""
 
 
+class UnsupportedWorkflowDefinition(ValueError):
+    """A saved workflow uses definition rules this server does not support."""
+
+
+MAX_WORKFLOW_REVISION = 2147483647
+CURRENT_WORKFLOW_DEFINITION_VERSION = 1
+
+
 @dataclass(frozen=True)
 class CreatedTodo:
     id: UUID
@@ -42,6 +50,8 @@ class WorkflowSnapshot:
     involves_multiple_steps: bool | None
     proposed_todo_titles: tuple[str, ...]
     created_todos: tuple[CreatedTodo, ...] | None
+    revision: int
+    definition_version: int
 
 
 @dataclass(frozen=True)
@@ -91,6 +101,8 @@ def create_initial_snapshot(workflow_id: UUID, title: str) -> WorkflowSnapshot:
         involves_multiple_steps=None,
         proposed_todo_titles=(),
         created_todos=None,
+        revision=0,
+        definition_version=CURRENT_WORKFLOW_DEFINITION_VERSION,
     )
 
 
@@ -121,6 +133,11 @@ def _cancelled_from(snapshot: WorkflowSnapshot) -> TransitionDecision:
 def transition(
     snapshot: WorkflowSnapshot, command: WorkflowCommand
 ) -> TransitionDecision:
+    if snapshot.definition_version != CURRENT_WORKFLOW_DEFINITION_VERSION:
+        raise UnsupportedWorkflowDefinition(
+            f"unsupported workflow definition version "
+            f"{snapshot.definition_version}"
+        )
     if snapshot.state in (WorkflowState.COMPLETED, WorkflowState.CANCELLED):
         raise TerminalWorkflow(f"workflow is already {snapshot.state.value}")
     if isinstance(command, Cancel):

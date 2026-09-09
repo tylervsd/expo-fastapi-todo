@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useQueryClient } from "@tanstack/react-query";
 import { TodoExperience } from "../TodoExperience";
@@ -29,20 +29,64 @@ type Status = "unknown" | "signed-out" | "signed-in";
 
 type SessionIdentity = { token: string; userId: string };
 
+export type SessionEpochControls = {
+  sessionEpoch: number;
+  isSessionCurrent: (epoch: number) => boolean;
+};
+
+/**
+ * Opaque authentication-session era for the workflow shell. The epoch
+ * changes on restore, login, logout, and replacement; workflow callbacks
+ * capture it before persisting a pending write and recheck it before
+ * touching cache, selection, or the pending record. Bearer tokens never
+ * enter workflow storage — this context carries only the era counter.
+ */
+export const SessionEpochContext = createContext<SessionEpochControls>({
+  sessionEpoch: 0,
+  isSessionCurrent: () => false,
+});
+
+export function useSessionEpoch(): SessionEpochControls {
+  return useContext(SessionEpochContext);
+}
+
 export function AuthProvider({
   authApi = defaultAuthApi,
   storage = tokenStorage,
   transport = defaultTransport,
+  children,
 }: {
   authApi?: ProviderAuthApi;
   storage?: TokenStorage;
   transport?: TodoTransport;
+  children?: ReactNode;
 } = {}): React.JSX.Element {
   const queryClient = useQueryClient();
   const [status, setStatus] = useState<Status>("unknown");
   const [user, setUser] = useState<AuthUser | null>(null);
   const [signingOut, setSigningOut] = useState(false);
   const liveRef = useRef<SessionIdentity | null>(null);
+  const epochRef = useRef(0);
+  const [sessionEpoch, setSessionEpoch] = useState(0);
+  // Serializes authentication completions in call order so overlapping
+  // logins persist their tokens deterministically (the latest call wins
+  // storage) and only the newest session touches cache and identity.
+  const completionChainRef = useRef<Promise<void>>(Promise.resolve());
+
+  const bumpEpoch = useCallback(() => {
+    epochRef.current += 1;
+    setSessionEpoch(epochRef.current);
+  }, []);
+
+  const isSessionCurrent = useCallback(
+    (epoch: number) => epoch === epochRef.current,
+    []
+  );
+
+  const epochControls = useMemo(
+    () => ({ sessionEpoch, isSessionCurrent }),
+    [sessionEpoch, isSessionCurrent]
+  );
 
   useEffect(() => {
     let mounted = true;
@@ -51,11 +95,15 @@ export function AuthProvider({
       try {
         stored = await storage.get();
       } catch {
-        if (mounted) setStatus("signed-out");
+        if (mounted) {
+          bumpEpoch();
+          setStatus("signed-out");
+        }
         return;
       }
       if (!mounted) return;
       if (stored === null) {
+        bumpEpoch();
         setStatus("signed-out");
         return;
       }
@@ -64,6 +112,7 @@ export function AuthProvider({
         if (!mounted) return;
         liveRef.current = { token: stored, userId: restored.id };
         setUser(restored);
+        bumpEpoch();
         setStatus("signed-in");
       } catch (error) {
         if (!mounted) return;
@@ -74,13 +123,14 @@ export function AuthProvider({
             // Best effort: local state still settles below.
           }
         }
+        bumpEpoch();
         setStatus("signed-out");
       }
     })();
     return () => {
       mounted = false;
     };
-  }, [authApi, storage]);
+  }, [authApi, storage, bumpEpoch]);
 
   const cleanupSession = useCallback(
     async (captured: SessionIdentity) => {
@@ -94,6 +144,7 @@ export function AuthProvider({
         return;
       }
       liveRef.current = null;
+      bumpEpoch();
       try {
         await storage.clear();
       } catch {
@@ -103,7 +154,7 @@ export function AuthProvider({
       setUser(null);
       setStatus("signed-out");
     },
-    [authApi, storage, queryClient]
+    [authApi, storage, queryClient, bumpEpoch]
   );
 
   const signOut = useCallback(() => {
@@ -123,15 +174,30 @@ export function AuthProvider({
     [signingOut, cleanupSession]
   );
 
-  const handleAuthenticated = (session: Session) => {
-    if (signingOut) return;
-    void (async () => {
+  const handleAuthenticated = (session: Session): Promise<void> => {
+    if (signingOut) return Promise.resolve();
+    bumpEpoch();
+    const capturedEpoch = epochRef.current;
+    const previous = completionChainRef.current;
+    const completion = (async () => {
+      await previous;
       await storage.set(session.token);
+      if (epochRef.current !== capturedEpoch) {
+        // Superseded by a newer login: completions persist in call order,
+        // so storage already holds the newer token. Leave cache, identity,
+        // and status to the winning session.
+        return;
+      }
       queryClient.clear();
       liveRef.current = { token: session.token, userId: session.user.id };
       setUser(session.user);
       setStatus("signed-in");
     })();
+    completionChainRef.current = completion.then(
+      () => undefined,
+      () => undefined,
+    );
+    return completionChainRef.current;
   };
 
   // eslint-disable-next-line react-hooks/refs -- both closures read identity at call time (query/event), never during render
@@ -139,37 +205,46 @@ export function AuthProvider({
 
   if (status === "unknown") {
     return (
-      <View style={styles.center}>
-        <Text style={styles.status}>Loading…</Text>
-      </View>
+      <SessionEpochContext.Provider value={epochControls}>
+        {children}
+        <View style={styles.center}>
+          <Text style={styles.status}>Loading…</Text>
+        </View>
+      </SessionEpochContext.Provider>
     );
   }
 
   if (status === "signed-out" || user === null) {
     return (
-      <AuthScreen
-        signup={authApi.signup}
-        login={authApi.login}
-        onAuthenticated={handleAuthenticated}
-      />
+      <SessionEpochContext.Provider value={epochControls}>
+        {children}
+        <AuthScreen
+          signup={authApi.signup}
+          login={authApi.login}
+          onAuthenticated={handleAuthenticated}
+        />
+      </SessionEpochContext.Provider>
     );
   }
 
   return (
-    <View style={styles.signedIn}>
-      <View style={styles.header}>
-        <Text style={styles.username}>Signed in as {user.username}</Text>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Sign out"
-          style={styles.signOutButton}
-          onPress={signOut}
-        >
-          <Text style={styles.signOutButtonText}>Sign out</Text>
-        </Pressable>
+    <SessionEpochContext.Provider value={epochControls}>
+      {children}
+      <View style={styles.signedIn}>
+        <View style={styles.header}>
+          <Text style={styles.username}>Signed in as {user.username}</Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Sign out"
+            style={styles.signOutButton}
+            onPress={signOut}
+          >
+            <Text style={styles.signOutButtonText}>Sign out</Text>
+          </Pressable>
+        </View>
+        <TodoExperience userId={user.id} api={todoApi} sessionEpoch={sessionEpoch} isSessionCurrent={isSessionCurrent} />
       </View>
-      <TodoExperience userId={user.id} api={todoApi} />
-    </View>
+    </SessionEpochContext.Provider>
   );
 }
 

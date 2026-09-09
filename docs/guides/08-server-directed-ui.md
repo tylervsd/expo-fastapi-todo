@@ -38,8 +38,12 @@ example, `a5693d6a-…:OFFER_BREAKDOWN`. The two yes/no steps therefore have
 different identities despite sharing a component. The template host mounts
 each template with `key={view.step_id}`, so React discards the previous
 question's draft text, selection, and error the moment the step changes.
-Refetching the same current step recomputes the identical string, so reloads
-and remounts keep local state intact.
+Refetching the same current step recomputes the identical string, so
+re-renders and same-step refetches keep local state intact. An actual
+page reload or unmount is different: component state is destroyed, so
+half-typed titles and other unsubmitted text are lost. Stable keys
+preserve drafts across renders, not across reloads — only accepted
+workflow context is resumable (see Guide 09, section 5).
 
 Step identity is a rendering correctness tool only. It is never stored in
 PostgreSQL, never used in cache keys, and never claimed as concurrency or

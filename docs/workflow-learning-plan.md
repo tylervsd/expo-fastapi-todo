@@ -1,10 +1,10 @@
-# Backend workflow learning plan
+# Workflow and AI learning plan
 
 ## Status and scope
 
 This is a planned curriculum extension after Phase 6, not an implementation guide or a claim that these features already exist. Each phase still needs its own approved spec before implementation. Keep the existing quick-add experience, authentication boundary, and `/todos` contract working throughout.
 
-The [curriculum roadmap](curriculum-roadmap.md) adds Phase 7 for backend workflow modeling, Phase 8 for server-directed screens, and Phase 9 for workflow reliability. Cross-platform E2E and production hardening follow in Phases 10 and 11. Existing guide numbers and checkpoint tags remain unchanged.
+The [curriculum roadmap](curriculum-roadmap.md) adds Phase 7 for backend workflow modeling, Phase 8 for server-directed screens, and Phase 9 for workflow reliability. Phase 10 adds Python/OpenRouter suggestions, and Phase 11 adds CopilotKit/AG-UI interactions. Cross-platform E2E and production hardening follow in Phases 12 and 13. Existing guide numbers and checkpoint tags remain unchanged.
 
 ## Design principle
 
@@ -16,7 +16,7 @@ A backend-selected "new screen" means a different component the client already s
 
 ## Running feature: guided todo creation
 
-Add a separate "Help me plan a task" entry point. For the title "Plan birthday party", the completed teaching example follows this transition table. The state names and endpoint examples below are proposed contracts to refine in each approved phase spec.
+Add a separate "Help me plan a task" entry point. For the title "Plan birthday party", the deterministic Phases 7-9 teaching example follows this transition table. The state names and endpoint examples below are proposed contracts to refine in each approved phase spec.
 
 | Current state | Accepted action | Next state and result |
 | --- | --- | --- |
@@ -145,17 +145,58 @@ A replay can return its recorded historical response. The client must not replac
 | A response arrives after sign-out or after a newer response | Do not populate the wrong user's cache or regress a newer revision. |
 | An older client encounters an unsupported contract | Use the documented safe fallback without submitting a guessed action. |
 
-Use real PostgreSQL integration tests for transactions, uniqueness, and races, plus component tests for recovery. Disabling a button is helpful interaction design, not a substitute for server correctness. Keep full cross-platform automation in Phase 10.
+Use real PostgreSQL integration tests for transactions, uniqueness, and races, plus component tests for recovery. Disabling a button is helpful interaction design, not a substitute for server correctness. Keep full cross-platform automation in Phase 12.
 
 **Experiment:** commit confirmation, discard its response, retry with the same identifier, and verify the exact intended todo count. Then race distinct actions against the same revision and verify one accepted transition.
 
 **Guide after implementation:** `docs/guides/09-workflow-reliability.md`.
 
-## Phase 10 and Phase 11 follow-through
+## Phase 10: LLM-assisted planning with Python and OpenRouter
 
-Phase 10 retains the core todo E2E journey and adds a small guided-creation set: the simple path, the breakdown path, and one resume/recovery journey on the supported platforms. Keep exhaustive branches and races in lower layers. Retain the planned scheduling boundary: web E2E on pull requests and iOS Simulator E2E on `main` once those suites exist.
+Extend "Help me plan a task" with a "Suggest todos" action. A user enters "birthday party"; Python calls OpenRouter and validates a structured list of suggested titles before saving it as an owner-scoped proposal. The user can edit or remove suggestions and confirm through the existing workflow. Todos are created only on confirmation. Keep the existing deterministic frontend screens so learners can isolate the model integration from the next phase's UI protocol.
 
-Phase 11 adds workflow diagnostics and deployment compatibility to the existing hardening topics. Prefer correlation identifiers, state/transition names, durations, and error categories over logging answers, todo titles, session tokens, or entire request bodies. Specify treatment of in-flight definitions, unsupported clients, cancelled/abandoned drafts, and rollback before deployment.
+Use a model/provider combination that supports the chosen JSON Schema response format, then apply Pydantic and existing title/count validation in Python. Schema compliance does not establish relevance or authorize writes. Keep credentials in backend configuration, send only the context needed for the request, bound input/output and request duration, and provide a clear failure state with manual entry or explicit retry. Do not log credentials or complete prompts by default.
+
+Keep the external call outside a long-running database transaction or row lock. Apply its validated result only if the owner, workflow revision, and active request still match; late results must not overwrite newer edits or revive cancelled workflows. Persist accepted suggestions so refresh/resume does not trigger another paid call. Phase 9's database idempotency does not guarantee exactly-once provider execution or billing; the spec must define request identity and retry behavior explicitly.
+
+Use mocked provider responses for normal tests, including malformed output, excessive titles, timeouts, stale results, and confirmation-only writes. A separately documented manual live-provider smoke check can verify the chosen model, without making CI depend on paid calls or exact generated wording.
+
+**Experiment:** simulate a timeout or invalid output, recover through manual entry or explicit retry, then refresh a successful draft and verify that its saved suggestions remain available without another model call.
+
+**Guide after implementation:** `docs/guides/10-llm-assisted-planning.md`.
+
+## Phase 11: interactive AI workflows with CopilotKit and AG-UI
+
+Build on the same Python/OpenRouter integration. Register a small set of frontend interactions: a clarification form and an editable suggestion checklist. The agent chooses a supported interaction and supplies validated arguments; the user supplies missing context or reviews proposed todos. Python validates every resulting business action against the authenticated workflow before saving anything.
+
+Teach the layers explicitly: CopilotKit provides frontend hooks and tool rendering; AG-UI carries agent events and interactions; the existing Python service and PostgreSQL remain authoritative for accepted workflow state. Begin with a fixed event fixture and registered component, then connect the model's tool selection. Rendering, replaying, or reconnecting to an interaction must not itself create todos.
+
+Before selecting package versions or writing the implementation spec, verify CopilotKit's React Native/Expo integration on web and iOS, including polyfills, tool rendering, and the Python AG-UI connection. Document whether a Copilot Runtime bridge is needed and how authenticated owner context reaches Python. Such a bridge must not move OpenRouter calls or business rules out of Python. Do not claim cross-platform acceptance until both targets have been observed.
+
+Map run/tool identities to the existing workflow and step/revision boundaries. Reconcile agent events with authoritative API snapshots rather than allowing agent state, TanStack Query, and persisted workflow state to become competing sources of truth. Define reconnect, cancellation, late-event, unknown-tool, malformed-argument, and sign-out behavior. Retain a recoverable manual workflow when the agent interaction fails.
+
+Use deterministic event fixtures and component tests for clarification, editing, approval, accessibility, and recovery. Add backend checks proving that unsupported tools, stale actions, and repeated confirmation cannot bypass authorization or create duplicate todos.
+
+**Experiment:** compare "birthday party" with "weekend hiking trip" and observe different context requests through supported components; inject an unsupported tool call and verify a safe fallback without a business transition.
+
+**Guide after implementation:** `docs/guides/11-agentic-ui.md`.
+
+### Optional later exercise: A2UI
+
+A2UI describes declarative UI; AG-UI carries agent/application interactions. They can be combined, but A2UI is not required for Phase 11. A later exercise can compare agent-selected registered components with model-composed layouts from an approved A2UI catalog. Keep this separate from the core lesson and verify renderer/platform compatibility before adopting it.
+
+### Integration references
+
+- [OpenRouter structured outputs](https://openrouter.ai/docs/guides/features/structured-outputs)
+- [CopilotKit React Native quickstart](https://docs.copilotkit.ai/react-native)
+- [CopilotKit generative UI](https://docs.copilotkit.ai/a2a/concepts/generative-ui-overview)
+- [AG-UI and generative UI specifications](https://docs.ag-ui.com/concepts/generative-ui-specs)
+
+## Phase 12 and Phase 13 follow-through
+
+Phase 12 retains the core todo E2E journey and adds a small guided-creation set: the simple path, the breakdown path, and one resume/recovery journey on the supported platforms. Add a thin AI-assisted clarification/review/confirmation journey using deterministic provider and AG-UI event fixtures. Keep exhaustive branches and races in lower layers. Retain the planned scheduling boundary: web E2E on pull requests and iOS Simulator E2E on `main` once those suites exist.
+
+Phase 13 adds workflow diagnostics and deployment compatibility to the existing hardening topics. Prefer correlation identifiers, state/transition names, durations, and error categories over logging answers, todo titles, session tokens, or entire request bodies. Specify treatment of in-flight definitions, unsupported clients, cancelled/abandoned drafts, and rollback before deployment. Extend the Phase 10 request bounds with per-user usage limits, provider cost/latency/error diagnostics, and explicit retention/redaction policies for AI context and event data.
 
 A later optional lesson can add a persisted processing state and a worker that eventually records success or failure. Queues, external side effects, and background orchestration are outside Phases 7-9.
 

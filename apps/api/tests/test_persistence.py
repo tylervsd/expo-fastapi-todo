@@ -31,7 +31,7 @@ from app.todo_repository import (
 )
 from app.todo_repository import set_title as set_todo_title
 
-REVISION = "2026090801"
+REVISION = "2026090901"
 
 
 def test_alembic_cli_loads_api_package() -> None:
@@ -58,6 +58,8 @@ def test_migration_creates_expected_todos_shape(database_engine: Engine) -> None
     assert sorted(inspector.get_table_names()) == [
         "alembic_version",
         "sessions",
+        "todo_workflow_action_requests",
+        "todo_workflow_start_requests",
         "todo_workflows",
         "todos",
         "users",
@@ -74,7 +76,13 @@ def test_migration_creates_expected_todos_shape(database_engine: Engine) -> None
         "involves_multiple_steps",
         "proposed_todo_titles",
         "completion_result",
+        "revision",
+        "definition_version",
     ]
+    assert workflow_columns["revision"]["nullable"] is False
+    assert workflow_columns["definition_version"]["nullable"] is False
+    assert str(workflow_columns["revision"]["type"]) == "INTEGER"
+    assert str(workflow_columns["definition_version"]["type"]) == "INTEGER"
     assert all(
         workflow_columns[name]["nullable"] is False
         for name in (
@@ -98,10 +106,15 @@ def test_migration_creates_expected_todos_shape(database_engine: Engine) -> None
         inspector.get_pk_constraint("todo_workflows")["constrained_columns"]
         == ["id"]
     )
-    assert [
-        (constraint["name"], constraint["column_names"])
-        for constraint in inspector.get_unique_constraints("todo_workflows")
-    ] == [("uq_todo_workflows_public_id", ["public_id"])]
+    assert sorted(
+        [
+            (constraint["name"], constraint["column_names"])
+            for constraint in inspector.get_unique_constraints("todo_workflows")
+        ]
+    ) == [
+        ("uq_todo_workflows_public_id", ["public_id"]),
+        ("uq_todo_workflows_public_owner", ["public_id", "owner_id"]),
+    ]
     assert sorted(
         [
             (constraint["name"], constraint["sqltext"])
@@ -113,8 +126,16 @@ def test_migration_creates_expected_todos_shape(database_engine: Engine) -> None
             "completion_result IS NULL OR jsonb_typeof(completion_result) = 'object'::text",
         ),
         (
+            "ck_todo_workflows_definition_version",
+            "definition_version >= 1",
+        ),
+        (
             "ck_todo_workflows_proposals_array",
             "jsonb_typeof(proposed_todo_titles) = 'array'::text",
+        ),
+        (
+            "ck_todo_workflows_revision_range",
+            "revision >= 0 AND revision <= 2147483647",
         ),
         (
             "ck_todo_workflows_state",
@@ -133,6 +154,66 @@ def test_migration_creates_expected_todos_shape(database_engine: Engine) -> None
         (fk["referred_table"], tuple(fk["constrained_columns"]))
         for fk in inspector.get_foreign_keys("todo_workflows")
     ] == [("users", ("owner_id",))]
+    start_columns = {
+        column["name"]: column
+        for column in inspector.get_columns("todo_workflow_start_requests")
+    }
+    assert list(start_columns) == [
+        "owner_id",
+        "request_id",
+        "request_fingerprint",
+        "workflow_id",
+        "accepted_snapshot",
+    ]
+    assert (
+        inspector.get_pk_constraint("todo_workflow_start_requests")[
+            "constrained_columns"
+        ]
+        == ["owner_id", "request_id"]
+    )
+    assert sorted(
+        (fk["referred_table"], tuple(fk["constrained_columns"]))
+        for fk in inspector.get_foreign_keys("todo_workflow_start_requests")
+    ) == [("todo_workflows", ("workflow_id",)), ("users", ("owner_id",))]
+    assert sorted(
+        constraint["name"]
+        for constraint in inspector.get_check_constraints(
+            "todo_workflow_start_requests"
+        )
+    ) == [
+        "ck_start_requests_fingerprint_hex",
+        "ck_start_requests_snapshot_object",
+    ]
+    action_columns = {
+        column["name"]: column
+        for column in inspector.get_columns("todo_workflow_action_requests")
+    }
+    assert list(action_columns) == [
+        "owner_id",
+        "workflow_id",
+        "request_id",
+        "request_fingerprint",
+        "accepted_snapshot",
+    ]
+    assert (
+        inspector.get_pk_constraint("todo_workflow_action_requests")[
+            "constrained_columns"
+        ]
+        == ["owner_id", "workflow_id", "request_id"]
+    )
+    assert [
+        (fk["referred_table"], tuple(fk["constrained_columns"]))
+        for fk in inspector.get_foreign_keys("todo_workflow_action_requests")
+    ] == [("todo_workflows", ("workflow_id", "owner_id"))]
+    assert sorted(
+        constraint["name"]
+        for constraint in inspector.get_check_constraints(
+            "todo_workflow_action_requests"
+        )
+    ) == [
+        "ck_action_requests_fingerprint_hex",
+        "ck_action_requests_snapshot_object",
+    ]
     users_columns = {
         column["name"]: column for column in inspector.get_columns("users")
     }
