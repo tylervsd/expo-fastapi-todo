@@ -91,7 +91,7 @@ Phases 7-9 build one guided-todo creation feature to teach backend-owned state t
 - Learning experiment: Commit a confirmation but lose its response, retry with the same submission identifier, and verify one completion result and one intended set of todos. Race different submissions against the same revision and verify only one advances.
 - Non-goals: Offline-first synchronization, event sourcing, distributed exactly-once processing, external side effects, and background orchestration.
 - Spec gate: Before implementation, approve the transaction boundary, idempotency scope and payload checks, atomic conflict behavior, active-workflow discovery, version compatibility, and failure/recovery matrix.
-- Implementation status: Implemented on the `codex/phase-09-workflow-reliability` branch (Guide 09 written from verified behavior; focused suites and the full quality gate green). Web acceptance is partially observed (interactive browser flows and HTTP checks; storage-failure, unsupported-UI, and focus rows remain test-only). iOS simulator acceptance is launch-only (build runs, sign-in renders; interaction needs a driver).
+- Implementation status: Implemented on the `codex/phase-09-workflow-reliability` branch (Guide 09 written from verified behavior; focused suites and the full quality gate green). Web acceptance is observed (all rows: interactive browser flows plus HTTP checks). iOS simulator acceptance is partially observed (Maestro-driven quick-add, signup/sign-in, and start/first-advance verified; remaining rows unexercised post-fix).
 
 ## 10. LLM-assisted planning with Python and OpenRouter
 

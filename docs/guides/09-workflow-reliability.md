@@ -131,8 +131,7 @@ promise the user their half-typed text is safe.
 ## 6. Durable unknown writes
 
 Before sending a start or action, the client freezes a UUID request ID and
-persists exactly one owner-bound record (`todo.pending-workflow-write:
-<ownerUuid>` in `localStorage` on web, Expo SecureStore on native —
+persists exactly one owner-bound record (`todo.pending-workflow-write.<ownerUuid>` in `localStorage` on web, Expo SecureStore on native —
 verified against the Expo SDK 57 Crypto and SecureStore docs; UUIDs come
 from `Crypto.randomUUID()`, no custom generator). The record holds no
 token, username, password, or server response. The network mutation does
