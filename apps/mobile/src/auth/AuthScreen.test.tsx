@@ -154,3 +154,14 @@ it("routes signup success through explicit sign-in", async () => {
   await fireEvent.press(screen.getByRole("button", { name: "Sign in" }));
   await waitFor(() => expect(onAuthenticated).toHaveBeenCalledWith(session));
 });
+
+it("disables platform text transforms on credential fields", async () => {
+  await setup();
+
+  const username = screen.getByLabelText("Username");
+  const password = screen.getByLabelText("Password");
+  expect(username.props.autoCapitalize).toBe("none");
+  expect(username.props.autoCorrect).toBe(false);
+  expect(password.props.autoCapitalize).toBe("none");
+  expect(password.props.autoCorrect).toBe(false);
+});
