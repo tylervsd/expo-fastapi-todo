@@ -271,8 +271,11 @@ against the UI and confirm each behavior:
    unblock and press **Retry saved request** — the plan advances exactly
    once with no duplicate draft.
 4. Answer from two sessions at once (two browsers or a reload mid-flight)
-   — one answer wins; the loser sees the stale message and the current
-   step after reload.
+   — one answer wins (DB shows a single revision increment); the loser
+   auto-reconciles to the current step and keeps the explanation
+   "This plan changed. Reload it and try again." visible alongside it
+   (re-observed 2026-09-08 after the sticky-notice fix: the message
+   persists post-settle with zero page errors).
 5. Sign out and back in with a pending retry outstanding — the retry is
    offered, never auto-sent, and works under the new session.
 
@@ -285,14 +288,32 @@ migrated to head `2026090901`). The Backend row records direct HTTP
 checks of the same server; it is not a UI claim. Browser cross-origin
 POSTs required launching Chrome with `--disable-web-security` because the
 API defines no CORS policy (mobile targets are unaffected; no repo change
-was made for this).
+was made for this). A second web pass the same day (fresh users) observed
+the storage-failure, unsupported-contract, focus/alert, and competing-revision
+rows below; the competing-revision pass surfaced one finding (the
+stale explanation never painted), which was fixed (sticky stale notice)
+and re-observed the same day — see the Web competing-revisions cell).
 
 | Target | Date/runtime | Quick add | Birthday branches | Discovery after restart | Another-device resume | Lost-start retry | Lost-confirmation retry | Competing revisions | Cancel | Storage failure-before-send | Sign-out/re-login | Unsupported UI | Focus/alerts |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Web | 2026-09-08, Chrome 140 headless driving Expo web | ☑ observed ("Web milk" appears) | ☑ observed (No→1 todo COMPLETED rev 2; Yes/No→1 todo COMPLETED rev 3; Yes/Yes→2 todos; DB-verified) | ☑ observed (browser reload relists draft; API kill+restart then fresh login relists draft) | ☑ observed (fresh browser context login → Resume plans → renders OFFER rev 1) | ☑ observed (aborted start POST → Retry saved request UI → retry → ASSESS; discovery count 1, no duplicate) | ☑ observed (aborted action POST → app retry advanced exactly once, no dup todos) | ☐ blocked — needs two coordinated browser sessions; covered by integration tests and the Backend race row | ☑ observed ("Plan cancelled"; plan leaves Resume plans, other draft stays) | ☐ blocked — cannot force a real localStorage failure headlessly; covered by component tests | ☑ observed (todos + draft survive) | ☐ blocked — needs contract surgery; covered by component tests | ☐ blocked — headless cannot observe focus; alert roles asserted in tests |
+| Web | 2026-09-08, Chrome 140 headless driving Expo web | ☑ observed ("Web milk" appears) | ☑ observed (No→1 todo COMPLETED rev 2; Yes/No→1 todo COMPLETED rev 3; Yes/Yes→2 todos; DB-verified) | ☑ observed (browser reload relists draft; API kill+restart then fresh login relists draft) | ☑ observed (fresh browser context login → Resume plans → renders OFFER rev 1) | ☑ observed (aborted start POST → Retry saved request UI → retry → ASSESS; discovery count 1, no duplicate) | ☑ observed (aborted action POST → app retry advanced exactly once, no dup todos) | ☑ observed (two contexts raced one revision 2026-09-08: winner advanced once, loser POST→409, auto-reconciled to the current OFFER step with "This plan changed. Reload it and try again." visible and persisting post-settle, 0 page errors; mechanism confirmed: the lock:true message had been hidden while cache stayed fresh plus keepMessage:false cleared it — now a sticky notice) | ☑ observed ("Plan cancelled"; plan leaves Resume plans, other draft stays) | ☑ observed (`localStorage.setItem` forced to throw → "This device could not save a safe retry. The plan was not sent. Try again.", 0 advance POSTs, stays at ASSESS, no page errors) | ☑ observed (todos + draft survive) | ☑ observed (discovery rewritten to `view_contract_version: 2` → "Unsupported step" + newer-app copy with Reload/Back controls, zero submit controls, 0 action POSTs, no page errors) | ☑ observed (Tab order reaches Yes; Enter advances ASSESS→OFFER; storage-failure copy renders in `role=alert`; no page errors) |
 | Backend (HTTP) | 2026-09-08, curl against the same local API | ☑ observed | ☑ covered end-to-end via browser + DB rows above; HTTP advanced every transition incl. race | ☑ observed (post-API-restart rediscovery; terminal completion discovers `[]`) | ☑ observed (2nd login token fetches rev 0) | ☑ observed (start replay 201 byte-identical; mismatch → `request_id_reused`) | ☑ observed (confirm replay 200 byte-identical, no dup todos) | ☑ observed (one 200 rev+1, one 409 stale with spec copy; single advance) | ☑ observed (CANCELLED rev 1) | — (client-only) | — (client-only) | ☑ observed (definition 2 → fetch+discovery 409, no mutation; reverted after) | — (client-only) |
-| iOS Simulator | 2026-09-08, iPhone 17 (iOS 26.5) via `expo run:ios` | ☐ blocked — no UI driver | ☐ blocked | ☐ blocked | ☐ blocked | ☐ blocked | ☐ blocked | ☐ blocked | ☐ blocked | ☐ blocked | ☐ blocked | ☐ blocked | ☐ blocked |
+| iOS Simulator | 2026-09-08, fresh iPhone 17 Pro, rebuild with `EXPO_PUBLIC_API_URL=http://127.0.0.1:8000`, Maestro-driven, post-SecureStore-key fix | ☑ observed ("iOS milk" as ioswave6, DB-verified row) | ◐ partial — start→201/ASSESS rev 0 then Yes→200/OFFER rev 1 observed with screenshots, DB-verified; full No/Yes branch walks not yet exercised on iOS | ☐ blocked — not yet exercised on iOS post-fix; covered by web row + tests | ☐ blocked — not yet exercised on iOS post-fix; covered by web row + tests | ☐ blocked — not yet exercised on iOS post-fix; covered by web row + tests | ☐ blocked — not yet exercised on iOS post-fix; covered by web row + tests | ☐ blocked — not yet exercised on iOS post-fix; covered by web + Backend rows | ☐ blocked — not yet exercised on iOS post-fix; covered by web row + tests | ☑ observed pre-fix (start plan showed the fail-closed "could not save a safe retry" copy with 0 workflow POSTs — root cause found: `:` in the pending-write key is illegal in native SecureStore; fixed to `.`, post-fix start/advance writes succeed) | ☐ blocked — not yet exercised on iOS post-fix; covered by web row + tests | ☐ blocked — not yet exercised on iOS post-fix; covered by web row + tests | ☐ blocked — keyboard/focus pass not yet run on iOS; covered by web row + tests |
 
-iOS acceptance is launch-only: `expo run:ios` built with 0 errors, installed, and launched on a booted iPhone 17 simulator where the sign-in screen renders with no crash (one pre-existing SafeAreaView deprecation LogBox warning, unrelated to Phase 9). Interactive iOS rows are blocked: no UI automation driver is available, and the installed build was bundled without `EXPO_PUBLIC_API_URL`, so its network calls report unavailable — a future interactive pass needs a rebuild with the API URL set plus a driver.
+iOS acceptance is interactive via Maestro (installed this pass; needed
+Homebrew `openjdk` for its JVM): `expo run:ios` with `EXPO_PUBLIC_API_URL`
+built with 0 errors, installed, and launched on a booted iPhone 17 simulator
+where signup (API 201 + "Account created. Please sign in."), sign-in
+("Signed in as ioswave6"), and quick-add (DB-verified) were all observed
+with screenshots and no crash (one pre-existing SafeAreaView deprecation
+LogBox warning, unrelated to Phase 9). The earlier all-writes-fail-closed
+behavior was a code defect, not a sick simulator: the pending-write key
+used `:` (`todo.pending-workflow-write:`), which native SecureStore
+rejects (web localStorage accepts it, and the Jest mock had allowed it).
+The prefix now uses `.`, the mock rejects illegal keys like the native
+module, and a fresh iPhone 17 Pro pass observed start→201/ASSESS rev 0
+and Yes→200/OFFER rev 1 with screenshots, DB-verified rows, and zero
+errors. Plan-dependent iOS rows beyond start+advance are still unexercised
+(see row) — covered by the web row and automated tests.
 Revision-exhaustion at `2147483647` is
 covered by integration tests, not by manual exercise.
