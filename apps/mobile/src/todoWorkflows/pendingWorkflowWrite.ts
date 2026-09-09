@@ -49,7 +49,7 @@ export type UuidGenerator = () => string;
 /** Request IDs come from the platform CSPRNG; no custom UUID generator. */
 export const defaultUuidGenerator: UuidGenerator = () => Crypto.randomUUID();
 
-export const PENDING_WRITE_KEY_PREFIX = "todo.pending-workflow-write:";
+export const PENDING_WRITE_KEY_PREFIX = "todo.pending-workflow-write.";
 
 /**
  * Mirrors backend workflow_domain.MIN/MAX_BREAKDOWN_TITLES. The server

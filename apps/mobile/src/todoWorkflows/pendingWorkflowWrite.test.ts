@@ -4,6 +4,7 @@ import {
   createPendingWriteStore,
   defaultUuidGenerator,
   nativePendingWriteStore,
+  PENDING_WRITE_KEY_PREFIX,
   pendingWriteStore,
   saveAndSendPendingWrite,
   webPendingWriteStore,
@@ -18,12 +19,27 @@ jest.mock("expo-crypto", () => ({
 
 jest.mock("expo-secure-store", () => {
   const store = new Map<string, string>();
+  // Mirror the native module: keys outside [A-Za-z0-9._-] are rejected, so
+  // a key regression fails behaviorally instead of passing against a
+  // permissive mock.
+  const assertKey = (key: string) => {
+    if (key.length === 0 || !/^[A-Za-z0-9._-]+$/.test(key)) {
+      throw new Error(
+        'Invalid key provided to SecureStore. Keys must not be empty and contain only alphanumeric characters, ".", "-", and "_".'
+      );
+    }
+  };
   return {
-    getItemAsync: jest.fn(async (key: string) => store.get(key) ?? null),
+    getItemAsync: jest.fn(async (key: string) => {
+      assertKey(key);
+      return store.get(key) ?? null;
+    }),
     setItemAsync: jest.fn(async (key: string, value: string) => {
+      assertKey(key);
       store.set(key, value);
     }),
     deleteItemAsync: jest.fn(async (key: string) => {
+      assertKey(key);
       store.delete(key);
     }),
   };
@@ -79,6 +95,12 @@ const advanceRecord = (
 const setup = () => createPendingWriteStore(createMemoryPendingWriteStorage());
 
 describe("pending workflow write store", () => {
+  it("uses storage keys valid for SecureStore on native", async () => {
+    // expo-secure-store rejects keys outside [A-Za-z0-9._-]; localStorage
+    // accepts anything, so this pins the native contract explicitly.
+    expect(`${PENDING_WRITE_KEY_PREFIX}${OWNER_A}`).toMatch(/^[A-Za-z0-9._-]+$/);
+  });
+
   it("round-trips a start record with Unicode exactly", async () => {
     const store = setup();
     const record = startRecord({
@@ -128,7 +150,9 @@ describe("pending workflow write store", () => {
     ["unknown operation", JSON.stringify({ ...startRecord(), operation: "delete" })],
     ["advance without workflowId", JSON.stringify({ ...advanceRecord(), workflowId: undefined })],
   ])("returns null for invalid stored data (%s)", async (_label, raw) => {
-    const backing = new Map<string, string>([[`todo.pending-workflow-write:${OWNER_A}`, raw]]);
+    const backing = new Map<string, string>([
+      [`${PENDING_WRITE_KEY_PREFIX}${OWNER_A}`, raw],
+    ]);
     const store = createPendingWriteStore({
       getItem: async (key) => backing.get(key) ?? null,
       setItem: async () => undefined,
@@ -154,7 +178,7 @@ describe("pending workflow write store", () => {
       body: { request_id: REQUEST_B, title: "Plan birthday party" },
     };
     const backing = new Map<string, string>([
-      [`todo.pending-workflow-write:${OWNER_A}`, JSON.stringify(tampered)],
+      [`${PENDING_WRITE_KEY_PREFIX}${OWNER_A}`, JSON.stringify(tampered)],
     ]);
     const tamperedStore = createPendingWriteStore({
       getItem: async (key) => backing.get(key) ?? null,
@@ -300,7 +324,7 @@ describe("pending workflow write store", () => {
 
   it("lets a newer save survive a concurrent stale clear", async () => {
     const backing = new Map<string, string>([
-      [`todo.pending-workflow-write:${OWNER_A}`, JSON.stringify(startRecord())],
+      [`${PENDING_WRITE_KEY_PREFIX}${OWNER_A}`, JSON.stringify(startRecord())],
     ]);
     let releaseGet!: (value: string | null) => void;
     const getGate = new Promise<string | null>((resolve) => {
@@ -338,7 +362,7 @@ describe("pending workflow write store", () => {
 
   it("surfaces storage delete errors", async () => {
     const backing = new Map<string, string>([
-      [`todo.pending-workflow-write:${OWNER_A}`, JSON.stringify(startRecord())],
+      [`${PENDING_WRITE_KEY_PREFIX}${OWNER_A}`, JSON.stringify(startRecord())],
     ]);
     const store = createPendingWriteStore({
       getItem: async (key) => backing.get(key) ?? null,
