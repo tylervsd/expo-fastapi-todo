@@ -41,7 +41,10 @@ def suggestion_client(
     del database_session
     calls: list[str] = []
 
-    async def suggest(goal: str, _config: object) -> tuple[str, ...]:
+    async def suggest(
+        goal: str, _config: object, *, clarification: object = None
+    ) -> tuple[str, ...]:
+        del clarification
         calls.append(goal)
         return ("Choose a date", "Invite guests")
 
@@ -267,12 +270,13 @@ def test_ready_replay_does_not_require_provider_configuration(
     calls = 0
 
     async def suggest(
-        goal: str, config: OpenRouterConfig
+        goal: str, config: OpenRouterConfig, *, clarification: object = None
     ) -> tuple[str, ...]:
         nonlocal calls
         calls += 1
         assert goal == "Plan birthday party"
         assert config.model == "test-model"
+        assert clarification is None
         return ("Choose a date", "Invite guests")
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
@@ -402,7 +406,9 @@ def test_suggestion_provider_failures_are_typed_and_persisted(
 ) -> None:
     del database_session
 
-    async def fail(_goal: str, _config: object) -> tuple[str, ...]:
+    async def fail(
+        _goal: str, _config: object, *, clarification: object = None
+    ) -> tuple[str, ...]:
         raise provider_error
 
     with TestClient(create_app(session_factory, suggestion_callable=fail)) as client:
@@ -441,7 +447,9 @@ def test_failed_suggestion_replay_is_saved_and_does_not_call_provider_twice(
     del database_session
     calls = 0
 
-    async def fail(_goal: str, _config: object) -> tuple[str, ...]:
+    async def fail(
+        _goal: str, _config: object, *, clarification: object = None
+    ) -> tuple[str, ...]:
         nonlocal calls
         calls += 1
         raise ProviderUnavailable("provider body must not escape")
@@ -486,7 +494,9 @@ def test_deferred_suggestion_becomes_stale_after_workflow_cancellation(
     provider_started = Event()
     release_provider = Event()
 
-    async def deferred(_goal: str, _config: object) -> tuple[str, ...]:
+    async def deferred(
+        _goal: str, _config: object, *, clarification: object = None
+    ) -> tuple[str, ...]:
         provider_started.set()
         await asyncio.to_thread(release_provider.wait)
         return ("Choose a date", "Invite guests")
@@ -557,7 +567,9 @@ def test_pending_and_superseded_suggestions_return_conflicts(
     release_provider = Event()
     calls = 0
 
-    async def deferred(_goal: str, _config: object) -> tuple[str, ...]:
+    async def deferred(
+        _goal: str, _config: object, *, clarification: object = None
+    ) -> tuple[str, ...]:
         nonlocal calls
         calls += 1
         (first_started if calls == 1 else second_started).set()
@@ -1786,3 +1798,157 @@ def test_workflow_preflight_allows_bearer_and_json(client: TestClient) -> None:
         allow_headers = response.headers["access-control-allow-headers"].lower()
         assert "content-type" in allow_headers
         assert "authorization" in allow_headers
+
+
+def test_suggestion_accepts_optional_clarification(
+    database_session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    from app.suggestion_service import Clarification
+
+    del database_session
+    seen: dict[str, object] = {}
+
+    async def suggest(
+        goal: str, _config: object, *, clarification: object = None
+    ) -> tuple[str, ...]:
+        seen["goal"] = goal
+        seen["clarification"] = clarification
+        return ("Choose a date", "Invite guests")
+
+    with TestClient(
+        create_app(session_factory, suggestion_callable=suggest)
+    ) as client:
+        headers = auth_headers(client)
+        started, _ = start_workflow_request(client, headers)
+        last = started.json()
+        offered, _ = advance_workflow_request(
+            client, headers, last, {"action": "answer_multiple_steps", "answer": True}
+        )
+        collecting, _ = advance_workflow_request(
+            client,
+            headers,
+            offered.json(),
+            {"action": "answer_multiple_steps", "answer": True},
+        )
+        body = collecting.json()
+        workflow_id = body["workflow_id"]
+        request_id = uuid4()
+        response = client.post(
+            f"/todo-workflows/{workflow_id}/suggestions",
+            json={
+                "request_id": str(request_id),
+                "expected_revision": body["revision"],
+                "step_id": body["view"]["step_id"],
+                "clarification": {"field": "date", "value": "next Saturday"},
+            },
+            headers=headers,
+        )
+    assert response.status_code == 201
+    assert response.json()["proposed_titles"] == ["Choose a date", "Invite guests"]
+    assert response.json()["error_code"] is None
+    assert seen["goal"] == "Plan birthday party"
+    assert seen["clarification"] == Clarification("date", "next Saturday")
+
+
+@pytest.mark.parametrize(
+    "clarification",
+    [
+        {"field": "when", "value": "next Saturday"},
+        {"field": "date", "value": ""},
+        {"field": "date", "value": "x" * 201},
+        {"field": "date", "value": "next Saturday", "extra": "nope"},
+        {"field": "date"},
+        {"value": "next Saturday"},
+        "next Saturday",
+    ],
+)
+def test_suggestion_rejects_malformed_clarification(
+    suggestion_client: tuple[TestClient, list[str]], clarification: object
+) -> None:
+    client, _calls = suggestion_client
+    headers = auth_headers(client)
+    started, _ = start_workflow_request(client, headers)
+    last = started.json()
+    offered, _ = advance_workflow_request(
+        client, headers, last, {"action": "answer_multiple_steps", "answer": True}
+    )
+    collecting, _ = advance_workflow_request(
+        client,
+        headers,
+        offered.json(),
+        {"action": "answer_multiple_steps", "answer": True},
+    )
+    body = collecting.json()
+    response = client.post(
+        f"/todo-workflows/{body['workflow_id']}/suggestions",
+        json={
+            "request_id": str(uuid4()),
+            "expected_revision": body["revision"],
+            "step_id": body["view"]["step_id"],
+            "clarification": clarification,
+        },
+        headers=headers,
+    )
+    assert response.status_code == 422
+
+
+def test_changed_clarification_with_same_request_id_conflicts(
+    suggestion_client: tuple[TestClient, list[str]],
+) -> None:
+    client, _calls = suggestion_client
+    headers = auth_headers(client)
+    started, _ = start_workflow_request(client, headers)
+    last = started.json()
+    offered, _ = advance_workflow_request(
+        client, headers, last, {"action": "answer_multiple_steps", "answer": True}
+    )
+    collecting, _ = advance_workflow_request(
+        client,
+        headers,
+        offered.json(),
+        {"action": "answer_multiple_steps", "answer": True},
+    )
+    body = collecting.json()
+    workflow_id = body["workflow_id"]
+    request_id = uuid4()
+
+    def suggest_body(clarification: dict[str, str] | None) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "request_id": str(request_id),
+            "expected_revision": body["revision"],
+            "step_id": body["view"]["step_id"],
+        }
+        if clarification is not None:
+            payload["clarification"] = clarification
+        return payload
+
+    first = client.post(
+        f"/todo-workflows/{workflow_id}/suggestions",
+        json=suggest_body({"field": "date", "value": "next Saturday"}),
+        headers=headers,
+    )
+    assert first.status_code == 201
+
+    changed = client.post(
+        f"/todo-workflows/{workflow_id}/suggestions",
+        json=suggest_body({"field": "budget", "value": "under $50"}),
+        headers=headers,
+    )
+    assert changed.status_code == 409
+    assert changed.json()["detail"]["code"] == "request_id_reused"
+
+    replay = client.post(
+        f"/todo-workflows/{workflow_id}/suggestions",
+        json=suggest_body({"field": "date", "value": "next Saturday"}),
+        headers=headers,
+    )
+    assert replay.status_code == 200
+    assert replay.json() == first.json()
+
+
+def test_suggestion_request_schema_keeps_clarification_optional(client: TestClient) -> None:
+    document = client.get("/openapi.json").json()
+    schema = document["components"]["schemas"]["TodoWorkflowSuggestionRequest"]
+    assert set(schema["required"]) == {"request_id", "expected_revision", "step_id"}
+    assert "clarification" in schema["properties"]

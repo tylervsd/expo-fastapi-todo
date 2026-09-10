@@ -300,3 +300,102 @@ async def test_outer_deadline_maps_async_timeout(monkeypatch: pytest.MonkeyPatch
             CONFIG,
             transport=transport_for(httpx.Response(200, json=provider_response(["one", "two"]))),
         )
+
+
+@pytest.mark.anyio
+async def test_clarification_appends_single_labeled_line_to_prompt() -> None:
+    from app.suggestion_service import Clarification
+
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["json"] = json.loads(request.content)
+        return httpx.Response(200, json=provider_response(["Choose a date", "Invite guests"]))
+
+    result = await request_todo_suggestions(
+        GOAL,
+        CONFIG,
+        clarification=Clarification(field="date", value="next Saturday"),
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert result == ("Choose a date", "Invite guests")
+    request_json = captured["json"]
+    assert isinstance(request_json, dict)
+    messages = request_json["messages"]
+    assert messages[0] == {"role": "system", "content": SYSTEM_INSTRUCTION}
+    assert messages[1] == {
+        "role": "user",
+        "content": "Plan a birthday party\nClarification [date]: next Saturday",
+    }
+
+
+@pytest.mark.anyio
+async def test_absent_clarification_preserves_exact_legacy_user_content() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["json"] = json.loads(request.content)
+        return httpx.Response(200, json=provider_response(["Choose a date", "Invite guests"]))
+
+    await request_todo_suggestions(GOAL, CONFIG, transport=httpx.MockTransport(handler))
+
+    request_json = captured["json"]
+    assert isinstance(request_json, dict)
+    assert request_json["messages"][1] == {"role": "user", "content": GOAL}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("value", ["x", "y" * 200, "🎉" * 200, "  next Saturday  "])
+async def test_clarification_value_bounds_accept(value: str) -> None:
+    from app.suggestion_service import Clarification
+
+    result = await request_todo_suggestions(
+        GOAL,
+        CONFIG,
+        clarification=Clarification(field="people", value=value),
+        transport=transport_for(
+            httpx.Response(200, json=provider_response(["Choose a date", "Invite guests"]))
+        ),
+    )
+    assert result == ("Choose a date", "Invite guests")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("value", ["", "   ", "x" * 201, "has\x00nul"])
+async def test_clarification_value_bounds_reject(value: str) -> None:
+    from app.suggestion_service import Clarification
+
+    with pytest.raises(InvalidSuggestionOutput):
+        await request_todo_suggestions(
+            GOAL,
+            CONFIG,
+            clarification=Clarification(field="date", value=value),
+            transport=transport_for(
+                httpx.Response(200, json=provider_response(["Choose a date", "Invite guests"]))
+            ),
+        )
+
+
+@pytest.mark.anyio
+async def test_clarification_answer_never_leaks_into_errors_or_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    from app.suggestion_service import Clarification
+
+    caplog.set_level(logging.DEBUG, logger="app.suggestion_provider")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("transport boom", request=request)
+
+    with pytest.raises(ProviderUnavailable) as error:
+        await request_todo_suggestions(
+            GOAL,
+            CONFIG,
+            clarification=Clarification(field="budget", value="under $50"),
+            transport=httpx.MockTransport(handler),
+        )
+    assert "under $50" not in str(error.value)
+    assert "under $50" not in caplog.text

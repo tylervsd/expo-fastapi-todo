@@ -1,8 +1,8 @@
 import re
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Protocol
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -54,6 +54,8 @@ from app.suggestion_provider import (
     request_todo_suggestions,
 )
 from app.suggestion_service import (
+    Clarification,
+    ClarificationField,
     InvalidStoredSuggestion,
     InvalidSuggestionState,
     StaleSuggestion,
@@ -63,6 +65,7 @@ from app.suggestion_service import (
     SuggestionStatus,
     finish_suggestion,
     get_current_suggestion,
+    normalize_clarification,
     reserve_suggestion,
 )
 from app.title_validation import canonicalize_title
@@ -175,12 +178,31 @@ class SessionResponse(BaseModel):
     user: UserPublic
 
 
+class SuggestionClarification(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    field: ClarificationField
+    value: StrictStr
+
+    @model_validator(mode="after")
+    def canonical_clarification(self) -> SuggestionClarification:
+        try:
+            canonical = normalize_clarification(
+                Clarification(self.field, self.value)
+            )
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        self.value = canonical.value
+        return self
+
+
 class TodoWorkflowSuggestionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     request_id: UUID
     expected_revision: StrictInt = Field(ge=0, le=MAX_WORKFLOW_REVISION)
     step_id: StrictStr
+    clarification: SuggestionClarification | None = None
 
 
 class TodoWorkflowSuggestionResponse(BaseModel):
@@ -355,9 +377,14 @@ class TodoUpdate(BaseModel):
         return self
 
 
-SuggestionCallable = Callable[
-    [str, OpenRouterConfig], Awaitable[tuple[str, ...]]
-]
+class SuggestionCallable(Protocol):
+    async def __call__(
+        self,
+        goal: str,
+        config: OpenRouterConfig,
+        *,
+        clarification: Clarification | None = None,
+    ) -> tuple[str, ...]: ...
 
 
 def create_app(
@@ -694,6 +721,13 @@ def create_app(
         session: Annotated[Session, Depends(get_session)],
     ) -> TodoWorkflowSuggestionResponse | JSONResponse:
         try:
+            clarification = (
+                Clarification(
+                    payload.clarification.field, payload.clarification.value
+                )
+                if payload.clarification is not None
+                else None
+            )
             reservation = reserve_suggestion(
                 session,
                 user.id,
@@ -701,6 +735,7 @@ def create_app(
                 payload.request_id,
                 payload.expected_revision,
                 payload.step_id,
+                clarification=clarification,
             )
         except RequestIdReused as exc:
             raise suggestion_conflict(
@@ -762,7 +797,9 @@ def create_app(
             titles: tuple[str, ...] | None = None
         else:
             try:
-                titles = await suggestion_runner(reservation.goal, config)
+                titles = await suggestion_runner(
+                    reservation.goal, config, clarification=reservation.clarification
+                )
                 error_code = None
             except SuggestionTimeout:
                 titles = None

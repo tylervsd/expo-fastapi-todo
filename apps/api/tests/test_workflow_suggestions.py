@@ -561,3 +561,168 @@ def test_suggestion_rows_round_trip_and_migration_downgrade_preserves_workflow(
             text("DELETE FROM users WHERE username = :username"),
             {"username": username},
         )
+
+
+def test_clarification_is_immutable_and_bounded() -> None:
+    from dataclasses import FrozenInstanceError
+
+    from app.suggestion_service import Clarification, normalize_clarification
+
+    assert normalize_clarification(Clarification("date", "next Saturday")) == Clarification(
+        "date", "next Saturday"
+    )
+    assert normalize_clarification(Clarification("people", "  padded  ")) == Clarification(
+        "people", "padded"
+    )
+    assert normalize_clarification(Clarification("budget", "🎉" * 200)) == Clarification(
+        "budget", "🎉" * 200
+    )
+    with pytest.raises(FrozenInstanceError):
+        Clarification("date", "next Saturday").value = "other"  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("value", ["", "   ", "x" * 201, "has\x00nul"])
+def test_clarification_value_bounds_reject(value: str) -> None:
+    from app.suggestion_service import Clarification, normalize_clarification
+
+    with pytest.raises(ValueError):
+        normalize_clarification(Clarification("date", value))
+
+
+@pytest.mark.parametrize("field", ["when", "DATE", "", "date "])
+def test_clarification_unknown_field_rejects(field: str) -> None:
+    from app.suggestion_service import Clarification, normalize_clarification
+
+    with pytest.raises(ValueError):
+        normalize_clarification(Clarification(field, "next Saturday"))  # type: ignore[arg-type]
+
+
+def test_changed_clarification_with_same_request_id_is_reused(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    from app.suggestion_service import Clarification
+
+    del database_session
+    owner_id = setup_owner(session_factory)
+    workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
+    request_id = uuid4()
+
+    with session_factory() as session:
+        first = reserve_suggestion(
+            session,
+            owner_id,
+            workflow_id,
+            request_id,
+            revision,
+            step_id,
+            clarification=Clarification("date", "next Saturday"),
+        )
+    assert isinstance(first, SuggestionReservation)
+    assert first.goal == "Plan birthday party"
+    assert first.clarification == Clarification("date", "next Saturday")
+
+    with session_factory() as session, pytest.raises(RequestIdReused):
+        reserve_suggestion(
+            session,
+            owner_id,
+            workflow_id,
+            request_id,
+            revision,
+            step_id,
+            clarification=Clarification("budget", "under $50"),
+        )
+    with session_factory() as session, pytest.raises(RequestIdReused):
+        reserve_suggestion(session, owner_id, workflow_id, request_id, revision, step_id)
+
+
+def test_absent_clarification_keeps_phase10_fingerprint(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    from app.suggestion_service import _suggestion_fingerprint
+    from app.workflow_service import fingerprint_payload
+
+    del database_session
+    owner_id = setup_owner(session_factory)
+    workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
+
+    with session_factory() as session:
+        reservation = reserve_suggestion(
+            session, owner_id, workflow_id, uuid4(), revision, step_id
+        )
+    assert isinstance(reservation, SuggestionReservation)
+    assert reservation.clarification is None
+    assert reservation.request_fingerprint == _suggestion_fingerprint(
+        workflow_id, revision, step_id, "Plan birthday party"
+    )
+    assert reservation.request_fingerprint == fingerprint_payload(
+        {
+            "operation": "suggest",
+            "workflow_id": str(workflow_id),
+            "expected_revision": revision,
+            "step_id": step_id,
+            "title": "Plan birthday party",
+        }
+    )
+
+
+def test_clarified_ready_result_replays_without_provider(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    from app.suggestion_service import Clarification
+
+    del database_session
+    owner_id = setup_owner(session_factory)
+    workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
+    request_id = uuid4()
+    clarification = Clarification("location", "the park")
+
+    with session_factory() as session:
+        reserved = reserve_suggestion(
+            session, owner_id, workflow_id, request_id, revision, step_id,
+            clarification=clarification,
+        )
+    assert isinstance(reserved, SuggestionReservation)
+    with session_factory() as session:
+        ready = finish_suggestion(
+            session, owner_id, workflow_id, request_id,
+            titles=("Choose a date", "Invite guests"), error_code=None,
+        )
+    assert ready is not None and ready.status is SuggestionStatus.READY
+    with session_factory() as session:
+        replay = reserve_suggestion(
+            session, owner_id, workflow_id, request_id, revision, step_id,
+            clarification=clarification,
+        )
+    assert replay == ready
+
+
+def test_clarification_text_never_enters_server_storage(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    from app.suggestion_service import Clarification
+
+    del database_session
+    owner_id = setup_owner(session_factory)
+    workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
+
+    with session_factory() as session:
+        reserved = reserve_suggestion(
+            session, owner_id, workflow_id, uuid4(), revision, step_id,
+            clarification=Clarification("date", "next Saturday"),
+        )
+    assert isinstance(reserved, SuggestionReservation)
+    with session_factory() as session:
+        row = session.scalar(
+            select(WorkflowSuggestionRequestRow).where(
+                WorkflowSuggestionRequestRow.request_id == reserved.request_id
+            )
+        )
+        assert row is not None
+        assert "next Saturday" not in row.request_fingerprint
+        assert "next Saturday" not in row.step_id
+        assert "next Saturday" not in row.status
+        assert row.proposed_titles == []
+        assert set(row.__table__.columns.keys()) == {
+            "id", "owner_id", "workflow_id", "request_id", "request_fingerprint",
+            "base_revision", "step_id", "status", "proposed_titles", "error_code",
+        }
