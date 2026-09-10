@@ -10,8 +10,15 @@ from pydantic import ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session, sessionmaker
 
+from app import main as main_module
 from app.main import YesNoWorkflowView, create_app
-from app.suggestion_provider import ProviderUnavailable
+from app.suggestion_provider import (
+    InvalidSuggestionOutput,
+    OpenRouterConfig,
+    ProviderUnavailable,
+    SuggestionTimeout,
+)
+from app.workflow_repository import WorkflowSuggestionRequestRow
 
 MAX_REVISION = 2147483647
 
@@ -251,6 +258,182 @@ def test_suggestions_return_exact_proposal_and_do_not_create_todos(
     assert saved.json() == response.json()
 
 
+def test_ready_replay_does_not_require_provider_configuration(
+    database_session: Session,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del database_session
+    calls = 0
+
+    async def suggest(
+        goal: str, config: OpenRouterConfig
+    ) -> tuple[str, ...]:
+        nonlocal calls
+        calls += 1
+        assert goal == "Plan birthday party"
+        assert config.model == "test-model"
+        return ("Choose a date", "Invite guests")
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_MODEL", "test-model")
+    monkeypatch.setattr(main_module, "request_todo_suggestions", suggest)
+
+    with TestClient(create_app(session_factory)) as client:
+        headers = auth_headers(client)
+        started, _ = start_workflow_request(client, headers)
+        offered, _ = advance_workflow_request(
+            client,
+            headers,
+            started.json(),
+            {"action": "answer_multiple_steps", "answer": True},
+        )
+        collecting, _ = advance_workflow_request(
+            client,
+            headers,
+            offered.json(),
+            {"action": "answer_multiple_steps", "answer": True},
+        )
+        body = collecting.json()
+        payload = {
+            "request_id": str(uuid4()),
+            "expected_revision": body["revision"],
+            "step_id": body["view"]["step_id"],
+        }
+        first = client.post(
+            f"/todo-workflows/{body['workflow_id']}/suggestions",
+            json=payload,
+            headers=headers,
+        )
+        assert first.status_code == 201
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_MODEL", raising=False)
+
+        replay = client.post(
+            f"/todo-workflows/{body['workflow_id']}/suggestions",
+            json=payload,
+            headers=headers,
+        )
+
+    assert replay.status_code == 200
+    assert replay.json() == first.json()
+    assert calls == 1
+
+
+def test_suggestion_post_rejects_other_owner_and_invalid_step_or_revision(
+    suggestion_client: tuple[TestClient, list[str]],
+) -> None:
+    client, calls = suggestion_client
+    alice_headers = auth_headers(client, "alice")
+    bob_headers = auth_headers(client, "bob")
+    started, _ = start_workflow_request(client, alice_headers)
+    body = started.json()
+    payload = {
+        "request_id": str(uuid4()),
+        "expected_revision": body["revision"],
+        "step_id": body["view"]["step_id"],
+    }
+    hidden = client.post(
+        f"/todo-workflows/{body['workflow_id']}/suggestions",
+        json=payload,
+        headers=bob_headers,
+    )
+    assert hidden.status_code == 404
+    assert calls == []
+    invalid_state = client.post(
+        f"/todo-workflows/{body['workflow_id']}/suggestions",
+        json=payload,
+        headers=alice_headers,
+    )
+    assert invalid_state.status_code == 409
+    assert invalid_state.json()["detail"]["code"] == "invalid_state"
+    assert calls == []
+
+    offered, _ = advance_workflow_request(
+        client,
+        alice_headers,
+        body,
+        {"action": "answer_multiple_steps", "answer": True},
+    )
+    collecting, _ = advance_workflow_request(
+        client,
+        alice_headers,
+        offered.json(),
+        {"action": "answer_multiple_steps", "answer": True},
+    )
+    collect_body = collecting.json()
+    for invalid in (
+        {
+            **payload,
+            "request_id": str(uuid4()),
+            "expected_revision": collect_body["revision"] - 1,
+            "step_id": collect_body["view"]["step_id"],
+        },
+        {
+            **payload,
+            "request_id": str(uuid4()),
+            "expected_revision": collect_body["revision"],
+            "step_id": f"{body['workflow_id']}:OFFER_BREAKDOWN",
+        },
+    ):
+        response = client.post(
+            f"/todo-workflows/{body['workflow_id']}/suggestions",
+            json=invalid,
+            headers=alice_headers,
+        )
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "stale_step"
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("provider_error", "status_code", "error_code"),
+    [
+        (SuggestionTimeout("timeout"), 504, "timeout"),
+        (InvalidSuggestionOutput("invalid"), 502, "invalid_output"),
+    ],
+)
+def test_suggestion_provider_failures_are_typed_and_persisted(
+    database_session: Session,
+    session_factory: sessionmaker[Session],
+    provider_error: Exception,
+    status_code: int,
+    error_code: str,
+) -> None:
+    del database_session
+
+    async def fail(_goal: str, _config: object) -> tuple[str, ...]:
+        raise provider_error
+
+    with TestClient(create_app(session_factory, suggestion_callable=fail)) as client:
+        headers = auth_headers(client)
+        started, _ = start_workflow_request(client, headers)
+        offered, _ = advance_workflow_request(
+            client,
+            headers,
+            started.json(),
+            {"action": "answer_multiple_steps", "answer": True},
+        )
+        collecting, _ = advance_workflow_request(
+            client,
+            headers,
+            offered.json(),
+            {"action": "answer_multiple_steps", "answer": True},
+        )
+        body = collecting.json()
+        response = client.post(
+            f"/todo-workflows/{body['workflow_id']}/suggestions",
+            json={
+                "request_id": str(uuid4()),
+                "expected_revision": body["revision"],
+                "step_id": body["view"]["step_id"],
+            },
+            headers=headers,
+        )
+    assert response.status_code == status_code
+    assert response.json()["detail"]["code"] == error_code
+
+
 def test_failed_suggestion_replay_is_saved_and_does_not_call_provider_twice(
     database_session: Session,
     session_factory: sessionmaker[Session],
@@ -331,21 +514,105 @@ def test_deferred_suggestion_becomes_stale_after_workflow_cancellation(
                 json=payload,
                 headers=headers,
             )
-            assert provider_started.wait(timeout=5)
-            assert client.get(f"/todo-workflows/{workflow_id}", headers=headers).status_code == 200
-            cancelled, _ = advance_workflow_request(
-                client, headers, body, {"action": "cancel"}
-            )
-            assert cancelled.status_code == 200
-            release_provider.set()
+            try:
+                assert provider_started.wait(timeout=5)
+                assert (
+                    client.get(
+                        f"/todo-workflows/{workflow_id}", headers=headers
+                    ).status_code
+                    == 200
+                )
+                cancelled, _ = advance_workflow_request(
+                    client, headers, body, {"action": "cancel"}
+                )
+                assert cancelled.status_code == 200
+            finally:
+                release_provider.set()
             result = pending.result(timeout=5)
 
         assert result.status_code == 409
         assert result.json()["detail"]["code"] == "stale_suggestion"
+        with session_factory() as verification_session:
+            row = verification_session.scalar(
+                select(WorkflowSuggestionRequestRow).where(
+                    WorkflowSuggestionRequestRow.request_id
+                    == UUID(payload["request_id"])
+                )
+            )
+            assert row is not None
+            assert row.proposed_titles == []
         assert client.get(
             f"/todo-workflows/{workflow_id}/suggestions", headers=headers
         ).status_code == 404
         assert client.get("/todos", headers=headers).json() == []
+
+
+def test_pending_and_superseded_suggestions_return_conflicts(
+    database_session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    del database_session
+    first_started = Event()
+    second_started = Event()
+    release_provider = Event()
+    calls = 0
+
+    async def deferred(_goal: str, _config: object) -> tuple[str, ...]:
+        nonlocal calls
+        calls += 1
+        (first_started if calls == 1 else second_started).set()
+        await asyncio.to_thread(release_provider.wait)
+        return ("Choose a date", "Invite guests")
+
+    with TestClient(create_app(session_factory, suggestion_callable=deferred)) as client:
+        headers = auth_headers(client)
+        started, _ = start_workflow_request(client, headers)
+        offered, _ = advance_workflow_request(
+            client,
+            headers,
+            started.json(),
+            {"action": "answer_multiple_steps", "answer": True},
+        )
+        collecting, _ = advance_workflow_request(
+            client,
+            headers,
+            offered.json(),
+            {"action": "answer_multiple_steps", "answer": True},
+        )
+        body = collecting.json()
+        path = f"/todo-workflows/{body['workflow_id']}/suggestions"
+        old_payload = {
+            "request_id": str(uuid4()),
+            "expected_revision": body["revision"],
+            "step_id": body["view"]["step_id"],
+        }
+        new_payload = {**old_payload, "request_id": str(uuid4())}
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            old_request = executor.submit(
+                client.post, path, json=old_payload, headers=headers
+            )
+            try:
+                assert first_started.wait(timeout=5)
+                in_progress = client.post(
+                    path, json=old_payload, headers=headers
+                )
+                assert in_progress.status_code == 409
+                assert in_progress.json()["detail"]["code"] == "suggestion_in_progress"
+
+                new_request = executor.submit(
+                    client.post, path, json=new_payload, headers=headers
+                )
+                assert second_started.wait(timeout=5)
+                superseded = client.post(
+                    path, json=old_payload, headers=headers
+                )
+                assert superseded.status_code == 409
+                assert superseded.json()["detail"]["code"] == "stale_suggestion"
+            finally:
+                release_provider.set()
+            assert old_request.result(timeout=5).status_code == 409
+            assert new_request.result(timeout=5).status_code == 201
+        assert calls == 2
 
 
 def test_missing_configuration_is_saved_as_failed_suggestion(
@@ -1341,6 +1608,25 @@ def test_workflow_routes_return_503_when_database_unavailable() -> None:
                         "step_id": f"{workflow_id}:ASSESS_TASK",
                         "action": {"action": "cancel"},
                     },
+                    headers=dead_headers,
+                ).status_code
+                == 503
+            )
+            assert (
+                bad_client.post(
+                    f"/todo-workflows/{workflow_id}/suggestions",
+                    json={
+                        "request_id": request_id,
+                        "expected_revision": 2,
+                        "step_id": f"{workflow_id}:COLLECT_TASKS",
+                    },
+                    headers=dead_headers,
+                ).status_code
+                == 503
+            )
+            assert (
+                bad_client.get(
+                    f"/todo-workflows/{workflow_id}/suggestions",
                     headers=dead_headers,
                 ).status_code
                 == 503
