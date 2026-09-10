@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from alembic.config import Config
-from sqlalchemy import Engine, inspect, select, text
+from sqlalchemy import Engine, func, inspect, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from alembic import command
@@ -24,6 +24,7 @@ from app.suggestion_service import (
     reserve_suggestion,
     suggestion_snapshot_from_row,
 )
+from app.todo_repository import TodoRow
 from app.workflow_domain import (
     AnswerMultipleSteps,
     WorkflowState,
@@ -285,6 +286,14 @@ def test_finish_older_after_newer_is_stale_and_does_not_advance_workflow(
             {"id": str(workflow_id)},
         ).one()
         assert tuple(workflow) == (revision, "COLLECT_TASKS")
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(TodoRow)
+                .where(TodoRow.owner_id == owner_id)
+            )
+            == 0
+        )
 
 
 def test_current_get_filters_by_workflow_step_and_revision(
@@ -381,6 +390,121 @@ def test_suggestion_table_constraints_and_owner_cascade(
         "ck_suggestion_requests_step_id",
         "ck_suggestion_requests_titles_array",
     }
+
+
+def test_ready_and_failed_rows_map_from_database(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    owner_id = setup_owner(session_factory)
+    workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
+    ready_id, failed_id = uuid4(), uuid4()
+    assert isinstance(
+        reserve(session_factory, owner_id, workflow_id, revision, step_id, ready_id),
+        SuggestionReservation,
+    )
+    with session_factory() as session:
+        finish_suggestion(
+            session,
+            owner_id,
+            workflow_id,
+            ready_id,
+            titles=("Choose a date", "Invite guests"),
+            error_code=None,
+        )
+    assert isinstance(
+        reserve(session_factory, owner_id, workflow_id, revision, step_id, failed_id),
+        SuggestionReservation,
+    )
+    with session_factory() as session:
+        finish_suggestion(
+            session,
+            owner_id,
+            workflow_id,
+            failed_id,
+            titles=None,
+            error_code=SuggestionErrorCode.INVALID_OUTPUT,
+        )
+
+    with session_factory() as session:
+        rows = session.scalars(
+            select(WorkflowSuggestionRequestRow).order_by(
+                WorkflowSuggestionRequestRow.id
+            )
+        ).all()
+        snapshots = [suggestion_snapshot_from_row(row) for row in rows]
+    assert [snapshot.status for snapshot in snapshots] == [
+        SuggestionStatus.READY,
+        SuggestionStatus.FAILED,
+    ]
+    assert snapshots[0].proposed_titles == ("Choose a date", "Invite guests")
+    assert snapshots[1].error_code is SuggestionErrorCode.INVALID_OUTPUT
+
+
+def test_database_malformed_ready_non_string_titles_fail_closed(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    owner_id = setup_owner(session_factory)
+    workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
+    request_id = uuid4()
+    assert isinstance(
+        reserve(session_factory, owner_id, workflow_id, revision, step_id, request_id),
+        SuggestionReservation,
+    )
+    with session_factory() as session:
+        finish_suggestion(
+            session,
+            owner_id,
+            workflow_id,
+            request_id,
+            titles=("Choose a date", "Invite guests"),
+            error_code=None,
+        )
+        session.execute(
+            text(
+                "UPDATE todo_workflow_suggestion_requests "
+                "SET proposed_titles = '[1, 2]'::jsonb "
+                "WHERE request_id = :request_id"
+            ),
+            {"request_id": request_id},
+        )
+        session.commit()
+
+    with session_factory() as session, pytest.raises(InvalidStoredSuggestion):
+        get_current_suggestion(session, owner_id, workflow_id)
+
+
+def test_deleting_workflow_or_owner_cascades_suggestion_rows(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    workflow_owner = setup_owner(session_factory, "workflow-owner")
+    workflow_id, revision, step_id = make_collecting(session_factory, workflow_owner)
+    assert isinstance(
+        reserve(session_factory, workflow_owner, workflow_id, revision, step_id),
+        SuggestionReservation,
+    )
+    with session_factory() as session:
+        session.execute(
+            text("DELETE FROM todo_workflows WHERE public_id = :workflow_id"),
+            {"workflow_id": workflow_id},
+        )
+        session.commit()
+        assert session.scalar(select(WorkflowSuggestionRequestRow)) is None
+
+    owner_id = setup_owner(session_factory, "owner-cascade")
+    workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
+    assert isinstance(
+        reserve(session_factory, owner_id, workflow_id, revision, step_id),
+        SuggestionReservation,
+    )
+    with session_factory() as session:
+        session.execute(
+            text("DELETE FROM users WHERE id = :owner_id"), {"owner_id": owner_id}
+        )
+        session.commit()
+        assert session.scalar(select(WorkflowSuggestionRequestRow)) is None
 
 
 def test_suggestion_rows_round_trip_and_migration_downgrade_preserves_workflow(

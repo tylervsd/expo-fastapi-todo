@@ -158,6 +158,8 @@ def suggestion_snapshot_from_row(
     if status is SuggestionStatus.READY:
         if error_code is not None:
             raise InvalidStoredSuggestion("ready suggestion has an error")
+        if any(not isinstance(title, str) for title in titles):
+            raise InvalidStoredSuggestion("stored suggestion has invalid titles")
         try:
             validated = create_submit_tasks(titles)
         except (TypeError, ValueError) as exc:
