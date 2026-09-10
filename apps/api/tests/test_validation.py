@@ -7,6 +7,7 @@ from app.main import (
     TodoCreate,
     TodoWorkflowActionRequest,
     TodoWorkflowStart,
+    TodoWorkflowSuggestionRequest,
     UserLogin,
     UserSignup,
 )
@@ -194,6 +195,69 @@ def test_workflow_start_envelope_requires_request_id_and_title() -> None:
 def test_workflow_start_envelope_rejects_malformed(payload: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
         TodoWorkflowStart.model_validate(payload)
+
+
+def test_workflow_suggestion_envelope_accepts_exact_shape() -> None:
+    request_id = uuid4()
+    envelope = TodoWorkflowSuggestionRequest.model_validate(
+        {
+            "request_id": str(request_id),
+            "expected_revision": 2,
+            "step_id": f"{uuid4()}:COLLECT_TASKS",
+        }
+    )
+    assert envelope.request_id == request_id
+    assert envelope.expected_revision == 2
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"request_id": str(uuid4()), "expected_revision": 0},
+        {
+            "request_id": "not-a-uuid",
+            "expected_revision": 0,
+            "step_id": "step",
+        },
+        {
+            "request_id": str(uuid4()),
+            "expected_revision": True,
+            "step_id": "step",
+        },
+        {
+            "request_id": str(uuid4()),
+            "expected_revision": 1.5,
+            "step_id": "step",
+        },
+        {
+            "request_id": str(uuid4()),
+            "expected_revision": "0",
+            "step_id": "step",
+        },
+        {
+            "request_id": str(uuid4()),
+            "expected_revision": -1,
+            "step_id": "step",
+        },
+        {
+            "request_id": str(uuid4()),
+            "expected_revision": 2147483648,
+            "step_id": "step",
+        },
+        {
+            "request_id": str(uuid4()),
+            "expected_revision": 0,
+            "step_id": "step",
+            "extra": True,
+        },
+    ],
+)
+def test_workflow_suggestion_envelope_rejects_strict_shape_violations(
+    payload: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        TodoWorkflowSuggestionRequest.model_validate(payload)
 
 
 def test_workflow_action_envelope_accepts_exact_shape() -> None:
