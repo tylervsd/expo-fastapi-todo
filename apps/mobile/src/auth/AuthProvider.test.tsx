@@ -1,9 +1,11 @@
 import * as mockReact from "react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import { QueryClientProvider, timeoutManager, type QueryClient } from "@tanstack/react-query";
+import { HttpAgent } from "@ag-ui/client";
 import { createAppQueryClient } from "../../App";
 import { TodoApiError, type AuthUser, type Todo } from "../todos/todoApi";
 import { AuthProvider, SessionEpochContext } from "./AuthProvider";
+import { useAgentSession } from "../agent/AgentSessionProvider";
 import { PENDING_WRITE_KEY_PREFIX } from "../todoWorkflows/pendingWorkflowWrite";
 import { createMemoryTokenStorage, type TokenStorage } from "./tokenStorage";
 import type { TodoTransport } from "./authenticatedApi";
@@ -701,6 +703,143 @@ describe("session epoch", () => {
     }
     for (const call of SecureStore.deleteItemAsync.mock.calls) {
       expect(String(call[0])).not.toContain(PENDING_WRITE_KEY_PREFIX);
+    }
+  });
+});
+
+describe("agent session factory", () => {
+  const API_URL = "https://api.example.test";
+  const WORKFLOW_ID = "6fc33b84-16a8-4d8e-ae94-fc50bb457d72";
+  const sessionA = {
+    token: "tok-A",
+    expires_at: "2026-10-07T00:00:00+00:00",
+    user: { id: "6fc33b84-16a8-4d8e-ae94-fc50bb457d72", username: "alice" },
+  };
+  const sessionB = {
+    token: "tok-B",
+    expires_at: "2026-10-07T00:00:00+00:00",
+    user: { id: "9ab4d5e6-16a8-4d8e-ae94-fc50bb457d72", username: "bob" },
+  };
+
+  type AgentFactory = { createAgent: (workflowId: string) => HttpAgent };
+
+  // Children render before a session exists too, so the probe tolerates the
+  // missing factory outside the signed-in branch. The hook still runs its
+  // context read on every render, keeping hook order stable.
+  const AgentProbe = ({ seen }: { seen: Array<AgentFactory | null> }) => {
+    let value: AgentFactory | null = null;
+    try {
+      value = useAgentSession();
+    } catch {
+      value = null;
+    }
+    seen.push(value);
+    return null;
+  };
+
+  const lastFactory = (seen: Array<AgentFactory | null>): AgentFactory => {
+    const factory = [...seen].reverse().find((entry) => entry !== null);
+    if (!factory) throw new Error("expected a session factory");
+    return factory;
+  };
+
+  const signInThroughForm = async (username: string, password: string) => {
+    await fireEvent.changeText(screen.getByLabelText("Username"), username);
+    await fireEvent.changeText(screen.getByLabelText("Password"), password);
+    await fireEvent.press(screen.getByRole("button", { name: "Sign in" }));
+  };
+
+  let savedApiUrl: string | undefined;
+
+  beforeEach(() => {
+    savedApiUrl = process.env.EXPO_PUBLIC_API_URL;
+    process.env.EXPO_PUBLIC_API_URL = API_URL;
+  });
+
+  afterEach(() => {
+    if (savedApiUrl === undefined) {
+      delete process.env.EXPO_PUBLIC_API_URL;
+    } else {
+      process.env.EXPO_PUBLIC_API_URL = savedApiUrl;
+    }
+    jest.restoreAllMocks();
+  });
+
+  it("exposes a token-private factory in the signed-in branch", async () => {
+    const authApi = makeAuthApi();
+    const storage = createMemoryTokenStorage();
+    await storage.set("tok-1");
+    const seen: Array<AgentFactory | null> = [];
+    await renderProvider({ authApi, storage, children: <AgentProbe seen={seen} /> });
+
+    await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
+    const factory = lastFactory(seen);
+    expect(Object.keys(factory)).toEqual(["createAgent"]);
+
+    const agent = factory.createAgent(WORKFLOW_ID);
+    expect(agent.url).toBe(`${API_URL}/agent`);
+    expect(agent.headers).toEqual({ Authorization: "Bearer tok-1" });
+    expect(agent.threadId).toBe(WORKFLOW_ID);
+  });
+
+  it("swaps the factory when the session is replaced", async () => {
+    const authApi = makeAuthApi();
+    authApi.login.mockResolvedValueOnce(sessionA).mockResolvedValueOnce(sessionB);
+    const seen: Array<AgentFactory | null> = [];
+    await renderProvider({ authApi, children: <AgentProbe seen={seen} /> });
+
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    await signInThroughForm("alice", "long-enough-password");
+    await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
+    const first = lastFactory(seen);
+    expect(first.createAgent(WORKFLOW_ID).headers).toEqual({
+      Authorization: "Bearer tok-A",
+    });
+
+    await fireEvent.press(screen.getByRole("button", { name: "Sign out" }));
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    await signInThroughForm("bob", "long-enough-password");
+    await waitFor(() => expect(screen.getByText("Signed in as bob")).toBeTruthy());
+
+    const second = lastFactory(seen);
+    expect(second).not.toBe(first);
+    expect(second.createAgent).not.toBe(first.createAgent);
+    expect(second.createAgent(WORKFLOW_ID).headers).toEqual({
+      Authorization: "Bearer tok-B",
+    });
+  });
+
+  it("aborts session agents on logout", async () => {
+    const authApi = makeAuthApi();
+    authApi.login.mockResolvedValueOnce(sessionA);
+    const seen: Array<AgentFactory | null> = [];
+    await renderProvider({ authApi, children: <AgentProbe seen={seen} /> });
+
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    await signInThroughForm("alice", "long-enough-password");
+    await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
+
+    const agent = lastFactory(seen).createAgent(WORKFLOW_ID);
+    const abortSpy = jest.spyOn(HttpAgent.prototype, "abortRun");
+    void agent;
+
+    await fireEvent.press(screen.getByRole("button", { name: "Sign out" }));
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    expect(abortSpy).toHaveBeenCalled();
+  });
+
+  it("keeps bearer tokens out of query keys", async () => {
+    const authApi = makeAuthApi();
+    authApi.login.mockResolvedValueOnce(sessionA);
+    const seen: Array<AgentFactory | null> = [];
+    const { client } = await renderProvider({ authApi, children: <AgentProbe seen={seen} /> });
+
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    await signInThroughForm("alice", "long-enough-password");
+    await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
+
+    for (const query of client.getQueryCache().getAll()) {
+      expect(JSON.stringify(query.queryKey)).not.toContain("tok-A");
     }
   });
 });
