@@ -483,11 +483,13 @@ export function TodoWorkflowScreen({
         setWriteError({ message: RECOVERY_PENDING, lock: true });
         return;
       }
-      if (saved.request_id !== record.requestId) {
-        // A newer request is the active proposal; the older local retry is
-        // no longer useful and must not publish its late titles.
-        await clearPendingRecord(record, captured);
-        if (mountedRef.current && isSessionCurrent(captured)) setWriteError(null);
+      if (saved.request_id !== record.requestId || saved.status === "pending") {
+        // A different result may be an older read that raced the request, and
+        // a pending same-ID result has not established a terminal outcome.
+        // Keep the live retry until a later authoritative GET proves this
+        // request settled.
+        setPendingRecord(record);
+        setWriteError({ message: RECOVERY_PENDING, lock: true });
         return;
       }
       await clearPendingRecord(record, captured);
@@ -782,7 +784,10 @@ export function TodoWorkflowScreen({
     }
   };
 
-  const persistAndSend = (record: PendingWorkflowWrite): void => {
+  const persistAndSend = (
+    record: PendingWorkflowWrite,
+    replacedRecord: PendingWorkflowWrite | null = null,
+  ): void => {
     if (busy.current) return;
     busy.current = true;
     setLocalError(null);
@@ -798,6 +803,9 @@ export function TodoWorkflowScreen({
     setPendingRecord(record);
     void (async () => {
       try {
+        if (replacedRecord !== null) {
+          await pendingStore.clear(userId, replacedRecord.requestId);
+        }
         const outcome = await saveAndSendPendingWrite({
           record,
           store: pendingStore,
@@ -1021,18 +1029,21 @@ export function TodoWorkflowScreen({
     const requestId = generateRequestId();
     setSuggestionError(null);
     setNewSuggestionWarning(false);
-    persistAndSend({
-      version: 1,
-      ownerId: userId,
-      requestId,
-      operation: "suggest",
-      workflowId,
-      body: {
-        request_id: requestId,
-        expected_revision: cached.revision,
-        step_id: cached.view.step_id,
+    persistAndSend(
+      {
+        version: 1,
+        ownerId: userId,
+        requestId,
+        operation: "suggest",
+        workflowId,
+        body: {
+          request_id: requestId,
+          expected_revision: cached.revision,
+          step_id: cached.view.step_id,
+        },
       },
-    });
+      allowPending && livePending?.operation === "suggest" ? livePending : null,
+    );
   };
 
   const checkSuggestionStatus = () => {

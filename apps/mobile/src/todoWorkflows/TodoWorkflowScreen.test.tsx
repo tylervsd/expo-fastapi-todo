@@ -921,7 +921,7 @@ it("ignores a deferred suggestion after same-owner re-login changes the epoch", 
   expect(screen.getByLabelText("Todo titles (one per line)")).toHaveProp("value", "");
 });
 
-it("discards a late older result when a newer saved suggestion is active", async () => {
+it("retains a live request when reconciliation observes a newer suggestion", async () => {
   const api = makeApi();
   const store = createPendingWriteStore(createMemoryPendingWriteStorage());
   const { client } = await renderHost(api, createAppQueryClient(), { store });
@@ -937,7 +937,9 @@ it("discards a late older result when a newer saved suggestion is active", async
     "Newer saved title\nAnother newer title",
   ));
   expect(screen.queryByText("Choose a date")).toBeNull();
-  expect(await store.read(USER_ID)).toBeNull();
+  expect(await store.read(USER_ID)).toEqual(
+    expect.objectContaining({ requestId: REQUEST_ID }),
+  );
   expect(client.getQueryData(workflowQueryKey(USER_ID, WORKFLOW_ID))).toEqual(collectWorkflow);
 });
 
@@ -1078,8 +1080,16 @@ it("retains a deferred second suggestion request until reconciliation", async ()
     expect.objectContaining({ requestId: REQUEST_ID_2 }),
   );
 
-  api.getSuggestion.mockResolvedValueOnce(newerSuggestion);
+  // The first reconciliation can observe an older server result. It must
+  // not clear B before the authoritative GET catches up.
+  api.getSuggestion.mockResolvedValueOnce(pendingSuggestion);
   await act(async () => secondRequest.resolve(newerSuggestion));
+  await waitFor(() => expect(store.read(USER_ID)).resolves.toEqual(
+    expect.objectContaining({ requestId: REQUEST_ID_2 }),
+  ));
+
+  api.getSuggestion.mockResolvedValueOnce(newerSuggestion);
+  await fireEvent.press(screen.getByRole("button", { name: "Check status" }));
   await waitFor(() => expect(store.read(USER_ID)).resolves.toBeNull());
 });
 
