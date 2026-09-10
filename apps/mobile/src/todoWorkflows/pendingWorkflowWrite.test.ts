@@ -76,6 +76,19 @@ const startRecord = (overrides: Partial<PendingWorkflowWrite & { body: { request
   ...overrides,
 } as PendingWorkflowWrite);
 
+const suggestRecord = (): PendingWorkflowWrite => ({
+  version: 1,
+  ownerId: OWNER_A,
+  requestId: REQUEST_A,
+  operation: "suggest",
+  workflowId: WORKFLOW_A,
+  body: {
+    request_id: REQUEST_A,
+    expected_revision: 2,
+    step_id: `${WORKFLOW_A}:COLLECT_TASKS`,
+  },
+});
+
 const advanceRecord = (
   titles: string[] = ["Send invitations", "Order birthday cake"],
 ): PendingWorkflowWrite => ({
@@ -134,6 +147,46 @@ describe("pending workflow write store", () => {
     } else {
       throw new Error("expected the saved advance record back");
     }
+  });
+
+  it("round-trips a saved suggestion request with Unicode owner-safe storage", async () => {
+    const store = setup();
+    const record = suggestRecord();
+    await store.save(record);
+    await expect(store.read(OWNER_A)).resolves.toEqual(record);
+    await expect(store.read(OWNER_B)).resolves.toBeNull();
+  });
+
+  it("rejects a suggestion request that could fall through to an action", async () => {
+    const raw = createMemoryPendingWriteStorage();
+    const store = createPendingWriteStore(raw);
+    const invalid = {
+      ...suggestRecord(),
+      body: {
+        ...suggestRecord().body,
+        action: { action: "confirm" },
+      },
+    } as PendingWorkflowWrite;
+    await expect(store.save(invalid)).rejects.toThrow();
+    await expect(store.read(OWNER_A)).resolves.toBeNull();
+  });
+
+  it("sends a saved suggestion only through the suggestion dispatcher", async () => {
+    const store = setup();
+    const record = suggestRecord();
+    const send = jest.fn(async (saved: PendingWorkflowWrite) => {
+      if (saved.operation !== "suggest") throw new Error("unexpected advance dispatch");
+    });
+    await expect(
+      saveAndSendPendingWrite({
+        record,
+        store,
+        sessionEpoch: 1,
+        isSessionCurrent: () => true,
+        send,
+      }),
+    ).resolves.toBe("sent");
+    expect(send).toHaveBeenCalledWith(record);
   });
 
   it("returns null when nothing is stored", async () => {

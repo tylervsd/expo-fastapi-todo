@@ -4,6 +4,7 @@ import {
   deleteTodo,
   fetchMe,
   getTodoWorkflow,
+  getWorkflowSuggestion,
   listTodoWorkflows,
   listTodos,
   login,
@@ -13,8 +14,10 @@ import {
   setTodoTitle,
   signup,
   startTodoWorkflow,
+  suggestWorkflowTodos,
   TodoApiError,
   type WorkflowConflictCode,
+  type WorkflowSuggestion,
 } from "./todoApi";
 
 const apiUrl = "http://127.0.0.1:8000";
@@ -518,6 +521,135 @@ describe("todo workflow transport", () => {
       headers: { Authorization: "Bearer tok" },
       signal: expect.any(AbortSignal),
     });
+  });
+
+  const readySuggestion: WorkflowSuggestion = {
+    contract_version: 1,
+    workflow_id: workflowId,
+    request_id: requestId,
+    base_revision: 2,
+    step_id: `${workflowId}:COLLECT_TASKS`,
+    status: "ready",
+    proposed_titles: ["Choose a date", "Invite guests"],
+    error_code: null,
+  };
+
+  it("gets a strict saved suggestion contract", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(200, readySuggestion));
+
+    await expect(
+      getWorkflowSuggestion(workflowId, { apiUrl, token: "tok", fetchImpl })
+    ).resolves.toEqual(readySuggestion);
+    expect(fetchImpl).toHaveBeenCalledWith(`${apiUrl}/todo-workflows/${workflowId}/suggestions`, {
+      method: "GET",
+      headers: { Authorization: "Bearer tok" },
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it("posts the exact suggestion request and accepts a fresh 201", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(201, readySuggestion));
+    const request = {
+      request_id: requestId,
+      expected_revision: 2,
+      step_id: `${workflowId}:COLLECT_TASKS`,
+    };
+
+    await expect(
+      suggestWorkflowTodos(workflowId, request, { apiUrl, token: "tok", fetchImpl })
+    ).resolves.toEqual(readySuggestion);
+    expect(fetchImpl).toHaveBeenCalledWith(`${apiUrl}/todo-workflows/${workflowId}/suggestions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer tok" },
+      body: JSON.stringify(request),
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it("accepts a ready replay with 200 and rejects unknown suggestion contracts", async () => {
+    const request = {
+      request_id: requestId,
+      expected_revision: 2,
+      step_id: `${workflowId}:COLLECT_TASKS`,
+    };
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce(response(200, readySuggestion))
+      .mockResolvedValueOnce(response(200, { ...readySuggestion, contract_version: 2 }));
+
+    await expect(suggestWorkflowTodos(workflowId, request, { apiUrl, fetchImpl })).resolves.toEqual(
+      readySuggestion,
+    );
+    await expect(suggestWorkflowTodos(workflowId, request, { apiUrl, fetchImpl })).rejects.toMatchObject({
+      kind: "invalid-data",
+    });
+  });
+
+  it.each([
+    ["pending with titles", { ...readySuggestion, status: "pending", proposed_titles: ["Unexpected"] }],
+    ["failed without error", { ...readySuggestion, status: "failed", proposed_titles: [], error_code: null }],
+    ["extra key", { ...readySuggestion, extra: true }],
+    ["one title", { ...readySuggestion, proposed_titles: ["Only one"] }],
+    ["noncanonical title", { ...readySuggestion, proposed_titles: [" Choose", "Invite"] }],
+  ])("rejects malformed %s suggestion response", async (_label, body) => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(200, body));
+    await expect(getWorkflowSuggestion(workflowId, { apiUrl, fetchImpl })).rejects.toMatchObject({
+      kind: "invalid-data",
+    });
+  });
+
+  it("maps typed provider failures without exposing server details", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(
+      response(504, { detail: { code: "timeout", message: "secret provider body" } })
+    );
+    const pending = suggestWorkflowTodos(
+      workflowId,
+      {
+        request_id: requestId,
+        expected_revision: 2,
+        step_id: `${workflowId}:COLLECT_TASKS`,
+      },
+      { apiUrl, fetchImpl },
+    );
+    await expect(pending).rejects.toMatchObject({ kind: "unavailable", suggestionCode: "timeout" });
+    await expect(pending).rejects.not.toMatchObject({ message: expect.stringContaining("secret") });
+  });
+
+  it("uses the 35 second timeout only for suggestion POST", async () => {
+    jest.useFakeTimers();
+    try {
+      const fetchImpl = jest.fn(() => new Promise<Response>(() => undefined));
+      const pending = suggestWorkflowTodos(
+        workflowId,
+        {
+          request_id: requestId,
+          expected_revision: 2,
+          step_id: `${workflowId}:COLLECT_TASKS`,
+        },
+        { apiUrl, timeoutMs: 1, fetchImpl },
+      );
+      const rejection = expect(pending).rejects.toMatchObject({ kind: "unavailable" });
+      await jest.advanceTimersByTimeAsync(1_000);
+      expect(jest.getTimerCount()).toBeGreaterThan(0);
+      await jest.advanceTimersByTimeAsync(34_000);
+      await rejection;
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it.each([
+    ["not found", 404, { detail: "hidden" }, "not-found"],
+    ["in progress", 409, { detail: { code: "suggestion_in_progress", message: "hidden" } }, "conflict"],
+  ])("maps suggestion %s safely", async (_label, status, body, kind) => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(status, body));
+    const pending = suggestWorkflowTodos(
+      workflowId,
+      { request_id: requestId, expected_revision: 2, step_id: `${workflowId}:COLLECT_TASKS` },
+      { apiUrl, fetchImpl },
+    );
+    await expect(pending).rejects.toMatchObject({ kind });
+    await expect(pending).rejects.not.toMatchObject({ message: expect.stringContaining("hidden") });
   });
 
   it.each([

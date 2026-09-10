@@ -3,7 +3,12 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-
 import { QueryClientProvider, timeoutManager, type QueryClient } from "@tanstack/react-query";
 import { StyleSheet } from "react-native";
 import { createAppQueryClient } from "../../App";
-import { TodoApiError, type TodoWorkflow, type WorkflowActionRequest } from "../todos/todoApi";
+import {
+  TodoApiError,
+  type TodoWorkflow,
+  type WorkflowActionRequest,
+  type WorkflowSuggestion,
+} from "../todos/todoApi";
 import {
   createMemoryPendingWriteStorage,
   createPendingWriteStore,
@@ -89,6 +94,8 @@ type MockWorkflowApi = {
   startWorkflow: jest.MockedFunction<TodoWorkflowScreenApi["startWorkflow"]>;
   getWorkflow: jest.MockedFunction<TodoWorkflowScreenApi["getWorkflow"]>;
   advanceWorkflow: jest.MockedFunction<TodoWorkflowScreenApi["advanceWorkflow"]>;
+  getSuggestion: jest.MockedFunction<TodoWorkflowScreenApi["getSuggestion"]>;
+  suggestWorkflow: jest.MockedFunction<TodoWorkflowScreenApi["suggestWorkflow"]>;
   listWorkflows: jest.MockedFunction<TodoWorkflowScreenApi["listWorkflows"]>;
 };
 
@@ -96,6 +103,10 @@ const makeApi = (): MockWorkflowApi => ({
   startWorkflow: jest.fn() as MockWorkflowApi["startWorkflow"],
   getWorkflow: jest.fn() as MockWorkflowApi["getWorkflow"],
   advanceWorkflow: jest.fn() as MockWorkflowApi["advanceWorkflow"],
+  getSuggestion: jest.fn(async (_id: string, _options: { signal: AbortSignal }): Promise<WorkflowSuggestion> => {
+    throw new TodoApiError("not-found", "That plan has no saved todo suggestions.");
+  }) as MockWorkflowApi["getSuggestion"],
+  suggestWorkflow: jest.fn() as MockWorkflowApi["suggestWorkflow"],
   listWorkflows: jest.fn() as MockWorkflowApi["listWorkflows"],
 });
 
@@ -151,6 +162,30 @@ const offerWorkflow: TodoWorkflow = {
       { id: "no", label: "No" },
     ],
   },
+};
+
+const readySuggestion: WorkflowSuggestion = {
+  contract_version: 1,
+  workflow_id: WORKFLOW_ID,
+  request_id: REQUEST_ID,
+  base_revision: 2,
+  step_id: `${WORKFLOW_ID}:COLLECT_TASKS`,
+  status: "ready",
+  proposed_titles: ["Choose a date", "Invite guests"],
+  error_code: null,
+};
+
+const pendingSuggestion: WorkflowSuggestion = {
+  ...readySuggestion,
+  status: "pending",
+  proposed_titles: [],
+};
+
+const failedSuggestion: WorkflowSuggestion = {
+  ...readySuggestion,
+  status: "failed",
+  proposed_titles: [],
+  error_code: "invalid_output",
 };
 
 const collectWorkflow: TodoWorkflow = {
@@ -761,6 +796,88 @@ const driveToCollect = async (api: MockWorkflowApi) => {
   );
   await waitForQuiescence();
 };
+
+it("offers suggestions only from the server-supported task breakdown template", async () => {
+  const api = makeApi();
+  await renderHost(api);
+  await driveToCollect(api);
+  expect(screen.getByRole("button", { name: "Suggest todos" })).toBeTruthy();
+  api.getWorkflow.mockResolvedValue(collectWorkflow);
+  api.getSuggestion.mockResolvedValueOnce(readySuggestion);
+  api.suggestWorkflow.mockResolvedValueOnce(readySuggestion);
+
+  await fireEvent.press(screen.getByRole("button", { name: "Suggest todos" }));
+  await waitFor(() => expect(api.suggestWorkflow).toHaveBeenCalledWith(WORKFLOW_ID, {
+    request_id: REQUEST_ID,
+    expected_revision: 2,
+    step_id: `${WORKFLOW_ID}:COLLECT_TASKS`,
+  }));
+  await waitFor(() =>
+    expect(screen.getByLabelText("Todo titles (one per line)")).toHaveProp(
+      "value",
+      "Choose a date\nInvite guests",
+    ),
+  );
+  expect(api.advanceWorkflow).toHaveBeenCalledTimes(2);
+});
+
+it("keeps a user edit when a deferred suggestion completes", async () => {
+  const api = makeApi();
+  await renderHost(api);
+  await driveToCollect(api);
+  api.getWorkflow.mockResolvedValue(collectWorkflow);
+  const pending = deferred<WorkflowSuggestion>();
+  api.suggestWorkflow.mockReturnValueOnce(pending.promise);
+  await fireEvent.press(screen.getByRole("button", { name: "Suggest todos" }));
+  await fireEvent.changeText(
+    screen.getByLabelText("Todo titles (one per line)"),
+    "My own task",
+  );
+  api.getSuggestion.mockResolvedValueOnce(readySuggestion);
+  expect(screen.getByLabelText("Todo titles (one per line)")).toHaveProp("value", "My own task");
+  await act(async () => pending.resolve(readySuggestion));
+  await waitFor(() => expect(screen.queryByText("Getting todo suggestions…")).toBeNull());
+  expect(screen.getByLabelText("Todo titles (one per line)")).toHaveProp(
+    "value",
+    "My own task",
+  );
+  expect(screen.getByRole("button", { name: "Apply saved suggestions" })).toBeTruthy();
+});
+
+it("recovers saved pending and failed suggestions without creating todos", async () => {
+  const api = makeApi();
+  await renderHost(api);
+  await driveToCollect(api);
+  api.getWorkflow.mockResolvedValue(collectWorkflow);
+  api.suggestWorkflow.mockResolvedValueOnce(pendingSuggestion);
+  api.getSuggestion.mockResolvedValueOnce(pendingSuggestion);
+  await fireEvent.press(screen.getByRole("button", { name: "Suggest todos" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Start another request" })).toBeTruthy());
+  expect(screen.queryByRole("button", { name: "Confirm plan" })).toBeNull();
+  expect(screen.queryByText("Getting todo suggestions…")).toBeNull();
+
+  api.getSuggestion.mockResolvedValueOnce(failedSuggestion);
+  await fireEvent.press(screen.getByRole("button", { name: "Check status" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Try suggestions again" })).toBeTruthy());
+  expect(api.advanceWorkflow).toHaveBeenCalledTimes(2);
+});
+
+it("requires explicit replacement before applying saved suggestions over edits", async () => {
+  const api = makeApi();
+  api.getWorkflow.mockResolvedValue(collectWorkflow);
+  api.getSuggestion.mockResolvedValue(readySuggestion);
+  await renderHost(api, createAppQueryClient(), { initialWorkflowId: WORKFLOW_ID });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Apply saved suggestions" })).toBeTruthy());
+  await fireEvent.changeText(screen.getByLabelText("Todo titles (one per line)"), "My own task");
+  await fireEvent.press(screen.getByRole("button", { name: "Apply saved suggestions" }));
+  expect(screen.getByRole("button", { name: "Replace draft with saved suggestions" })).toBeTruthy();
+  expect(screen.getByLabelText("Todo titles (one per line)")).toHaveProp("value", "My own task");
+  await fireEvent.press(screen.getByRole("button", { name: "Replace draft with saved suggestions" }));
+  expect(screen.getByLabelText("Todo titles (one per line)")).toHaveProp(
+    "value",
+    "Choose a date\nInvite guests",
+  );
+});
 
 const driveToReview = async (api: MockWorkflowApi) => {
   await driveToCollect(api);

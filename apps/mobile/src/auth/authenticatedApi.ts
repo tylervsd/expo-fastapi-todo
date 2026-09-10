@@ -3,7 +3,9 @@ import {
   createTodo,
   deleteTodo,
   getTodoWorkflow,
+  getWorkflowSuggestion,
   listTodoWorkflows,
+  suggestWorkflowTodos,
   listTodos,
   setTodoCompleted,
   setTodoTitle,
@@ -13,6 +15,8 @@ import {
   type TodoWorkflow,
   type WorkflowActionRequest,
   type WorkflowStartRequest,
+  type WorkflowSuggestion,
+  type WorkflowSuggestionRequest,
 } from "../todos/todoApi";
 import type { TodoScreenApi } from "../TodoScreen";
 
@@ -25,6 +29,8 @@ export type TodoTransport = {
   startTodoWorkflow: typeof startTodoWorkflow;
   getTodoWorkflow: typeof getTodoWorkflow;
   advanceTodoWorkflow: typeof advanceTodoWorkflow;
+  getWorkflowSuggestion?: typeof getWorkflowSuggestion;
+  suggestWorkflowTodos?: typeof suggestWorkflowTodos;
   listTodoWorkflows: typeof listTodoWorkflows;
 };
 
@@ -37,6 +43,8 @@ export const defaultTransport: TodoTransport = {
   startTodoWorkflow,
   getTodoWorkflow,
   advanceTodoWorkflow,
+  getWorkflowSuggestion,
+  suggestWorkflowTodos,
   listTodoWorkflows,
 };
 
@@ -47,6 +55,8 @@ export type TodoWorkflowScreenApi = {
     options: { signal: AbortSignal }
   ) => Promise<TodoWorkflow>;
   advanceWorkflow: (id: string, request: WorkflowActionRequest) => Promise<TodoWorkflow>;
+  getSuggestion: (id: string, options: { signal: AbortSignal }) => Promise<WorkflowSuggestion>;
+  suggestWorkflow: (id: string, request: WorkflowSuggestionRequest) => Promise<WorkflowSuggestion>;
   listWorkflows: (options: { signal: AbortSignal }) => Promise<{ items: TodoWorkflow[] }>;
 };
 
@@ -95,6 +105,18 @@ export function createAuthenticatedApi(
     advanceWorkflow: (id, request) =>
       guard((requestToken) =>
         transport.advanceTodoWorkflow(id, request, opts(requestToken))
+      ),
+    getSuggestion: (id, options) =>
+      guard((requestToken) =>
+        transport.getWorkflowSuggestion === undefined
+          ? Promise.reject(new TodoApiError("unavailable", "Could not load todo suggestions."))
+          : transport.getWorkflowSuggestion(id, { ...options, ...opts(requestToken) })
+      ),
+    suggestWorkflow: (id, request) =>
+      guard((requestToken) =>
+        transport.suggestWorkflowTodos === undefined
+          ? Promise.reject(new TodoApiError("unavailable", "Could not suggest todos."))
+          : transport.suggestWorkflowTodos(id, request, opts(requestToken))
       ),
     listWorkflows: (options) =>
       guard((requestToken) =>

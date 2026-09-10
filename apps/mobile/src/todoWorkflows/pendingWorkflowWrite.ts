@@ -6,6 +6,7 @@ import {
   normalizeTodoTitle,
   type TodoWorkflowAction,
   type WorkflowActionRequest,
+  type WorkflowSuggestionRequest,
 } from "../todos/todoApi";
 
 export type PendingWorkflowWrite =
@@ -23,6 +24,14 @@ export type PendingWorkflowWrite =
       operation: "advance";
       workflowId: string;
       body: WorkflowActionRequest;
+    }
+  | {
+      version: 1;
+      ownerId: string;
+      requestId: string;
+      operation: "suggest";
+      workflowId: string;
+      body: WorkflowSuggestionRequest;
     };
 
 export class PendingWriteStoreError extends Error {
@@ -142,6 +151,21 @@ const isValidStartBody = (
   isUuid(body.request_id) &&
   isCanonicalTitle(body.title);
 
+const isValidSuggestionBody = (
+  body: unknown,
+  requestId: string,
+  workflowId: string,
+): body is WorkflowSuggestionRequest =>
+  exactObject(body, ["request_id", "expected_revision", "step_id"]) &&
+  body.request_id === requestId &&
+  isUuid(body.request_id) &&
+  Number.isInteger(body.expected_revision) &&
+  (body.expected_revision as number) >= 0 &&
+  (body.expected_revision as number) <= MAX_WORKFLOW_REVISION &&
+  typeof body.step_id === "string" &&
+  body.step_id.startsWith(`${workflowId}:`) &&
+  body.step_id.length > workflowId.length + 1;
+
 const isValidAdvanceBody = (
   body: unknown,
   requestId: string,
@@ -179,7 +203,7 @@ const isPendingWorkflowWrite = (value: unknown): value is PendingWorkflowWrite =
       isValidStartBody(record.body, record.requestId)
     );
   }
-  if (record.operation === "advance") {
+  if (record.operation === "advance" || record.operation === "suggest") {
     return (
       exactObject(record, [
         "version",
@@ -190,7 +214,9 @@ const isPendingWorkflowWrite = (value: unknown): value is PendingWorkflowWrite =
         "body",
       ]) &&
       isUuid(record.workflowId) &&
-      isValidAdvanceBody(record.body, record.requestId, record.workflowId)
+      (record.operation === "advance"
+        ? isValidAdvanceBody(record.body, record.requestId, record.workflowId)
+        : isValidSuggestionBody(record.body, record.requestId, record.workflowId))
     );
   }
   return false;

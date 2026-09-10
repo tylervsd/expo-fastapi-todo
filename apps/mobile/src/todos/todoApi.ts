@@ -18,13 +18,23 @@ export type WorkflowConflictCode =
   | "invalid_action"
   | "terminal_workflow"
   | "unsupported_workflow_definition"
-  | "revision_exhausted";
+  | "revision_exhausted"
+  | "suggestion_in_progress"
+  | "stale_suggestion"
+  | "invalid_state";
+
+export type WorkflowSuggestionErrorCode =
+  | "not_configured"
+  | "timeout"
+  | "provider_unavailable"
+  | "invalid_output";
 
 export class TodoApiError extends Error {
   constructor(
     readonly kind: TodoApiErrorKind,
     message: string,
     readonly conflictCode?: WorkflowConflictCode,
+    readonly suggestionCode?: WorkflowSuggestionErrorCode,
   ) {
     super(message);
     this.name = "TodoApiError";
@@ -51,7 +61,9 @@ type TodoOperation =
   | "start-workflow"
   | "get-workflow"
   | "advance-workflow"
-  | "list-workflows";
+  | "list-workflows"
+  | "get-suggestion"
+  | "suggest-workflow";
 type RequestBody =
   | { title: string }
   | { completed: boolean }
@@ -66,7 +78,8 @@ type RequestBody =
   | { action: "answer_multiple_steps"; answer: boolean }
   | { action: "submit_tasks"; titles: string[] }
   | { action: "confirm" }
-  | { action: "cancel" };
+  | { action: "cancel" }
+  | WorkflowSuggestionRequest;
 
 const operationMessages: Record<
   TodoOperation,
@@ -144,6 +157,18 @@ const operationMessages: Record<
     validation: "Check the plan details and try again.",
     authRequired: "Please sign in again.",
   },
+  "get-suggestion": {
+    unavailable: "Could not load todo suggestions.",
+    invalidData: "The API returned invalid todo suggestions.",
+    validation: "Check the suggestion request and try again.",
+    authRequired: "Please sign in again.",
+  },
+  "suggest-workflow": {
+    unavailable: "Could not suggest todos.",
+    invalidData: "The API returned invalid todo suggestions.",
+    validation: "Check the suggestion request and try again.",
+    authRequired: "Please sign in again.",
+  },
 };
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -153,6 +178,8 @@ const workflowOperations: ReadonlySet<TodoOperation> = new Set([
   "get-workflow",
   "advance-workflow",
   "list-workflows",
+  "get-suggestion",
+  "suggest-workflow",
 ]);
 
 const workflowConflictMessages: Record<WorkflowConflictCode, string> = {
@@ -162,6 +189,9 @@ const workflowConflictMessages: Record<WorkflowConflictCode, string> = {
   terminal_workflow: "Todo workflow is already terminal.",
   unsupported_workflow_definition: "This plan uses an unsupported workflow definition.",
   revision_exhausted: "This plan has reached its revision limit.",
+  suggestion_in_progress: "A suggestion request is already in progress.",
+  stale_suggestion: "This suggestion request is no longer current.",
+  invalid_state: "Suggestions are only available while collecting todo titles.",
 };
 
 function parseWorkflowConflictCode(value: unknown): WorkflowConflictCode | undefined {
@@ -178,7 +208,25 @@ function parseWorkflowConflictCode(value: unknown): WorkflowConflictCode | undef
     case "terminal_workflow":
     case "unsupported_workflow_definition":
     case "revision_exhausted":
+    case "suggestion_in_progress":
+    case "stale_suggestion":
+    case "invalid_state":
       return code;
+    default:
+      return undefined;
+  }
+}
+
+function parseSuggestionErrorCode(value: unknown): WorkflowSuggestionErrorCode | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const detail = (value as Record<string, unknown>).detail;
+  if (typeof detail !== "object" || detail === null || Array.isArray(detail)) return undefined;
+  switch ((detail as Record<string, unknown>).code) {
+    case "not_configured":
+    case "timeout":
+    case "provider_unavailable":
+    case "invalid_output":
+      return (detail as Record<string, unknown>).code as WorkflowSuggestionErrorCode;
     default:
       return undefined;
   }
@@ -233,7 +281,7 @@ function isTodo(value: unknown): value is Todo {
 function requestJson(
   path: string,
   method: "GET" | "POST" | "PATCH" | "DELETE",
-  expectedStatus: number,
+  expectedStatus: number | number[],
   operation: TodoOperation,
   options: TodoRequestOptions,
   body?: RequestBody,
@@ -298,7 +346,33 @@ function requestJson(
         }
         const result = await (options.fetchImpl ?? fetch)(url, request);
         if (settled) return;
-        if (result.status !== expectedStatus) {
+        const expectedStatuses = Array.isArray(expectedStatus)
+          ? expectedStatus
+          : [expectedStatus];
+        if (!expectedStatuses.includes(result.status)) {
+          if (
+            (operation === "get-suggestion" || operation === "suggest-workflow") &&
+            result.status !== 409
+          ) {
+            let suggestionCode: WorkflowSuggestionErrorCode | undefined;
+            try {
+              suggestionCode = parseSuggestionErrorCode(await result.json());
+            } catch {
+              suggestionCode = undefined;
+            }
+            if (suggestionCode !== undefined) {
+              finish(
+                new TodoApiError(
+                  "unavailable",
+                  operationMessages[operation].unavailable,
+                  undefined,
+                  suggestionCode,
+                )
+              );
+              controller.abort();
+              return;
+            }
+          }
           if (result.status === 409 && workflowOperations.has(operation)) {
             let code: WorkflowConflictCode | undefined;
             try {
@@ -321,9 +395,15 @@ function requestJson(
               ? new TodoApiError("auth-required", operationMessages[operation].authRequired)
               : result.status === 409
                 ? new TodoApiError("conflict", "The plan changed. Reload to continue.")
-                : (operation === "get-workflow" || operation === "advance-workflow") &&
+                : (operation === "get-workflow" || operation === "advance-workflow" ||
+                    operation === "get-suggestion" || operation === "suggest-workflow") &&
                     result.status === 404
-                  ? new TodoApiError("not-found", "That plan no longer exists. Refresh the list.")
+                  ? new TodoApiError(
+                      "not-found",
+                      operation === "get-suggestion"
+                        ? "That plan has no saved todo suggestions."
+                        : "That plan no longer exists. Refresh the list."
+                    )
                   : (operation === "update" || operation === "delete") && result.status === 404
                     ? new TodoApiError("not-found", "That todo no longer exists. Refresh the list.")
                     : new TodoApiError("unavailable", operationMessages[operation].unavailable);
@@ -754,6 +834,121 @@ export async function getTodoWorkflow(
     throw new TodoApiError("invalid-data", operationMessages["get-workflow"].invalidData);
   }
   return parsed;
+}
+
+export type WorkflowSuggestionRequest = {
+  request_id: string;
+  expected_revision: number;
+  step_id: string;
+};
+
+export type WorkflowSuggestionStatus = "pending" | "ready" | "failed" | "superseded";
+
+export type WorkflowSuggestion = {
+  contract_version: 1;
+  workflow_id: string;
+  request_id: string;
+  base_revision: number;
+  step_id: string;
+  status: WorkflowSuggestionStatus;
+  proposed_titles: string[];
+  error_code: WorkflowSuggestionErrorCode | null;
+};
+
+function isWorkflowSuggestion(value: unknown, workflowId: string): value is WorkflowSuggestion {
+  if (
+    !exactObject(value, [
+      "contract_version",
+      "workflow_id",
+      "request_id",
+      "base_revision",
+      "step_id",
+      "status",
+      "proposed_titles",
+      "error_code",
+    ]) ||
+    value.contract_version !== 1 ||
+    typeof value.workflow_id !== "string" ||
+    !uuidPattern.test(value.workflow_id) ||
+    value.workflow_id !== workflowId ||
+    typeof value.request_id !== "string" ||
+    !uuidPattern.test(value.request_id) ||
+    !Number.isInteger(value.base_revision) ||
+    (value.base_revision as number) < 0 ||
+    (value.base_revision as number) > MAX_WORKFLOW_REVISION ||
+    typeof value.step_id !== "string" ||
+    !value.step_id.startsWith(`${workflowId}:`) ||
+    !Array.isArray(value.proposed_titles) ||
+    !value.proposed_titles.every(isCanonicalTitle)
+  ) {
+    return false;
+  }
+  const status = value.status;
+  const errorCode = value.error_code;
+  if (
+    status !== "pending" &&
+    status !== "ready" &&
+    status !== "failed" &&
+    status !== "superseded"
+  ) {
+    return false;
+  }
+  if (
+    errorCode !== null &&
+    errorCode !== "not_configured" &&
+    errorCode !== "timeout" &&
+    errorCode !== "provider_unavailable" &&
+    errorCode !== "invalid_output"
+  ) {
+    return false;
+  }
+  if (status === "ready") {
+    return (
+      errorCode === null &&
+      value.proposed_titles.length >= 2 &&
+      value.proposed_titles.length <= 10
+    );
+  }
+  if (status === "failed") {
+    return errorCode !== null && value.proposed_titles.length === 0;
+  }
+  return errorCode === null && value.proposed_titles.length === 0;
+}
+
+export async function getWorkflowSuggestion(
+  id: string,
+  options: TodoRequestOptions = {},
+): Promise<WorkflowSuggestion> {
+  const body = await requestJson(
+    `/todo-workflows/${id}/suggestions`,
+    "GET",
+    200,
+    "get-suggestion",
+    options,
+  );
+  if (!isWorkflowSuggestion(body, id)) {
+    throw new TodoApiError("invalid-data", operationMessages["get-suggestion"].invalidData);
+  }
+  return body;
+}
+
+export async function suggestWorkflowTodos(
+  id: string,
+  request: WorkflowSuggestionRequest,
+  options: TodoRequestOptions = {},
+): Promise<WorkflowSuggestion> {
+  const body = await requestJson(
+    `/todo-workflows/${id}/suggestions`,
+    "POST",
+    [200, 201],
+    "suggest-workflow",
+    { ...options, timeoutMs: 35_000 },
+    request,
+  );
+  if (!isWorkflowSuggestion(body, id)) {
+    throw new TodoApiError("invalid-data", operationMessages["suggest-workflow"].invalidData);
+  }
+  return body;
 }
 
 export async function advanceTodoWorkflow(

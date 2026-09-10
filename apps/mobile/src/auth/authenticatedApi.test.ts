@@ -1,4 +1,9 @@
-import { TodoApiError, type Todo, type TodoWorkflow } from "../todos/todoApi";
+import {
+  TodoApiError,
+  type Todo,
+  type TodoWorkflow,
+  type WorkflowSuggestion,
+} from "../todos/todoApi";
 import { createAuthenticatedApi, type TodoTransport } from "./authenticatedApi";
 
 const row = (id: string): Todo => ({ id, title: "Row", completed: false });
@@ -14,6 +19,8 @@ const makeTransport = (): TodoTransport & {
   startTodoWorkflow: jest.fn(),
   getTodoWorkflow: jest.fn(),
   advanceTodoWorkflow: jest.fn(),
+  getWorkflowSuggestion: jest.fn(),
+  suggestWorkflowTodos: jest.fn(),
   listTodoWorkflows: jest.fn(),
 });
 
@@ -105,6 +112,26 @@ describe("workflow calls", () => {
     startTodoWorkflow: jest.fn(async (): Promise<TodoWorkflow> => assessWorkflow),
     getTodoWorkflow: jest.fn(async (): Promise<TodoWorkflow> => assessWorkflow),
     advanceTodoWorkflow: jest.fn(async (): Promise<TodoWorkflow> => assessWorkflow),
+    getWorkflowSuggestion: jest.fn(async (): Promise<WorkflowSuggestion> => ({
+      contract_version: 1,
+      workflow_id: workflowId,
+      request_id: startRequest.request_id,
+      base_revision: 0,
+      step_id: `${workflowId}:ASSESS_TASK`,
+      status: "pending",
+      proposed_titles: [],
+      error_code: null,
+    })),
+    suggestWorkflowTodos: jest.fn(async (): Promise<WorkflowSuggestion> => ({
+      contract_version: 1,
+      workflow_id: workflowId,
+      request_id: startRequest.request_id,
+      base_revision: 0,
+      step_id: `${workflowId}:ASSESS_TASK`,
+      status: "pending",
+      proposed_titles: [],
+      error_code: null,
+    })),
     listTodoWorkflows: jest.fn(async (): Promise<{ items: TodoWorkflow[] }> => ({ items: [] })),
   });
 
@@ -116,6 +143,12 @@ describe("workflow calls", () => {
     await api.startWorkflow(startRequest);
     await api.getWorkflow(workflowId, { signal: new AbortController().signal });
     await api.advanceWorkflow(workflowId, actionRequest);
+    await api.getSuggestion(workflowId, { signal: new AbortController().signal });
+    await api.suggestWorkflow(workflowId, {
+      request_id: startRequest.request_id,
+      expected_revision: 0,
+      step_id: `${workflowId}:ASSESS_TASK`,
+    });
     await api.listWorkflows({ signal: listSignal });
 
     expect(transport.startTodoWorkflow).toHaveBeenCalledWith(startRequest, {
@@ -129,6 +162,19 @@ describe("workflow calls", () => {
       workflowId,
       actionRequest,
       { token: "tok" }
+    );
+    expect(transport.getWorkflowSuggestion).toHaveBeenCalledWith(workflowId, {
+      signal: expect.any(AbortSignal),
+      token: "tok",
+    });
+    expect(transport.suggestWorkflowTodos).toHaveBeenCalledWith(
+      workflowId,
+      {
+        request_id: startRequest.request_id,
+        expected_revision: 0,
+        step_id: `${workflowId}:ASSESS_TASK`,
+      },
+      { token: "tok" },
     );
     expect(transport.listTodoWorkflows).toHaveBeenCalledWith({
       signal: listSignal,

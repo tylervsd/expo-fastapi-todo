@@ -17,6 +17,7 @@ import {
   TodoApiError,
   type TodoWorkflow,
   type TodoWorkflowAction,
+  type WorkflowSuggestion,
 } from "../todos/todoApi";
 import type { TodoWorkflowScreenApi } from "../auth/authenticatedApi";
 import {
@@ -54,6 +55,7 @@ const INVALID_RESPONSE = "The API returned invalid plan data.";
 
 type StartRecord = Extract<PendingWorkflowWrite, { operation: "start" }>;
 type AdvanceRecord = Extract<PendingWorkflowWrite, { operation: "advance" }>;
+type SuggestRecord = Extract<PendingWorkflowWrite, { operation: "suggest" }>;
 
 function messageForGetError(error: unknown): string {
   if (error instanceof TodoApiError) return error.message;
@@ -90,6 +92,13 @@ export function TodoWorkflowScreen({
   const [workflowId, setWorkflowId] = useState<string | null>(initialWorkflowId);
   const [startDraft, setStartDraft] = useState("");
   const [tasksDraft, setTasksDraft] = useState("");
+  const [tasksDraftEditCounter, setTasksDraftEditCounter] = useState(0);
+  const [suggestionRecord, setSuggestionRecord] = useState<WorkflowSuggestion | null>(null);
+  const [suggestionFetching, setSuggestionFetching] = useState(false);
+  const [suggestionError, setSuggestionError] = useState<string | null>(null);
+  const [replaceSuggestions, setReplaceSuggestions] = useState(false);
+  const [newSuggestionWarning, setNewSuggestionWarning] = useState(false);
+  const [discardSuggestionWarning, setDiscardSuggestionWarning] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const [writeError, setWriteError] = useState<{
     message: string;
@@ -104,7 +113,11 @@ export function TodoWorkflowScreen({
   const busy = useRef(false);
   const mountedRef = useRef(true);
   const reconcileAbortRef = useRef<AbortController | null>(null);
+  const suggestionAbortRef = useRef<AbortController | null>(null);
   const focusedSignal = useRef(-1);
+  const tasksDraftRef = useRef(tasksDraft);
+  const tasksDraftEditCounterRef = useRef(tasksDraftEditCounter);
+  const suggestionFetchSequence = useRef(0);
   const previousStepId = useRef<string | null>(null);
   const titleInput = useRef<TextInput>(null);
   const tasksInput = useRef<TextInput>(null);
@@ -115,6 +128,7 @@ export function TodoWorkflowScreen({
   useEffect(() => () => {
     mountedRef.current = false;
     reconcileAbortRef.current?.abort();
+    suggestionAbortRef.current?.abort();
   }, []);
 
   const livePending =
@@ -137,7 +151,7 @@ export function TodoWorkflowScreen({
       if (!isSessionCurrent(captured)) return;
       if (record === null || record.ownerId !== owner) return;
       const targetWorkflow =
-        record.operation === "advance" ? record.workflowId : null;
+        record.operation === "start" ? null : record.workflowId;
       setPendingRecord(record);
       if (targetWorkflow !== null) {
         setWorkflowId((current) => current ?? targetWorkflow);
@@ -185,6 +199,8 @@ export function TodoWorkflowScreen({
     pendingRecordRef.current = pendingRecord;
     reconcileFailedRef.current = reconcileFailed;
     writeErrorRef.current = writeError;
+    tasksDraftRef.current = tasksDraft;
+    tasksDraftEditCounterRef.current = tasksDraftEditCounter;
   });
 
   const snapshot = workflowId === null ? undefined : workflowQuery.data;
@@ -204,7 +220,14 @@ export function TodoWorkflowScreen({
   useEffect(() => {
     if (stepId === undefined || stepId === previousStepId.current) return;
     previousStepId.current = stepId;
+    tasksDraftRef.current = "";
+    tasksDraftEditCounterRef.current += 1;
     setTasksDraft("");
+    setTasksDraftEditCounter((counter) => counter + 1);
+    setSuggestionRecord(null);
+    setSuggestionError(null);
+    setReplaceSuggestions(false);
+    setNewSuggestionWarning(false);
     setLocalError(null);
     // An arrived step clears alerts only when no recovery is outstanding:
     // a pending write or a failed reconciliation owns the message. A stale
@@ -284,6 +307,187 @@ export function TodoWorkflowScreen({
     }
     seedSnapshot(fetched);
     return { ok: true, snapshot: fetched };
+  };
+
+  const fetchSuggestionRecord = async (
+    id: string,
+    captured: number,
+    expectedRevision: number,
+    expectedStepId: string,
+    capturedEditCounter: number,
+  ): Promise<WorkflowSuggestion | null> => {
+    const sequence = suggestionFetchSequence.current + 1;
+    suggestionFetchSequence.current = sequence;
+    if (mountedRef.current && isSessionCurrent(captured)) {
+      setSuggestionFetching(true);
+      setSuggestionError(null);
+    }
+    suggestionAbortRef.current?.abort();
+    const controller = new AbortController();
+    suggestionAbortRef.current = controller;
+    let fetched: WorkflowSuggestion;
+    try {
+      fetched = await api.getSuggestion(id, { signal: controller.signal });
+    } catch (error) {
+      if (!mountedRef.current || !isSessionCurrent(captured) || sequence !== suggestionFetchSequence.current) {
+        return null;
+      }
+      setSuggestionFetching(false);
+      if (error instanceof TodoApiError && error.kind === "not-found") {
+        setSuggestionRecord(null);
+        return null;
+      }
+      if (error instanceof Error && error.name === "AbortError") return null;
+      setSuggestionRecord(null);
+      setSuggestionError(error instanceof TodoApiError ? error.message : "Could not load todo suggestions.");
+      return null;
+    }
+    if (!mountedRef.current || !isSessionCurrent(captured) || sequence !== suggestionFetchSequence.current) {
+      return null;
+    }
+    const current = workflowQueryRef.current.data;
+    if (
+      current === undefined ||
+      current.workflow_id !== id ||
+      current.revision !== expectedRevision ||
+      current.view.step_id !== expectedStepId ||
+      fetched.workflow_id !== id ||
+      fetched.base_revision !== expectedRevision ||
+      fetched.step_id !== expectedStepId
+    ) {
+      setSuggestionFetching(false);
+      return null;
+    }
+    setSuggestionRecord(fetched);
+    setSuggestionFetching(false);
+    if (
+      fetched.status === "ready" &&
+      tasksDraftRef.current === "" &&
+      tasksDraftEditCounterRef.current === capturedEditCounter
+    ) {
+      const seededDraft = fetched.proposed_titles.join("\n");
+      tasksDraftRef.current = seededDraft;
+      setTasksDraft(seededDraft);
+      setFocusSignal((signal) => signal + 1);
+    }
+    return fetched;
+  };
+
+  useEffect(() => {
+    if (
+      workflowId === null ||
+      !fresh ||
+      snapshot === undefined ||
+      snapshot.view.type !== "task_breakdown"
+    ) {
+      return;
+    }
+    const captured = sessionEpoch;
+    const id = workflowId;
+    const revision = snapshot.revision;
+    const currentStepId = snapshot.view.step_id;
+    const editCounter = tasksDraftEditCounterRef.current;
+    void fetchSuggestionRecord(id, captured, revision, currentStepId, editCounter);
+    // The workflow revision and step identity are the authoritative trigger;
+    // a suggestion GET never changes either value.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workflowId, snapshot?.revision, snapshot?.view.step_id, fresh, sessionEpoch]);
+
+  const reconcileSuggestionAfterWrite = async (
+    record: SuggestRecord,
+    captured: number,
+    message: string | null,
+  ): Promise<void> => {
+    if (!mountedRef.current || !isSessionCurrent(captured)) return;
+    setReconciling(true);
+    setSuggestionError(null);
+    try {
+      const current = await fetchCurrentSnapshot(record.workflowId, captured);
+      if (!mountedRef.current || !isSessionCurrent(captured) || current === null) return;
+      if (!current.ok) {
+        setReconcileFailed(true);
+        setWriteError({ message: current.message, lock: true });
+        return;
+      }
+      const sameStep =
+        current.snapshot.revision === record.body.expected_revision &&
+        current.snapshot.view.step_id === record.body.step_id;
+      if (!sameStep) {
+        await clearPendingRecord(record, captured);
+        if (message !== null && mountedRef.current && isSessionCurrent(captured)) {
+          setWriteError({ message, lock: false });
+        }
+        return;
+      }
+      const saved = await fetchSuggestionRecord(
+        record.workflowId,
+        captured,
+        record.body.expected_revision,
+        record.body.step_id,
+        tasksDraftEditCounterRef.current,
+      );
+      if (!mountedRef.current || !isSessionCurrent(captured)) return;
+      if (saved === null) {
+        setPendingRecord(record);
+        setWriteError({ message: RECOVERY_PENDING, lock: true });
+        return;
+      }
+      if (saved.request_id !== record.requestId) {
+        // A newer request is the active proposal; the older local retry is
+        // no longer useful and must not publish its late titles.
+        await clearPendingRecord(record, captured);
+        if (mountedRef.current && isSessionCurrent(captured)) setWriteError(null);
+        return;
+      }
+      await clearPendingRecord(record, captured);
+      if (!mountedRef.current || !isSessionCurrent(captured)) return;
+      if (message !== null) setWriteError({ message, lock: false });
+      else setWriteError(null);
+    } finally {
+      if (mountedRef.current && isSessionCurrent(captured)) setReconciling(false);
+    }
+  };
+
+  const settleSuggestionResponse = async (
+    record: SuggestRecord,
+    response: WorkflowSuggestion,
+    captured: number,
+  ): Promise<void> => {
+    if (!mountedRef.current || !isSessionCurrent(captured)) return;
+    if (
+      response.workflow_id !== record.workflowId ||
+      response.request_id !== record.requestId ||
+      response.base_revision !== record.body.expected_revision ||
+      response.step_id !== record.body.step_id
+    ) {
+      setWriteError({ message: INVALID_RESPONSE, lock: true });
+      return;
+    }
+    await reconcileSuggestionAfterWrite(record, captured, null);
+  };
+
+  const settleSuggestionError = (
+    record: SuggestRecord,
+    error: unknown,
+    captured: number,
+  ): void => {
+    if (!mountedRef.current || !isSessionCurrent(captured)) return;
+    if (error instanceof TodoApiError && error.suggestionCode !== undefined) {
+      void reconcileSuggestionAfterWrite(record, captured, error.message);
+      return;
+    }
+    if (error instanceof TodoApiError && error.kind === "conflict") {
+      if (error.conflictCode === "stale_suggestion") {
+        void reconcileSuggestionAfterWrite(record, captured, error.message);
+        return;
+      }
+      setWriteError({ message: error.message, lock: true });
+      return;
+    }
+    setWriteError({
+      message: error instanceof TodoApiError ? error.message : "Could not suggest todos.",
+      lock: true,
+    });
   };
 
   const reconcileAfterWrite = async (
@@ -489,10 +693,18 @@ export function TodoWorkflowScreen({
         }
       );
     }
-    return advanceMutation.mutateAsync(record).then(
-      (response) => settleAdvanceResponse(record, response, captured),
+    if (record.operation === "advance") {
+      return advanceMutation.mutateAsync(record).then(
+        (response) => settleAdvanceResponse(record, response, captured),
+        (error: unknown) => {
+          settleAdvanceError(record, error, captured);
+        }
+      );
+    }
+    return suggestionMutation.mutateAsync(record).then(
+      (response) => settleSuggestionResponse(record, response, captured),
       (error: unknown) => {
-        settleAdvanceError(record, error, captured);
+        settleSuggestionError(record, error, captured);
       }
     );
   };
@@ -563,8 +775,14 @@ export function TodoWorkflowScreen({
       api.advanceWorkflow(record.workflowId, record.body),
   });
 
+  const suggestionMutation = useMutation({
+    mutationFn: (record: SuggestRecord) =>
+      api.suggestWorkflow(record.workflowId, record.body),
+  });
+
   const startPending = startMutation.isPending;
   const advancePending = advanceMutation.isPending;
+  const suggestionPending = suggestionMutation.isPending;
   // `busy` stays a synchronous re-entrancy guard for handlers only: refs
   // must not be read during render, so the discard path mirrors it into
   // state (every other busy window already has a state flag). This also
@@ -572,11 +790,19 @@ export function TodoWorkflowScreen({
   // after the next unrelated render.
   const [discarding, setDiscarding] = useState(false);
   const ioBusy =
-    discarding || persisting || startPending || advancePending || reconciling;
+    discarding || persisting || startPending || advancePending || suggestionPending ||
+    suggestionFetching || reconciling;
   const buttonsDisabled =
-    !fresh || isFetching || advancePending || persisting || reconciling ||
-    reconcileFailed ||
+    !fresh || isFetching || advancePending || suggestionPending || persisting ||
+    suggestionFetching || reconciling || reconcileFailed || livePending !== null ||
+    suggestionRecord?.status === "pending";
+  const suggestionControlDisabled =
+    !fresh || isFetching || suggestionPending || suggestionFetching || reconciling ||
     livePending !== null;
+  const suggestionInFlight =
+    suggestionPending ||
+    suggestionFetching ||
+    (persisting && livePending?.operation === "suggest");
 
   useEffect(() => {
     if (workflowQuery.data?.view.type === "completion") {
@@ -713,6 +939,73 @@ export function TodoWorkflowScreen({
     submitAction({ action: "submit_tasks", titles: canonical });
   };
 
+  const changeTasksDraft = (value: string) => {
+    // Draft edits are mirrored synchronously so a deferred provider cannot
+    // observe the previous render's value.
+    tasksDraftRef.current = value;
+    tasksDraftEditCounterRef.current += 1;
+    setTasksDraft(value);
+    setTasksDraftEditCounter((counter) => counter + 1);
+  };
+
+  const startSuggestion = (allowPending = false) => {
+    if (
+      workflowId === null ||
+      busy.current ||
+      (buttonsDisabled && !(allowPending && suggestionRecord?.status === "pending")) ||
+      suggestionPending ||
+      suggestionFetching ||
+      view?.type !== "task_breakdown"
+    ) {
+      return;
+    }
+    const cached = queryClient.getQueryData<TodoWorkflow>(
+      workflowQueryKey(userId, workflowId)
+    );
+    if (cached === undefined || cached.workflow_id !== workflowId) return;
+    const requestId = generateRequestId();
+    setSuggestionError(null);
+    setNewSuggestionWarning(false);
+    persistAndSend({
+      version: 1,
+      ownerId: userId,
+      requestId,
+      operation: "suggest",
+      workflowId,
+      body: {
+        request_id: requestId,
+        expected_revision: cached.revision,
+        step_id: cached.view.step_id,
+      },
+    });
+  };
+
+  const checkSuggestionStatus = () => {
+    if (workflowId === null || busy.current || ioBusy || view?.type !== "task_breakdown") return;
+    const captured = sessionEpoch;
+    const id = workflowId;
+    setReconciling(true);
+    void (async () => {
+      try {
+        const current = await fetchCurrentSnapshot(id, captured);
+        if (!mountedRef.current || !isSessionCurrent(captured) || current === null) return;
+        if (!current.ok || current.snapshot.view.type !== "task_breakdown") {
+          if (!current.ok) setWriteError({ message: current.message, lock: true });
+          return;
+        }
+        await fetchSuggestionRecord(
+          id,
+          captured,
+          current.snapshot.revision,
+          current.snapshot.view.step_id,
+          tasksDraftEditCounterRef.current,
+        );
+      } finally {
+        if (mountedRef.current && isSessionCurrent(captured)) setReconciling(false);
+      }
+    })();
+  };
+
   const retryPending = () => {
     const record = livePending;
     if (
@@ -721,11 +1014,41 @@ export function TodoWorkflowScreen({
       persisting ||
       startPending ||
       advancePending ||
+      suggestionPending ||
+      suggestionFetching ||
       reconciling
     ) {
       return;
     }
-    persistAndSend(record);
+    if (record.operation !== "suggest") {
+      persistAndSend(record);
+      return;
+    }
+    const captured = sessionEpoch;
+    setReconciling(true);
+    void (async () => {
+      try {
+        const current = await fetchCurrentSnapshot(record.workflowId, captured);
+        if (!mountedRef.current || !isSessionCurrent(captured) || current === null) return;
+        if (
+          !current.ok ||
+          current.snapshot.revision !== record.body.expected_revision ||
+          current.snapshot.view.step_id !== record.body.step_id
+        ) {
+          if (!current.ok) setWriteError({ message: current.message, lock: true });
+          else {
+            await clearPendingRecord(record, captured);
+            if (mountedRef.current && isSessionCurrent(captured)) {
+              setWriteError({ message: "This suggestion request is no longer current.", lock: false });
+            }
+          }
+          return;
+        }
+        persistAndSend(record);
+      } finally {
+        if (mountedRef.current && isSessionCurrent(captured)) setReconciling(false);
+      }
+    })();
   };
 
   const discardPending = () => {
@@ -736,8 +1059,14 @@ export function TodoWorkflowScreen({
       persisting ||
       startPending ||
       advancePending ||
+      suggestionPending ||
+      suggestionFetching ||
       reconciling
     ) {
+      return;
+    }
+    if (record.operation === "suggest" && !discardSuggestionWarning) {
+      setDiscardSuggestionWarning(true);
       return;
     }
     busy.current = true;
@@ -745,9 +1074,19 @@ export function TodoWorkflowScreen({
     setDiscarding(true);
     void (async () => {
       try {
+        if (record.operation === "suggest") {
+          const current = await fetchCurrentSnapshot(record.workflowId, captured);
+          if (!mountedRef.current || !isSessionCurrent(captured) || current === null) return;
+          if (!current.ok) {
+            setReconcileFailed(true);
+            setWriteError({ message: current.message, lock: true });
+            return;
+          }
+        }
         await pendingStore.clear(userId, record.requestId);
         if (!mountedRef.current || !isSessionCurrent(captured)) return;
         setPendingRecord(null);
+        setDiscardSuggestionWarning(false);
         setWriteError({ message: DISCARD_WARNING, lock: false });
         void queryClient.invalidateQueries({
           queryKey: ["todo-workflows", userId, "active"],
@@ -766,6 +1105,7 @@ export function TodoWorkflowScreen({
       } catch {
         if (mountedRef.current && isSessionCurrent(captured)) {
           setPendingRecord(record);
+          setDiscardSuggestionWarning(false);
           setWriteError({ message: RECOVERY_PENDING, lock: true });
         }
       } finally {
@@ -885,11 +1225,40 @@ export function TodoWorkflowScreen({
             key={view.step_id}
             view={view}
             draft={tasksDraft}
-            onChangeDraft={setTasksDraft}
+            onChangeDraft={changeTasksDraft}
             onSubmit={submitTasks}
             onCancel={cancel}
+            onSuggest={startSuggestion}
+            onCheckSuggestion={checkSuggestionStatus}
+            onStartAnother={() => setNewSuggestionWarning(true)}
+            onApplySuggestions={() => {
+              if (suggestionRecord === null || suggestionRecord.status !== "ready") return;
+              if (tasksDraftRef.current !== "") {
+                setReplaceSuggestions(true);
+                return;
+              }
+              changeTasksDraft(suggestionRecord.proposed_titles.join("\n"));
+            }}
+            onReplaceSuggestions={() => {
+              if (suggestionRecord === null || suggestionRecord.status !== "ready") return;
+              changeTasksDraft(suggestionRecord.proposed_titles.join("\n"));
+              setReplaceSuggestions(false);
+            }}
+            suggestion={suggestionRecord}
+            suggestionError={suggestionError}
+            suggestionControlsDisabled={suggestionControlDisabled}
+            replaceSuggestions={replaceSuggestions}
+            onCancelReplace={() => setReplaceSuggestions(false)}
+            newSuggestionWarning={newSuggestionWarning}
+            onConfirmStartAnother={() => {
+              setNewSuggestionWarning(false);
+              startSuggestion(true);
+            }}
+            onCancelStartAnother={() => setNewSuggestionWarning(false)}
+            onWarnStartAnother={() => setNewSuggestionWarning(true)}
             disabled={buttonsDisabled}
             submitting={advancePending}
+            suggesting={suggestionInFlight}
             inputRef={tasksInput}
           />
         );
@@ -934,6 +1303,11 @@ export function TodoWorkflowScreen({
         {renderView()}
         {livePending !== null && (
           <View style={styles.screen}>
+            {livePending.operation === "suggest" && discardSuggestionWarning && (
+              <Text accessibilityLiveRegion="polite" style={styles.status}>
+                The earlier suggestion call may still finish or be billed. Discard its saved retry?
+              </Text>
+            )}
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Retry saved request"
@@ -945,12 +1319,20 @@ export function TodoWorkflowScreen({
             </Pressable>
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Discard saved request"
+              accessibilityLabel={
+                livePending.operation === "suggest" && discardSuggestionWarning
+                  ? "Discard saved suggestion anyway"
+                  : "Discard saved request"
+              }
               disabled={ioBusy}
               style={styles.refreshButton}
               onPress={discardPending}
             >
-              <Text style={styles.refreshButtonText}>Discard saved request</Text>
+              <Text style={styles.refreshButtonText}>
+                {livePending.operation === "suggest" && discardSuggestionWarning
+                  ? "Discard saved suggestion anyway"
+                  : "Discard saved request"}
+              </Text>
             </Pressable>
           </View>
         )}
@@ -1100,6 +1482,20 @@ function TaskBreakdownTemplate({
   onChangeDraft,
   onSubmit,
   onCancel,
+  onSuggest,
+  onCheckSuggestion,
+  onStartAnother,
+  onApplySuggestions,
+  onReplaceSuggestions,
+  onCancelReplace,
+  suggestion,
+  suggestionError,
+  suggestionControlsDisabled,
+  replaceSuggestions,
+  newSuggestionWarning,
+  onConfirmStartAnother,
+  onCancelStartAnother,
+  suggesting,
   disabled,
   submitting,
   inputRef,
@@ -1110,10 +1506,26 @@ function TaskBreakdownTemplate({
   onChangeDraft: (value: string) => void;
   onSubmit: (bounds: { min_titles: number; max_titles: number }) => void;
   onCancel: () => void;
+  onSuggest: () => void;
+  onCheckSuggestion: () => void;
+  onStartAnother: () => void;
+  onApplySuggestions: () => void;
+  onReplaceSuggestions: () => void;
+  onCancelReplace: () => void;
+  suggestion: WorkflowSuggestion | null;
+  suggestionError: string | null;
+  suggestionControlsDisabled: boolean;
+  replaceSuggestions: boolean;
+  newSuggestionWarning: boolean;
+  onConfirmStartAnother: () => void;
+  onCancelStartAnother: () => void;
+  onWarnStartAnother?: () => void;
+  suggesting: boolean;
   disabled: boolean;
   submitting: boolean;
   inputRef: InputRef;
 }) {
+  const hasEditedDraft = draft !== "";
   return (
     <View style={styles.screen}>
       <Text accessibilityRole="header" accessibilityLiveRegion="polite" style={styles.heading}>
@@ -1123,7 +1535,7 @@ function TaskBreakdownTemplate({
       <TextInput
         ref={inputRef}
         accessibilityLabel="Todo titles (one per line)"
-        editable={!disabled}
+        editable={!disabled || suggesting}
         value={draft}
         multiline
         onChangeText={onChangeDraft}
@@ -1144,6 +1556,133 @@ function TaskBreakdownTemplate({
       >
         <Text style={styles.addButtonText}>Save tasks</Text>
       </Pressable>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Suggest todos"
+        disabled={suggestionControlsDisabled || suggesting}
+        style={styles.refreshButton}
+        onPress={onSuggest}
+      >
+        <Text style={styles.refreshButtonText}>Suggest todos</Text>
+      </Pressable>
+      {suggesting && (
+        <Text accessibilityLiveRegion="polite" style={styles.status}>
+          Getting todo suggestions…
+        </Text>
+      )}
+      {suggestionError !== null && (
+        <Text accessibilityLiveRegion="polite" style={styles.status}>
+          {suggestionError}
+        </Text>
+      )}
+      {suggestion?.status === "pending" && !suggesting && (
+        <View style={styles.screen}>
+          <Text accessibilityLiveRegion="polite" style={styles.status}>
+            Suggestions are still being generated. The earlier request may still finish.
+          </Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Check status"
+            disabled={suggestionControlsDisabled}
+            style={styles.refreshButton}
+            onPress={onCheckSuggestion}
+          >
+            <Text style={styles.refreshButtonText}>Check status</Text>
+          </Pressable>
+          {!newSuggestionWarning ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Start another request"
+              disabled={suggestionControlsDisabled}
+              style={styles.refreshButton}
+              onPress={onStartAnother}
+            >
+              <Text style={styles.refreshButtonText}>Start another request</Text>
+            </Pressable>
+          ) : (
+            <View style={styles.screen}>
+              <Text accessibilityLiveRegion="polite" style={styles.status}>
+                Starting another request may bill the earlier request too.
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Start another request anyway"
+                disabled={suggestionControlsDisabled}
+                style={styles.addButton}
+                onPress={onConfirmStartAnother}
+              >
+                <Text style={styles.addButtonText}>Start another request anyway</Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Cancel new request"
+                disabled={suggestionControlsDisabled}
+                style={styles.refreshButton}
+                onPress={onCancelStartAnother}
+              >
+                <Text style={styles.refreshButtonText}>Cancel</Text>
+              </Pressable>
+            </View>
+          )}
+        </View>
+      )}
+      {suggestion?.status === "failed" && !suggesting && (
+        <View style={styles.screen}>
+          <Text accessibilityLiveRegion="polite" style={styles.status}>
+            Suggestions are unavailable. You can enter todo titles manually.
+          </Text>
+          <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Try suggestions again"
+          disabled={disabled}
+          style={styles.refreshButton}
+          onPress={onSuggest}
+        >
+            <Text style={styles.refreshButtonText}>Try suggestions again</Text>
+          </Pressable>
+        </View>
+      )}
+      {suggestion?.status === "ready" && !suggesting && (
+        <View style={styles.screen}>
+          <Text accessibilityLiveRegion="polite" style={styles.status}>
+            Saved suggestions are ready to review.
+          </Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Apply saved suggestions"
+            disabled={disabled}
+            style={styles.refreshButton}
+            onPress={onApplySuggestions}
+          >
+            <Text style={styles.refreshButtonText}>Apply saved suggestions</Text>
+          </Pressable>
+          {replaceSuggestions && hasEditedDraft && (
+            <View style={styles.screen}>
+              <Text accessibilityLiveRegion="polite" style={styles.status}>
+                Replace your edited draft with the saved suggestions?
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Replace draft with saved suggestions"
+                disabled={disabled}
+                style={styles.addButton}
+                onPress={onReplaceSuggestions}
+              >
+                <Text style={styles.addButtonText}>Replace draft</Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Keep edited draft"
+                disabled={disabled}
+                style={styles.refreshButton}
+                onPress={onCancelReplace}
+              >
+                <Text style={styles.refreshButtonText}>Keep edited draft</Text>
+              </Pressable>
+            </View>
+          )}
+        </View>
+      )}
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Cancel planning"
