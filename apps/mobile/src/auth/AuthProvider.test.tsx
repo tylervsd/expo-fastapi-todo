@@ -10,6 +10,18 @@ import { PENDING_WRITE_KEY_PREFIX } from "../todoWorkflows/pendingWorkflowWrite"
 import { createMemoryTokenStorage, type TokenStorage } from "./tokenStorage";
 import type { TodoTransport } from "./authenticatedApi";
 
+// The signed-in shell mounts the workflow screen, which mounts the
+// workflow-scoped agent runtime against the existing API URL.
+let savedShellApiUrl: string | undefined;
+beforeEach(() => {
+  savedShellApiUrl = process.env.EXPO_PUBLIC_API_URL;
+  process.env.EXPO_PUBLIC_API_URL = "https://api.example.test";
+});
+afterEach(() => {
+  if (savedShellApiUrl === undefined) delete process.env.EXPO_PUBLIC_API_URL;
+  else process.env.EXPO_PUBLIC_API_URL = savedShellApiUrl;
+});
+
 // TanStack Query schedules minute-scale GC timeouts that can outlive component
 // unmounts under jsdom and hold Jest's event loop open after the run. Unref
 // them so they still fire while the loop is otherwise alive but never block

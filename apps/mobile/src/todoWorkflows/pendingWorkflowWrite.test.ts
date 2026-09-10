@@ -157,6 +157,39 @@ describe("pending workflow write store", () => {
     await expect(store.read(OWNER_B)).resolves.toBeNull();
   });
 
+  it("round-trips a suggestion request carrying an exact clarification", async () => {
+    const store = setup();
+    const base = suggestRecord();
+    if (base.operation !== "suggest") throw new Error("suggest fixture changed shape");
+    const record: PendingWorkflowWrite = {
+      ...base,
+      body: {
+        ...base.body,
+        clarification: { field: "date", value: "next Saturday" },
+      },
+    };
+    await store.save(record);
+    await expect(store.read(OWNER_A)).resolves.toEqual(record);
+  });
+
+  it.each([
+    ["unknown field", { field: "weather", value: "sunny" }],
+    ["empty value", { field: "date", value: "" }],
+    ["oversize value", { field: "date", value: "x".repeat(201) }],
+    ["action alongside clarification", { action: { action: "confirm" } }],
+    ["unknown extra key", { typo: 1 }],
+  ])("rejects a suggestion body with %s", async (_label, extra) => {
+    const store = setup();
+    const base = suggestRecord();
+    if (base.operation !== "suggest") throw new Error("suggest fixture changed shape");
+    const invalid = {
+      ...base,
+      body: { ...base.body, ...extra },
+    } as PendingWorkflowWrite;
+    await expect(store.save(invalid)).rejects.toThrow();
+    await expect(store.read(OWNER_A)).resolves.toBeNull();
+  });
+
   it("rejects a suggestion request that could fall through to an action", async () => {
     const raw = createMemoryPendingWriteStorage();
     const store = createPendingWriteStore(raw);

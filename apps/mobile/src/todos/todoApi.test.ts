@@ -5,6 +5,7 @@ import {
   fetchMe,
   getTodoWorkflow,
   getWorkflowSuggestion,
+  isWorkflowSuggestionClarification,
   listTodoWorkflows,
   listTodos,
   login,
@@ -564,6 +565,52 @@ describe("todo workflow transport", () => {
       body: JSON.stringify(request),
       signal: expect.any(AbortSignal),
     });
+  });
+
+  it("posts the exact four-key suggestion body with clarification verbatim", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(201, readySuggestion));
+    const request = {
+      request_id: requestId,
+      expected_revision: 2,
+      step_id: `${workflowId}:COLLECT_TASKS`,
+      clarification: { field: "date" as const, value: "next Saturday" },
+    };
+
+    await expect(
+      suggestWorkflowTodos(workflowId, request, { apiUrl, token: "tok", fetchImpl })
+    ).resolves.toEqual(readySuggestion);
+    expect(fetchImpl).toHaveBeenCalledWith(`${apiUrl}/todo-workflows/${workflowId}/suggestions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer tok" },
+      body: JSON.stringify(request),
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it.each([
+    ["date", "next Saturday"],
+    ["location", "Riverside Park"],
+    ["people", "six adults"],
+    ["budget", "under $50"],
+    ["constraints", "no stairs"],
+  ])("accepts clarification field %s with a bounded value", (field, value) => {
+    expect(
+      isWorkflowSuggestionClarification({ field, value })
+    ).toBe(true);
+  });
+
+  it.each([
+    ["unknown field", { field: "weather", value: "sunny" }],
+    ["empty value", { field: "date", value: "" }],
+    ["blank value", { field: "date", value: "   " }],
+    ["oversize value", { field: "date", value: "x".repeat(201) }],
+    ["extra key", { field: "date", value: "soon", extra: true }],
+    ["missing value", { field: "date" }],
+    ["non-string value", { field: "date", value: 42 }],
+    ["null", null],
+    ["array", []],
+  ])("rejects %s clarification", (_label, clarification) => {
+    expect(isWorkflowSuggestionClarification(clarification)).toBe(false);
   });
 
   it("accepts a ready replay with 200 and rejects unknown suggestion contracts", async () => {

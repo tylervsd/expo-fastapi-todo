@@ -21,6 +21,10 @@ import {
   workflowQueryKey,
 } from "./TodoWorkflowScreen";
 import type { TodoWorkflowScreenApi } from "../auth/authenticatedApi";
+import { AgentSessionProvider } from "../agent/AgentSessionProvider";
+
+const AGENT_API_URL = "https://api.example.test";
+let savedAgentApiUrl: string | undefined;
 
 const mockInputFocus = jest.fn();
 const mockControlFocus: (unknown[] | undefined)[] = [];
@@ -345,23 +349,27 @@ const renderHost = async (
   const store =
     options.store ?? createPendingWriteStore(createMemoryPendingWriteStorage());
   const view = await render(
-    <QueryClientProvider client={client}>
-      <TodoWorkflowScreen
-        userId={options.userId ?? USER_ID}
-        api={api}
-        onExit={onExit}
-        initialWorkflowId={options.initialWorkflowId ?? null}
-        pendingStore={store}
-        generateRequestId={options.generateRequestId ?? (() => REQUEST_ID)}
-        sessionEpoch={options.sessionEpoch ?? 0}
-        isSessionCurrent={options.isSessionCurrent ?? (() => true)}
-      />
-    </QueryClientProvider>
+    <AgentSessionProvider token="tok" sessionEpoch={options.sessionEpoch ?? 0}>
+      <QueryClientProvider client={client}>
+        <TodoWorkflowScreen
+          userId={options.userId ?? USER_ID}
+          api={api}
+          onExit={onExit}
+          initialWorkflowId={options.initialWorkflowId ?? null}
+          pendingStore={store}
+          generateRequestId={options.generateRequestId ?? (() => REQUEST_ID)}
+          sessionEpoch={options.sessionEpoch ?? 0}
+          isSessionCurrent={options.isSessionCurrent ?? (() => true)}
+        />
+      </QueryClientProvider>
+    </AgentSessionProvider>
   );
   return { view, onExit, client, store };
 };
 
 beforeEach(() => {
+  savedAgentApiUrl = process.env.EXPO_PUBLIC_API_URL;
+  process.env.EXPO_PUBLIC_API_URL = AGENT_API_URL;
   mockInputFocus.mockClear();
   mockControlFocus.length = 0;
   mockAnnounceForAccessibility.mockClear();
@@ -370,6 +378,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  if (savedAgentApiUrl === undefined) delete process.env.EXPO_PUBLIC_API_URL;
+  else process.env.EXPO_PUBLIC_API_URL = savedAgentApiUrl;
   while (liveClients.length > 0) {
     const client = liveClients.pop() as QueryClient;
     client.unmount();
@@ -2366,3 +2376,364 @@ it("ignores a reload's storage clear that resolves after the session changed", a
   expect(screen.getByRole("alert")).toHaveTextContent("Could not reload the plan.");
   await waitFor(() => expect(store.read(USER_ID)).resolves.toBeNull());
 });
+
+describe("agent clarification and review flow", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  const sse = (events: unknown[]): string =>
+    events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("");
+  const sseResponse = (events: unknown[]): Response =>
+    new Response(sse(events), {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+
+  type AgentPost = {
+    threadId: string;
+    runId: string;
+    state: {
+      contract_version: number;
+      expected_revision: number;
+      step_id: string;
+      suggestion_request_id: string | null;
+    } | null;
+    messages: Array<{
+      role: string;
+      content?: unknown;
+      toolCalls?: Array<{ id: string; function?: { name?: string; arguments?: string } }>;
+      toolCallId?: string;
+    }>;
+  };
+
+  // Compact server-shaped responder: fresh choice, ready replay, REVIEW ack.
+  const installAgentFixture = (
+    bodies: AgentPost[],
+    titles: string[] = ["Choose a date", "Invite guests"],
+  ) => {
+    globalThis.fetch = jest.fn(async (_url: unknown, init?: RequestInit) => {
+      const post = JSON.parse(String(init?.body)) as AgentPost;
+      bodies.push(post);
+      const started = { type: "RUN_STARTED", threadId: post.threadId, runId: post.runId };
+      const finished = { type: "RUN_FINISHED", threadId: post.threadId, runId: post.runId };
+      const state = post.state;
+      if (
+        state !== null &&
+        typeof state.suggestion_request_id === "string" &&
+        !state.step_id.endsWith(":REVIEW")
+      ) {
+        const toolCallId = `${post.runId}:review_todo_suggestions:0`;
+        return sseResponse([
+          started,
+          { type: "TOOL_CALL_START", toolCallId, toolCallName: "review_todo_suggestions" },
+          {
+            type: "TOOL_CALL_ARGS",
+            toolCallId,
+            delta: JSON.stringify({
+              contract_version: 1,
+              workflow_id: WORKFLOW_ID,
+              expected_revision: state.expected_revision,
+              step_id: state.step_id,
+              suggestion_request_id: state.suggestion_request_id,
+              titles,
+            }),
+          },
+          { type: "TOOL_CALL_END", toolCallId },
+          finished,
+        ]);
+      }
+      if (state !== null && state.step_id.endsWith(":REVIEW")) {
+        return sseResponse([started, finished]);
+      }
+      const toolCallId = `${post.runId}:clarify_plan:0`;
+      return sseResponse([
+        started,
+        { type: "TOOL_CALL_START", toolCallId, toolCallName: "clarify_plan" },
+        {
+          type: "TOOL_CALL_ARGS",
+          toolCallId,
+          delta: JSON.stringify({
+            contract_version: 1,
+            workflow_id: WORKFLOW_ID,
+            expected_revision: state?.expected_revision ?? 2,
+            step_id: state?.step_id ?? `${WORKFLOW_ID}:COLLECT_TASKS`,
+            field: "date",
+          }),
+        },
+        { type: "TOOL_CALL_END", toolCallId },
+        finished,
+      ]);
+    }) as unknown as typeof fetch;
+  };
+
+  const reachCollectTasks = async (api: MockWorkflowApi) => {
+    await renderHost(api);
+    await startToAssess(api);
+    api.advanceWorkflow.mockResolvedValueOnce(offerWorkflow);
+    api.getWorkflow.mockResolvedValueOnce(offerWorkflow);
+    await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
+    await waitFor(() =>
+      expect(
+        screen.getByRole("header", { name: "Would you like to split it into smaller todos?" }),
+      ).toBeTruthy(),
+    );
+    api.advanceWorkflow.mockResolvedValueOnce(collectWorkflow);
+    api.getWorkflow.mockResolvedValueOnce(collectWorkflow);
+    await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
+    await waitFor(() =>
+      expect(screen.getByRole("header", { name: "Break it into smaller todos" })).toBeTruthy(),
+    );
+    await waitForQuiescence();
+  };
+
+  it("mounts the workflow-scoped runtime above the step templates on selection", async () => {
+    const api = makeApi();
+    await renderHost(api);
+    expect(screen.queryByTestId("agent-runtime-mount")).toBeNull();
+    await startToAssess(api);
+    // The runtime scopes to the selected workflow from the first snapshot,
+    // while the panel itself only renders on the breakdown step.
+    expect(screen.getByTestId("agent-runtime-mount")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Ask agent for help" })).toBeNull();
+    api.advanceWorkflow.mockResolvedValueOnce(offerWorkflow);
+    api.getWorkflow.mockResolvedValueOnce(offerWorkflow);
+    await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
+    await waitFor(() =>
+      expect(screen.getByRole("header", { name: "Would you like to split it into smaller todos?" })).toBeTruthy(),
+    );
+    api.advanceWorkflow.mockResolvedValueOnce(collectWorkflow);
+    api.getWorkflow.mockResolvedValueOnce(collectWorkflow);
+    await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
+    await waitFor(() =>
+      expect(screen.getByRole("header", { name: "Break it into smaller todos" })).toBeTruthy(),
+    );
+    expect(screen.getByTestId("agent-runtime-mount")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Ask agent for help" })).toBeTruthy();
+  });
+
+  it("keeps the runtime mounted across the COLLECT_TASKS to REVIEW transition", async () => {
+    const api = makeApi();
+    await reachCollectTasks(api);
+    expect(screen.getByTestId("agent-runtime-mount")).toBeTruthy();
+    api.advanceWorkflow.mockResolvedValueOnce(reviewWorkflow);
+    api.getWorkflow.mockResolvedValueOnce(reviewWorkflow);
+    await fireEvent.changeText(
+      screen.getByLabelText("Todo titles (one per line)"),
+      "Send invitations\nBuy decorations",
+    );
+    await fireEvent.press(screen.getByRole("button", { name: "Save tasks" }));
+    await waitFor(() =>
+      expect(screen.getByRole("header", { name: "Review your plan" })).toBeTruthy(),
+    );
+    // The provider outlives the step acknowledgement; the panel rests.
+    expect(screen.getByTestId("agent-runtime-mount")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Ask agent for help" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Confirm plan" })).toBeTruthy();
+  });
+
+  it("runs clarification through the durable suggestion path with the same request id", async () => {
+    const bodies: AgentPost[] = [];
+    installAgentFixture(bodies);
+    const api = makeApi();
+    const suggestBodies: unknown[] = [];
+    api.suggestWorkflow.mockImplementation(
+      async (_id: string, body: {
+        request_id: string;
+        expected_revision: number;
+        step_id: string;
+        clarification?: { field: string; value: string };
+      }) => {
+        suggestBodies.push(body);
+        return {
+          ...readySuggestion,
+          request_id: body.request_id,
+          base_revision: body.expected_revision,
+          step_id: body.step_id,
+        };
+      },
+    );
+    api.getSuggestion.mockImplementation(() => notFoundSuggestion());
+    await reachCollectTasks(api);
+    // Settle-path GETs: the reconciliation workflow GET and the ready
+    // suggestion GET that the durable flow reconciles against.
+    api.getWorkflow.mockResolvedValue(collectWorkflow);
+    // The ask-time probe finds nothing (fresh choice); settle-time GETs replay ready.
+    api.getSuggestion.mockRejectedValueOnce(
+      new TodoApiError("not-found", "That plan has no saved todo suggestions."),
+    );
+    api.getSuggestion.mockResolvedValue({
+      ...readySuggestion,
+      request_id: REQUEST_ID,
+      base_revision: 2,
+      step_id: `${WORKFLOW_ID}:COLLECT_TASKS`,
+    });
+
+    await fireEvent.press(screen.getByRole("button", { name: "Ask agent for help" }));
+    await waitFor(() => expect(screen.getByLabelText("Your answer")).toBeTruthy(), {
+      timeout: 10000,
+    });
+    // Navigation advances above are setup; the agent flow itself must not advance.
+    const advanceCallsBeforeAgentFlow = api.advanceWorkflow.mock.calls.length;
+    // The first run carries the authoritative workflow identity, no suggestion yet.
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0].threadId).toBe(WORKFLOW_ID);
+    expect(bodies[0].state).toEqual({
+      contract_version: 1,
+      expected_revision: 2,
+      step_id: `${WORKFLOW_ID}:COLLECT_TASKS`,
+      suggestion_request_id: null,
+    });
+
+    await fireEvent.changeText(screen.getByLabelText("Your answer"), "next Saturday");
+    await fireEvent.press(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(
+      () => expect(screen.getByLabelText("Suggestion 1 of 2")).toBeTruthy(),
+      { timeout: 10000 },
+    );
+    // One durable suggestion with the exact four-key body; the answer and the
+    // exact request survive on retry instead of minting a new provider call.
+    expect(api.suggestWorkflow).toHaveBeenCalledTimes(1);
+    expect(suggestBodies).toHaveLength(1);
+    expect(suggestBodies[0]).toEqual({
+      request_id: REQUEST_ID,
+      expected_revision: 2,
+      step_id: `${WORKFLOW_ID}:COLLECT_TASKS`,
+      clarification: { field: "date", value: "next Saturday" },
+    });
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1].state?.suggestion_request_id).toBe(REQUEST_ID);
+    expect(api.advanceWorkflow.mock.calls.length).toBe(advanceCallsBeforeAgentFlow);
+  }, 30000);
+
+  it("accepts agent suggestions through submit_tasks and never confirms todos itself", async () => {
+    const bodies: AgentPost[] = [];
+    installAgentFixture(bodies);
+    const api = makeApi();
+    api.suggestWorkflow.mockImplementation(
+      async (_id: string, body: { request_id: string; expected_revision: number; step_id: string }) => ({
+        ...readySuggestion,
+        request_id: body.request_id,
+        base_revision: body.expected_revision,
+        step_id: body.step_id,
+      }),
+    );
+    api.getSuggestion.mockImplementation(() => notFoundSuggestion());
+    const advanceBodies: unknown[] = [];
+    api.advanceWorkflow.mockImplementation(async (_id: string, body: WorkflowActionRequest) => {
+      advanceBodies.push(body);
+      return reviewWorkflow;
+    });
+    await reachCollectTasks(api);
+    api.getWorkflow.mockResolvedValue(collectWorkflow);
+    // The ask-time probe finds nothing (fresh choice); settle-time GETs replay ready.
+    api.getSuggestion.mockRejectedValueOnce(
+      new TodoApiError("not-found", "That plan has no saved todo suggestions."),
+    );
+    api.getSuggestion.mockResolvedValue({
+      ...readySuggestion,
+      request_id: REQUEST_ID,
+      base_revision: 2,
+      step_id: `${WORKFLOW_ID}:COLLECT_TASKS`,
+    });
+
+    await fireEvent.press(screen.getByRole("button", { name: "Ask agent for help" }));
+    await waitFor(() => expect(screen.getByLabelText("Your answer")).toBeTruthy(), {
+      timeout: 10000,
+    });
+    await fireEvent.changeText(screen.getByLabelText("Your answer"), "next Saturday");
+    await fireEvent.press(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(
+      () => expect(screen.getByLabelText("Suggestion 1 of 2")).toBeTruthy(),
+      { timeout: 10000 },
+    );
+    // The advance reconciliation GET observes the REVIEW snapshot.
+    api.getWorkflow.mockResolvedValue(reviewWorkflow);
+    await fireEvent.press(screen.getByRole("button", { name: "Use these suggestions" }));
+    await waitFor(() => expect(bodies).toHaveLength(3), { timeout: 10000 });
+    expect(advanceBodies).toHaveLength(1);
+    expect(advanceBodies[0]).toEqual(
+      expect.objectContaining({
+        expected_revision: 2,
+        step_id: `${WORKFLOW_ID}:COLLECT_TASKS`,
+        action: { action: "submit_tasks", titles: ["Choose a date", "Invite guests"] },
+      }),
+    );
+    // The acknowledgement runs against REVIEW with the review tool result.
+    await waitFor(() => expect(bodies).toHaveLength(3), { timeout: 10000 });
+    expect(bodies[2].state?.expected_revision).toBe(3);
+    expect(bodies[2].state?.step_id).toBe(`${WORKFLOW_ID}:REVIEW`);
+    const toolContents = bodies[2].messages
+      .filter((m) => m.role === "tool")
+      .map((m) => String(m.content));
+    expect(
+      toolContents.some(
+        (c) => c.includes(REQUEST_ID) && c.includes('"accepted_revision":3'),
+      ),
+    ).toBe(true);
+    // Zero todos until the unchanged explicit confirmation succeeds.
+    for (const body of advanceBodies) {
+      expect(body).not.toEqual(expect.objectContaining({ action: { action: "confirm" } }));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(bodies).toHaveLength(3);
+    expect(api.suggestWorkflow).toHaveBeenCalledTimes(1);
+  }, 45000);
+
+  it("disables competing manual writes only while the panel owns the write", async () => {
+    const bodies: AgentPost[] = [];
+    installAgentFixture(bodies);
+    const api = makeApi();
+    const gate = deferred<WorkflowSuggestion>();
+    api.suggestWorkflow.mockReturnValueOnce(gate.promise);
+    api.getSuggestion.mockImplementation(() => notFoundSuggestion());
+    await reachCollectTasks(api);
+    api.getWorkflow.mockResolvedValue(collectWorkflow);
+    // The ask-time probe finds nothing (fresh choice); settle-time GETs replay ready.
+    api.getSuggestion.mockRejectedValueOnce(
+      new TodoApiError("not-found", "That plan has no saved todo suggestions."),
+    );
+    api.getSuggestion.mockResolvedValue({
+      ...readySuggestion,
+      request_id: REQUEST_ID,
+      base_revision: 2,
+      step_id: `${WORKFLOW_ID}:COLLECT_TASKS`,
+    });
+
+    await fireEvent.press(screen.getByRole("button", { name: "Ask agent for help" }));
+    await waitFor(() => expect(screen.getByLabelText("Your answer")).toBeTruthy(), {
+      timeout: 10000,
+    });
+    await fireEvent.changeText(screen.getByLabelText("Your answer"), "next Saturday");
+    await fireEvent.press(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Suggest todos" }).props.accessibilityState),
+    );
+    // While the agent-owned write is unresolved, manual suggestion writes lock.
+    expect(
+      screen.getByRole("button", { name: "Suggest todos" }).props.accessibilityState?.disabled,
+    ).toBe(true);
+    await act(async () => {
+      gate.resolve({
+        ...readySuggestion,
+        request_id: REQUEST_ID,
+        base_revision: 2,
+        step_id: `${WORKFLOW_ID}:COLLECT_TASKS`,
+      });
+    });
+    await waitFor(
+      () => expect(screen.getByLabelText("Suggestion 1 of 2")).toBeTruthy(),
+      { timeout: 10000 },
+    );
+    // Manual entry and the suggestion button recover once the write settles.
+    expect(
+      screen.getByRole("button", { name: "Suggest todos" }).props.accessibilityState?.disabled,
+    ).toBe(false);
+    expect(screen.getByLabelText("Todo titles (one per line)")).toBeTruthy();
+    expect(bodies).toHaveLength(2);
+  }, 30000);
+});
+
+const notFoundSuggestion = (): Promise<never> =>
+  Promise.reject(new TodoApiError("not-found", "That plan has no saved todo suggestions."));

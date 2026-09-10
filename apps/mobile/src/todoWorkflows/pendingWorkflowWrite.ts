@@ -3,6 +3,7 @@ import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
 import {
   MAX_WORKFLOW_REVISION,
+  isWorkflowSuggestionClarification,
   normalizeTodoTitle,
   type TodoWorkflowAction,
   type WorkflowActionRequest,
@@ -155,16 +156,40 @@ const isValidSuggestionBody = (
   body: unknown,
   requestId: string,
   workflowId: string,
-): body is WorkflowSuggestionRequest =>
-  exactObject(body, ["request_id", "expected_revision", "step_id"]) &&
-  body.request_id === requestId &&
-  isUuid(body.request_id) &&
-  Number.isInteger(body.expected_revision) &&
-  (body.expected_revision as number) >= 0 &&
-  (body.expected_revision as number) <= MAX_WORKFLOW_REVISION &&
-  typeof body.step_id === "string" &&
-  body.step_id.startsWith(`${workflowId}:`) &&
-  body.step_id.length > workflowId.length + 1;
+): body is WorkflowSuggestionRequest => {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return false;
+  }
+  const record = body as Record<string, unknown>;
+  const keys = Reflect.ownKeys(record);
+  const hasClarification = keys.length === 4 && "clarification" in record;
+  // The Phase 10 three-key body and the Phase 11 four-key body (with an
+  // exact clarification object) are the only accepted shapes; every other
+  // extra key is rejected so a retry can never carry unknown fields.
+  if (
+    !exactObject(body, ["request_id", "expected_revision", "step_id"]) &&
+    !(hasClarification &&
+      exactObject(body, [
+        "request_id",
+        "expected_revision",
+        "step_id",
+        "clarification",
+      ]) &&
+      isWorkflowSuggestionClarification(record.clarification))
+  ) {
+    return false;
+  }
+  return (
+    body.request_id === requestId &&
+    isUuid(body.request_id) &&
+    Number.isInteger(body.expected_revision) &&
+    (body.expected_revision as number) >= 0 &&
+    (body.expected_revision as number) <= MAX_WORKFLOW_REVISION &&
+    typeof body.step_id === "string" &&
+    body.step_id.startsWith(`${workflowId}:`) &&
+    body.step_id.length > workflowId.length + 1
+  );
+};
 
 const isValidAdvanceBody = (
   body: unknown,

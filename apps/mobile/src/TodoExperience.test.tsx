@@ -3,8 +3,9 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-
 import { QueryClientProvider, timeoutManager, type QueryClient } from "@tanstack/react-query";
 import { createAppQueryClient } from "../App";
 import type { AuthenticatedApi } from "./auth/authenticatedApi";
-import type { Todo, TodoWorkflow } from "./todos/todoApi";
+import { TodoApiError, type Todo, type TodoWorkflow } from "./todos/todoApi";
 import { TodoExperience } from "./TodoExperience";
+import { AgentSessionProvider } from "./agent/AgentSessionProvider";
 import {
   createMemoryPendingWriteStorage,
   createPendingWriteStore,
@@ -123,8 +124,16 @@ const makeShellApi = (): MockShellApi =>
     startWorkflow: jest.fn(),
     getWorkflow: jest.fn(async () => assessWorkflow),
     advanceWorkflow: jest.fn(),
+    getSuggestion: jest.fn(async () => {
+      throw new TodoApiError("not-found", "That plan has no saved todo suggestions.");
+    }),
+    suggestWorkflow: jest.fn(),
     listWorkflows: jest.fn(async () => ({ items: [] })),
   }) as unknown as MockShellApi;
+
+// The workflow screen mounts the workflow-scoped agent runtime against the
+// existing API URL; the shell harness provides the session it consumes.
+let savedShellApiUrl: string | undefined;
 
 const renderShell = async (
   api: MockShellApi,
@@ -133,21 +142,30 @@ const renderShell = async (
 ) => {
   liveClients.push(client);
   const view = await render(
-    <QueryClientProvider client={client}>
-      <TodoExperience
-        userId={userId}
-        api={api}
-        pendingStore={createPendingWriteStore(createMemoryPendingWriteStorage())}
-        generateRequestId={() => REQUEST_ID}
-        sessionEpoch={0}
-        isSessionCurrent={() => true}
-      />
-    </QueryClientProvider>
+    <AgentSessionProvider token="tok" sessionEpoch={0}>
+      <QueryClientProvider client={client}>
+        <TodoExperience
+          userId={userId}
+          api={api}
+          pendingStore={createPendingWriteStore(createMemoryPendingWriteStorage())}
+          generateRequestId={() => REQUEST_ID}
+          sessionEpoch={0}
+          isSessionCurrent={() => true}
+        />
+      </QueryClientProvider>
+    </AgentSessionProvider>
   );
   return { view, client };
 };
 
+beforeEach(() => {
+  savedShellApiUrl = process.env.EXPO_PUBLIC_API_URL;
+  process.env.EXPO_PUBLIC_API_URL = "https://api.example.test";
+});
+
 afterEach(() => {
+  if (savedShellApiUrl === undefined) delete process.env.EXPO_PUBLIC_API_URL;
+  else process.env.EXPO_PUBLIC_API_URL = savedShellApiUrl;
   while (liveClients.length > 0) {
     const client = liveClients.pop() as QueryClient;
     client.unmount();
