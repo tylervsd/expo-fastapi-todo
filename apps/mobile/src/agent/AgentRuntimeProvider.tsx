@@ -10,15 +10,16 @@ import { useAgentSession, type AgentState } from "./AgentSessionProvider";
 
 export type { AgentState };
 
-// Installs the exact initial AgentState through the public setter exactly
-// once per mount, and withholds children until the gate itself observes the
-// installed values back through the public state hook — the install
-// notification and the readiness flag flush in separate passes, so latching
-// on the effect alone would mount children one render early on stale state.
-// Never relies on HttpAgent.initialState, which the adapter does not copy
-// into runtime state. Later state updates are explicit Task 5
-// setter-before-addToolResult calls, never effect overwrites: the installed
-// guard stays set for the life of the mount.
+// Installs the mount-time initial AgentState through the public setter
+// exactly once per mount, and withholds children until the gate itself
+// observes those same snapshot values back through the public state hook —
+// the install notification and the readiness flag flush in separate passes,
+// so latching on the effect alone would mount children one render early on
+// stale state, while comparing readiness against live props could deadlock
+// if props changed between the passes. The snapshot therefore serves both
+// installation and readiness, and later revision changes are never installed
+// or compared: later state updates are explicit Task 5
+// setter-before-addToolResult calls, never effect overwrites.
 function AgentStateGate({
   initialState,
   children,
@@ -30,8 +31,9 @@ function AgentStateGate({
   const current = useAgUiState<AgentState>();
   const installed = useRef(false);
   const [ready, setReady] = useState(false);
+  const snapshot = useRef(initialState);
   const { contract_version, expected_revision, step_id, suggestion_request_id } =
-    initialState;
+    snapshot.current;
 
   useEffect(() => {
     if (installed.current) return;

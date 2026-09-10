@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { Text, View } from "react-native";
 import { fireEvent, render, waitFor } from "@testing-library/react-native";
 import {
@@ -307,6 +307,72 @@ describe("AgentRuntimeProvider", () => {
       expect(state?.expected_revision).toBe(2);
     }
   });
+
+  it("becomes ready with mount-time state when props change during init", async () => {
+    const mounts: Array<AgentState | undefined> = [];
+    const revised: AgentState = {
+      ...STATE_A,
+      expected_revision: 3,
+      suggestion_request_id: "30bfb542-17f1-48a0-9fd8-3930379d5974",
+    };
+    // Child effects run before parent effects, so the gate installs the
+    // mount-time snapshot before the parent switches props — readiness must
+    // follow the same snapshot instead of deadlocking against the new props.
+    function SwitchingHarness() {
+      const [state, setState] = useState<AgentState>(STATE_A);
+      useEffect(() => {
+        setState(revised);
+      }, []);
+      return (
+        <Harness workflowId={WORKFLOW_A} initialState={state} mounts={mounts} />
+      );
+    }
+    const view = await render(<SwitchingHarness />);
+
+    await waitFor(() => expect(view.getByTestId("agent-ready")).toBeTruthy());
+    expect(mounts.length).toBeGreaterThan(0);
+    for (const state of mounts) {
+      expect(state).toEqual(STATE_A);
+    }
+    expect(constructedConfigs()).toHaveLength(1);
+  });
+
+  it("aborts the in-flight transport when unmounted mid-run", async () => {
+    // runtime.thread.cancelRun has no public spy seam (the core class is not
+    // exported), so assert its observable outcome: the fetch signal aborts.
+    let resolveStream!: (response: Response) => void;
+    const signals: AbortSignal[] = [];
+    const fetchImpl = jest.fn(async (_url: unknown, init?: RequestInit) => {
+      if (init?.signal) signals.push(init.signal);
+      return new Promise<Response>((resolve) => {
+        resolveStream = resolve;
+      });
+    });
+    globalThis.fetch = fetchImpl as unknown as typeof fetch;
+    const mounts: Array<AgentState | undefined> = [];
+    const seenIds = new Set<string>();
+    const view = await render(
+      <RunHarness
+        workflowId={WORKFLOW_A}
+        initialState={STATE_A}
+        mounts={mounts}
+        seenIds={seenIds}
+      />,
+    );
+    await waitFor(() => expect(view.getByTestId("agent-ready")).toBeTruthy());
+
+    await fireEvent.changeText(
+      view.getByPlaceholderText("Type a message"),
+      "Plan birthday party",
+    );
+    await fireEvent.press(view.getByText("Send"));
+    await waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+
+    await view.unmount();
+    expect(signals).toHaveLength(1);
+    expect(signals[0].aborted).toBe(true);
+    resolveStream(sseResponse(WORKFLOW_A));
+  }, 30000);
 
   it("posts the workflow UUID as threadId, never main, on a real run", async () => {
     const { bodies, fetchImpl } = installFixtureFetch();
