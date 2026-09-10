@@ -55,7 +55,7 @@ class RevisionExhausted(ValueError):
     """The workflow is at the maximum revision; no new action is possible."""
 
 
-def _fingerprint(payload: dict[str, Any]) -> str:
+def fingerprint_payload(payload: dict[str, Any]) -> str:
     encoded = json.dumps(
         payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode("utf-8")
@@ -63,7 +63,7 @@ def _fingerprint(payload: dict[str, Any]) -> str:
 
 
 def _start_fingerprint(canonical_title: str) -> str:
-    return _fingerprint({"operation": "start", "title": canonical_title})
+    return fingerprint_payload({"operation": "start", "title": canonical_title})
 
 
 def _canonical_action(command: WorkflowCommand) -> dict[str, Any]:
@@ -81,7 +81,7 @@ def _canonical_action(command: WorkflowCommand) -> dict[str, Any]:
 def _action_fingerprint(
     workflow_id: UUID, expected_revision: int, step_id: str, command: WorkflowCommand
 ) -> str:
-    return _fingerprint(
+    return fingerprint_payload(
         {
             "operation": "advance",
             "workflow_id": str(workflow_id),
@@ -92,8 +92,12 @@ def _action_fingerprint(
     )
 
 
-def _current_step_id(workflow_id: UUID, state: str) -> str:
+def current_step_id(workflow_id: UUID, state: str) -> str:
     return f"{workflow_id}:{state}"
+
+
+# Kept for existing internal callers while the helper becomes a shared seam.
+_current_step_id = current_step_id
 
 
 def _snapshot_from_row(row: WorkflowRow) -> WorkflowSnapshot:
@@ -192,7 +196,7 @@ def advance_workflow(
             raise UnsupportedWorkflowDefinition(
                 f"unsupported workflow definition version {row.definition_version}"
             )
-        if step_id != _current_step_id(workflow_id, row.state):
+        if step_id != current_step_id(workflow_id, row.state):
             raise StaleWorkflowStep(
                 "submitted step does not match the current workflow step"
             )
