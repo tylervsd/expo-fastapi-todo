@@ -4,7 +4,7 @@
 
 This is a planned curriculum extension after Phase 6, not an implementation guide or a claim that these features already exist. Each phase still needs its own approved spec before implementation. Keep the existing quick-add experience, authentication boundary, and `/todos` contract working throughout.
 
-The [curriculum roadmap](curriculum-roadmap.md) adds Phase 7 for backend workflow modeling, Phase 8 for server-directed screens, and Phase 9 for workflow reliability. Phase 10 adds Python/OpenRouter suggestions, and Phase 11 adds CopilotKit/AG-UI interactions. Cross-platform E2E and production hardening follow in Phases 12 and 13. Existing guide numbers and checkpoint tags remain unchanged.
+The [curriculum roadmap](curriculum-roadmap.md) adds Phase 7 for backend workflow modeling, Phase 8 for server-directed screens, and Phase 9 for workflow reliability. Phase 10 adds Python/OpenRouter suggestions, and Phase 11 adds assistant-ui/AG-UI interactions. Cross-platform E2E and production hardening follow in Phases 12 and 13. Existing guide numbers and checkpoint tags remain unchanged.
 
 ## Design principle
 
@@ -165,13 +165,13 @@ Use mocked provider responses for normal tests, including malformed output, exce
 
 **Guide after implementation:** `docs/guides/10-llm-assisted-planning.md`.
 
-## Phase 11: interactive AI workflows with CopilotKit and AG-UI
+## Phase 11: interactive AI workflows with assistant-ui and AG-UI
 
 Build on the same Python/OpenRouter integration. Register a small set of frontend interactions: a clarification form and an editable suggestion checklist. The agent chooses a supported interaction and supplies validated arguments; the user supplies missing context or reviews proposed todos. Python validates every resulting business action against the authenticated workflow before saving anything.
 
-Teach the layers explicitly: CopilotKit provides frontend hooks and tool rendering; AG-UI carries agent events and interactions; the existing Python service and PostgreSQL remain authoritative for accepted workflow state. Begin with a fixed event fixture and registered component, then connect the model's tool selection. Rendering, replaying, or reconnecting to an interaction must not itself create todos.
+Teach the layers explicitly: assistant-ui provides frontend hooks and tool rendering; AG-UI carries agent events and interactions; the existing Python service and PostgreSQL remain authoritative for accepted workflow state. Begin with a fixed event fixture and registered component, then connect the model's tool selection. Rendering, replaying, or reconnecting to an interaction must not itself create todos.
 
-Before selecting package versions or writing the implementation spec, verify CopilotKit's React Native/Expo integration on web and iOS, including polyfills, tool rendering, and the Python AG-UI connection. Document whether a Copilot Runtime bridge is needed and how authenticated owner context reaches Python. Such a bridge must not move OpenRouter calls or business rules out of Python. Do not claim cross-platform acceptance until both targets have been observed.
+The [Phase 11 design](superpowers/specs/2026-09-10-agentic-ui-design.md) uses assistant-ui React Native primitives and the AG-UI runtime adapter connected directly to the existing FastAPI server. The isolated [compatibility spike](../spikes/assistant-ui-ag-ui/README.md) validated tool rendering, tool-result continuation, streaming, and cancellation on Expo web and iOS Simulator. Integrate its pinned versions and secure-random initialization, then verify real session authentication, Python event encoding, and workflow recovery in the application. No separate Node backend or hosted UI service is required. Keep OpenRouter calls and business rules in Python; full application acceptance remains pending.
 
 Map run/tool identities to the existing workflow and step/revision boundaries. Reconcile agent events with authoritative API snapshots rather than allowing agent state, TanStack Query, and persisted workflow state to become competing sources of truth. Define reconnect, cancellation, late-event, unknown-tool, malformed-argument, and sign-out behavior. Retain a recoverable manual workflow when the agent interaction fails.
 
@@ -188,8 +188,8 @@ A2UI describes declarative UI; AG-UI carries agent/application interactions. The
 ### Integration references
 
 - [OpenRouter structured outputs](https://openrouter.ai/docs/guides/features/structured-outputs)
-- [CopilotKit React Native quickstart](https://docs.copilotkit.ai/react-native)
-- [CopilotKit generative UI](https://docs.copilotkit.ai/a2a/concepts/generative-ui-overview)
+- [assistant-ui React Native](https://www.assistant-ui.com/docs/react-native)
+- [assistant-ui AG-UI quickstart](https://www.assistant-ui.com/docs/runtimes/ag-ui/quickstart)
 - [AG-UI and generative UI specifications](https://docs.ag-ui.com/concepts/generative-ui-specs)
 
 ## Phase 12 and Phase 13 follow-through
