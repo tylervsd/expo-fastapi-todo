@@ -399,3 +399,13 @@ async def test_clarification_answer_never_leaks_into_errors_or_logs(
         )
     assert "under $50" not in str(error.value)
     assert "under $50" not in caplog.text
+
+
+@pytest.mark.anyio
+async def test_blank_configuration_checked_before_goal_validation() -> None:
+    with pytest.raises(SuggestionsNotConfigured):
+        await request_todo_suggestions(
+            "",
+            OpenRouterConfig(api_key="", model="test/model"),
+            transport=transport_for(httpx.Response(200, json=provider_response(["a", "b"]))),
+        )

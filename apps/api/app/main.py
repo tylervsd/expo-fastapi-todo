@@ -796,10 +796,18 @@ def create_app(
             error_code = SuggestionErrorCode.NOT_CONFIGURED
             titles: tuple[str, ...] | None = None
         else:
+            # Without clarification the legacy two-argument seam is retained so
+            # Phase 10 callables keep working; the keyword is only used when
+            # a clarification was supplied.
             try:
-                titles = await suggestion_runner(
-                    reservation.goal, config, clarification=reservation.clarification
-                )
+                if reservation.clarification is None:
+                    titles = await suggestion_runner(reservation.goal, config)
+                else:
+                    titles = await suggestion_runner(
+                        reservation.goal,
+                        config,
+                        clarification=reservation.clarification,
+                    )
                 error_code = None
             except SuggestionTimeout:
                 titles = None

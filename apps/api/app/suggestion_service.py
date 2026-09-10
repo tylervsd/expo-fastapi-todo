@@ -133,6 +133,12 @@ def _suggestion_fingerprint(
     goal: str,
     clarification: Clarification | None = None,
 ) -> str:
+    """Hash the canonical suggestion identity.
+
+    `clarification` must already be normalized (reserve_suggestion does this
+    once before calling); it is consumed verbatim so omission keeps the exact
+    Phase 10 payload.
+    """
     payload: dict[str, Any] = {
         "operation": "suggest",
         "workflow_id": str(workflow_id),
@@ -141,8 +147,10 @@ def _suggestion_fingerprint(
         "title": goal,
     }
     if clarification is not None:
-        canonical = normalize_clarification(clarification)
-        payload["clarification"] = {"field": canonical.field, "value": canonical.value}
+        payload["clarification"] = {
+            "field": clarification.field,
+            "value": clarification.value,
+        }
     return fingerprint_payload(payload)
 
 

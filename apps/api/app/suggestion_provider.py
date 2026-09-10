@@ -199,7 +199,10 @@ async def request_todo_suggestions(
     clarification: Clarification | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> tuple[str, ...]:
+    api_key = config.api_key.strip()
     model = config.model.strip()
+    if not api_key or not model:
+        raise SuggestionsNotConfigured("OpenRouter suggestions are not configured")
     try:
         canonical_goal = canonicalize_title(goal)
     except ValueError:
