@@ -24,6 +24,7 @@ from uuid import UUID
 
 from ag_ui.core import (
     AssistantMessage,
+    BaseEvent,
     RunAgentInput,
     RunErrorEvent,
     RunFinishedEvent,
@@ -72,7 +73,7 @@ REVIEW_TOOL = "review_todo_suggestions"
 MAX_AGENT_BODY_BYTES = 32 * 1024
 MAX_AGENT_MESSAGES = 12
 MAX_AGENT_TEXT_CODE_POINTS = 1_000
-MAX_AGENT_TOOL_RESULT_CODE_POINTS = 4 * 1024
+MAX_AGENT_TOOL_RESULT_BYTES = 4 * 1024
 
 _CLARIFICATION_FIELDS: tuple[str, ...] = (
     "date",
@@ -144,10 +145,15 @@ def validate_run_input(run_input: RunAgentInput) -> AgentState:
     for message in messages:
         content = getattr(message, "content", None)
         if getattr(message, "role", None) == "tool":
-            if isinstance(content, str) and len(content) > (
-                MAX_AGENT_TOOL_RESULT_CODE_POINTS
-            ):
-                raise AgentValidationError("agent tool result is too large")
+            if isinstance(content, str):
+                try:
+                    tool_result_size = len(content.encode("utf-8"))
+                except UnicodeEncodeError:
+                    raise AgentValidationError(
+                        "agent tool result is too large"
+                    ) from None
+                if tool_result_size > MAX_AGENT_TOOL_RESULT_BYTES:
+                    raise AgentValidationError("agent tool result is too large")
             continue
         if isinstance(content, str):
             if len(content) > MAX_AGENT_TEXT_CODE_POINTS:
@@ -457,7 +463,7 @@ def _parse_history(
 
 def _clarify_tool_events(
     run_id: str, workflow_id: UUID, revision: int, step_id: str, field: str
-) -> list[Any]:
+) -> list[BaseEvent]:
     tool_call_id = f"{run_id}:{CLARIFY_TOOL}:0"
     arguments = json.dumps(
         {
@@ -482,7 +488,7 @@ def _review_tool_events(
     step_id: str,
     request_id: UUID,
     titles: tuple[str, ...],
-) -> list[Any]:
+) -> list[BaseEvent]:
     tool_call_id = f"{run_id}:{REVIEW_TOOL}:0"
     arguments = json.dumps(
         {
@@ -513,23 +519,29 @@ def _ready_snapshot(
     return snapshot
 
 
-def _review_row_ready(
-    session: Session, owner_id: int, workflow_id: UUID, request_id: UUID
-) -> bool:
+def _current_suggestion(
+    session: Session, owner_id: int, workflow_id: UUID
+) -> Any | None:
+    """Latest saved suggestion snapshot regardless of workflow state.
+
+    Returns None when no row exists or the stored row fails closed
+    validation, so callers treat either case as "no current proposal".
+    """
     row = session.scalar(
-        select(WorkflowSuggestionRequestRow).where(
+        select(WorkflowSuggestionRequestRow)
+        .where(
             WorkflowSuggestionRequestRow.owner_id == owner_id,
             WorkflowSuggestionRequestRow.workflow_id == workflow_id,
-            WorkflowSuggestionRequestRow.request_id == request_id,
         )
+        .order_by(WorkflowSuggestionRequestRow.id.desc())
+        .limit(1)
     )
     if row is None:
-        return False
+        return None
     try:
-        snapshot = suggestion_snapshot_from_row(row)
+        return suggestion_snapshot_from_row(row)
     except ValueError:
-        return False
-    return snapshot.status is SuggestionStatus.READY
+        return None
 
 
 async def agent_events(
@@ -537,7 +549,7 @@ async def agent_events(
     owner_id: int,
     session: Session,
     choose: ChoiceCallable = choose_clarification,
-) -> AsyncIterator[Any]:
+) -> AsyncIterator[BaseEvent]:
     """Stream one authenticated agent run as AG-UI events.
 
     Emits `RUN_STARTED`, balanced tool-call events, then exactly one
@@ -568,13 +580,28 @@ async def agent_events(
             continuation = _parse_history(run_input.messages)
             if not isinstance(continuation, _ReviewContinuation):
                 raise AgentValidationError("agent review needs a valid tool result")
+            collect_step = current_step_id(workflow_id, WorkflowState.COLLECT_TASKS.value)
             if continuation.accepted_revision != snapshot.revision:
                 raise AgentValidationError("agent review is stale")
             if continuation.workflow_id != workflow_id:
                 raise AgentValidationError("agent review is stale")
-            if not _review_row_ready(session, owner_id, workflow_id, continuation.request_id):
+            if (
+                continuation.expected_revision != snapshot.revision - 1
+                or continuation.step_id != collect_step
+            ):
                 raise AgentValidationError("agent review is stale")
+            current = _current_suggestion(session, owner_id, workflow_id)
             session.rollback()
+            if (
+                current is None
+                or current.status is not SuggestionStatus.READY
+                or current.request_id != continuation.request_id
+                or current.base_revision != snapshot.revision - 1
+                or current.step_id != collect_step
+            ):
+                raise AgentValidationError("agent review is stale")
+            if tuple(continuation.titles) != tuple(snapshot.proposed_todo_titles):
+                raise AgentValidationError("agent review is stale")
             yield RunFinishedEvent(threadId=str(raw_thread), runId=str(raw_run))
             return
 
@@ -651,10 +678,13 @@ async def agent_events(
             yield event
         yield RunFinishedEvent(threadId=str(raw_thread), runId=str(raw_run))
     except AgentValidationError:
+        session.rollback()
         yield RunErrorEvent(message=_SAFE_INVALID_MESSAGE, code="invalid_request")
     except (OperationalError, SQLAlchemyTimeoutError):
+        session.rollback()
         yield RunErrorEvent(message=_SAFE_INVALID_MESSAGE, code="invalid_request")
     except Exception:  # noqa: BLE001 - map unexpected failures to a safe error event
+        session.rollback()
         yield RunErrorEvent(message=_SAFE_PROVIDER_MESSAGE, code="agent_failed")
 
 

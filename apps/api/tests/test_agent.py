@@ -27,9 +27,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.agent import (
+    AgentValidationError,
     agent_events,
     agent_sse_body,
     choose_clarification,
+    validate_run_input,
 )
 from app.auth_repository import create_user
 from app.main import create_app
@@ -628,6 +630,51 @@ def test_oversize_tool_result_fails(
     assert calls == []
 
 
+def test_tool_result_bound_counts_utf8_bytes(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    owner_id = setup_owner(session_factory)
+    workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
+    state = agent_state(workflow_id, revision, step_id)
+    # "\u00e9" is 2 bytes in UTF-8: 2048 of them are exactly 4096 bytes.
+    exact = make_run(
+        thread_id=workflow_id,
+        messages=[ToolMessage(id="t1", content="\u00e9" * 2048, tool_call_id="c1")],
+        state=state,
+    )
+    validate_run_input(exact)
+    over = make_run(
+        thread_id=workflow_id,
+        messages=[ToolMessage(id="t1", content="\u00e9" * 2049, tool_call_id="c1")],
+        state=state,
+    )
+    with pytest.raises(AgentValidationError):
+        validate_run_input(over)
+    calls: list[str] = []
+    with session_factory() as session:
+        events = collect(
+            agent_events(over, owner_id, session, choose=fake_choice(calls=calls))
+        )
+    assert event_types(events)[-1] == "RUN_ERROR"
+    assert calls == []
+
+
+def test_tool_result_with_lone_surrogate_fails(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    owner_id = setup_owner(session_factory)
+    workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
+    run = make_run(
+        thread_id=workflow_id,
+        messages=[ToolMessage(id="t1", content="\ud800", tool_call_id="c1")],
+        state=agent_state(workflow_id, revision, step_id),
+    )
+    with pytest.raises(AgentValidationError):
+        validate_run_input(run)
+
+
 def test_owner_hidden_workflow_lookup_fails(
     database_session: Session, session_factory: sessionmaker[Session]
 ) -> None:
@@ -1167,6 +1214,192 @@ def test_review_state_without_valid_result_fails(
         )
 
     assert event_types(events)[-1] == "RUN_ERROR"
+    assert calls == []
+
+
+def _review_ack_run(
+    workflow_id: UUID,
+    revision: int,
+    step_id: str,
+    review_revision: int,
+    request_id: UUID,
+    titles: tuple[str, ...],
+    call_step_id: str | None = None,
+) -> RunAgentInput:
+    call_id = "review-run:review_todo_suggestions:0"
+    return make_run(
+        thread_id=workflow_id,
+        run_id=uuid4(),
+        messages=[
+            review_call_msg(
+                "a1", call_id, workflow_id=workflow_id, revision=revision,
+                step_id=call_step_id or step_id, request_id=request_id,
+                titles=titles,
+            ),
+            review_result_msg("t1", call_id, request_id, review_revision),
+        ],
+        state=agent_state(workflow_id, review_revision, f"{workflow_id}:REVIEW"),
+    )
+
+
+def test_review_call_with_stale_revision_fails(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    owner_id = setup_owner(session_factory)
+    workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
+    request_id = make_ready(session_factory, owner_id, workflow_id, revision, step_id)
+    snapshot = make_review(
+        session_factory, owner_id, workflow_id, revision, step_id, READY_TITLES
+    )
+    calls: list[str] = []
+    run = _review_ack_run(
+        workflow_id, snapshot.revision, step_id, snapshot.revision,
+        request_id, READY_TITLES,
+    )
+    with session_factory() as session:
+        events = collect(
+            agent_events(run, owner_id, session, choose=fake_choice(calls=calls))
+        )
+
+    assert event_types(events)[-1] == "RUN_ERROR"
+    assert calls == []
+
+
+def test_review_call_with_wrong_step_fails(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    owner_id = setup_owner(session_factory)
+    workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
+    request_id = make_ready(session_factory, owner_id, workflow_id, revision, step_id)
+    snapshot = make_review(
+        session_factory, owner_id, workflow_id, revision, step_id, READY_TITLES
+    )
+    calls: list[str] = []
+    run = _review_ack_run(
+        workflow_id, revision, step_id, snapshot.revision,
+        request_id, READY_TITLES, call_step_id=f"{workflow_id}:REVIEW",
+    )
+    with session_factory() as session:
+        events = collect(
+            agent_events(run, owner_id, session, choose=fake_choice(calls=calls))
+        )
+
+    assert event_types(events)[-1] == "RUN_ERROR"
+    assert calls == []
+
+
+def test_review_call_with_mismatched_titles_fails(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    owner_id = setup_owner(session_factory)
+    workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
+    request_id = make_ready(session_factory, owner_id, workflow_id, revision, step_id)
+    snapshot = make_review(
+        session_factory, owner_id, workflow_id, revision, step_id, READY_TITLES
+    )
+    calls: list[str] = []
+    run = _review_ack_run(
+        workflow_id, revision, step_id, snapshot.revision,
+        request_id, ("Fabricated title one", "Fabricated title two"),
+    )
+    with session_factory() as session:
+        events = collect(
+            agent_events(run, owner_id, session, choose=fake_choice(calls=calls))
+        )
+
+    assert event_types(events)[-1] == "RUN_ERROR"
+    assert calls == []
+
+
+def test_review_ack_with_older_ready_request_fails(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    owner_id = setup_owner(session_factory)
+    workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
+    older_id = make_ready(
+        session_factory, owner_id, workflow_id, revision, step_id,
+        titles=("Older saved one", "Older saved two"),
+    )
+    newer_titles = ("Newer saved one", "Newer saved two")
+    make_ready(
+        session_factory, owner_id, workflow_id, revision, step_id,
+        titles=newer_titles,
+    )
+    snapshot = make_review(
+        session_factory, owner_id, workflow_id, revision, step_id, newer_titles
+    )
+    calls: list[str] = []
+    run = _review_ack_run(
+        workflow_id, revision, step_id, snapshot.revision,
+        older_id, newer_titles,
+    )
+    with session_factory() as session:
+        events = collect(
+            agent_events(run, owner_id, session, choose=fake_choice(calls=calls))
+        )
+
+    assert event_types(events)[-1] == "RUN_ERROR"
+    assert calls == []
+    assert count_todos(session_factory, owner_id) == 0
+
+
+def test_db_backed_error_paths_close_read_transaction(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    owner_id = setup_owner(session_factory)
+    workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
+    calls: list[str] = []
+    stale_run = make_run(
+        thread_id=workflow_id,
+        messages=[],
+        state=agent_state(workflow_id, revision + 1, step_id),
+    )
+    with session_factory() as session:
+        events = collect(
+            agent_events(stale_run, owner_id, session, choose=fake_choice(calls=calls))
+        )
+        assert event_types(events)[-1] == "RUN_ERROR"
+        assert not session.in_transaction()
+
+    make_ready(session_factory, owner_id, workflow_id, revision, step_id)
+    snapshot = make_review(
+        session_factory, owner_id, workflow_id, revision, step_id, READY_TITLES
+    )
+    invalid_review_run = make_run(
+        thread_id=workflow_id,
+        messages=[user_msg("u1", "hello")],
+        state=agent_state(workflow_id, snapshot.revision, f"{workflow_id}:REVIEW"),
+    )
+    with session_factory() as session:
+        events = collect(
+            agent_events(
+                invalid_review_run, owner_id, session,
+                choose=fake_choice(calls=calls),
+            )
+        )
+        assert event_types(events)[-1] == "RUN_ERROR"
+        assert not session.in_transaction()
+
+    with session_factory() as session:
+        assessing = start_workflow(session, owner_id, "Another plan", uuid4())
+    assessing_run = make_run(
+        thread_id=assessing.id,
+        messages=[],
+        state=agent_state(assessing.id, 0, f"{assessing.id}:ASSESS_TASK"),
+    )
+    with session_factory() as session:
+        events = collect(
+            agent_events(
+                assessing_run, owner_id, session, choose=fake_choice(calls=calls)
+            )
+        )
+        assert event_types(events)[-1] == "RUN_ERROR"
+        assert not session.in_transaction()
     assert calls == []
 
 
