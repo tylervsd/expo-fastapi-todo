@@ -165,7 +165,43 @@ required-parameter/schema compatibility for that configured model on that
 observation date. This was a provider smoke, not a full application journey;
 no key, prompt, raw response, or title text was recorded.
 
-## 6. Acceptance record
+## 6. Learner recovery exercise (not a manual acceptance result)
+
+Use the injected fake provider in the API/component tests (or a local test
+harness) so this exercise never calls OpenRouter or incurs provider cost:
+
+1. Start a workflow and answer the deterministic questions until
+   `COLLECT_TASKS`. Capture the current revision and step ID.
+2. Submit a suggestion request with a fresh UUID while configuring the fake
+   provider to raise `SuggestionTimeout`. Verify the safe `504` response has
+   `detail.code: "timeout"`, `GET /todo-workflows/{id}/suggestions` returns a
+   saved `failed` record with no titles, the workflow revision is unchanged,
+   and the todo list is still empty. Repeat with `InvalidSuggestionOutput` and
+   verify the safe `502`/`invalid_output` result.
+3. Do not retry automatically. Reusing either failed UUID must replay the
+   saved failure without another provider invocation. To try again, explicitly
+   start another request with a new UUID; the fake may now return two or more
+   valid titles. Verify the returned proposal is still only an editable
+   suggestion and has not created todos.
+4. For the no-regeneration path, let the fake return a ready proposal once,
+   then simulate a lost response or restart after persistence. On remount,
+   fetch the authoritative workflow first and then `GET` its suggestion record.
+   Verify the saved ready titles return without a second provider call. If the
+   local request record is present, offer **Retry saved request** rather than
+   sending it automatically; retrying the same UUID must recover the saved
+   result.
+5. Edit or remove at least one recovered title, submit the reviewed 2–10
+   titles through the existing action, and verify todos remain at zero until
+   the explicit **Confirm** action. A stale or superseded late response must
+   not replace the edited draft.
+
+Expected safe outcomes are a durable failure or proposal, no hidden retry,
+no generated title replacing user text, no workflow revision change during
+suggestion work, and no todo creation before confirmation. This exercise is a
+teaching procedure, not evidence that the manual web or iOS rows below were
+performed in this pass.
+
+## 7. Acceptance record
 
 Automated tests use deterministic fake providers and deferred promises. They
 prove provider validation and bounds, database ownership/replay/supersession,
@@ -190,7 +226,7 @@ not claim observed focus movement, live announcements, sign-out isolation,
 manual fallback, invalid-output/timeout screens, lost response retry, or
 late superseded-result behavior in a real UI.
 
-## 7. Honest limits
+## 8. Honest limits
 
 This is intentionally a synchronous request/response teaching flow. A server
 restart can leave a journal row pending until the user explicitly starts a new
