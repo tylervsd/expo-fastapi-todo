@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 
 import httpx
 import pytest
@@ -32,6 +32,17 @@ def provider_response(titles: list[str]) -> dict[str, object]:
             }
         ]
     }
+
+
+class SingleChunkStream(httpx.AsyncByteStream):
+    def __init__(self, chunk: bytes) -> None:
+        self.chunk = chunk
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        yield self.chunk
+
+    async def aclose(self) -> None:
+        pass
 
 
 def transport_for(
@@ -214,14 +225,14 @@ async def test_http_200_top_level_error_is_provider_error() -> None:
 
 
 @pytest.mark.anyio
-async def test_response_larger_than_16_kib_is_rejected_before_parsing() -> None:
+async def test_oversized_single_chunk_is_rejected_before_buffering() -> None:
+    oversized_chunk = b"{" + b"x" * (16 * 1024) + b"}"
+    response = httpx.Response(200, stream=SingleChunkStream(oversized_chunk))
     with pytest.raises(InvalidSuggestionOutput, match="size"):
         await request_todo_suggestions(
             GOAL,
             CONFIG,
-            transport=transport_for(
-                httpx.Response(200, content=b"{" + b"x" * (16 * 1024) + b"}")
-            ),
+            transport=transport_for(response),
         )
 
 

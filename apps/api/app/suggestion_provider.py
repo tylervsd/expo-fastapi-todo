@@ -168,11 +168,11 @@ async def request_todo_suggestions(
                         )
                     response_body = bytearray()
                     async for chunk in response.aiter_bytes():
-                        response_body.extend(chunk)
-                        if len(response_body) > MAX_RESPONSE_BYTES:
+                        if len(response_body) + len(chunk) > MAX_RESPONSE_BYTES:
                             raise InvalidSuggestionOutput(
                                 "OpenRouter response exceeded the size limit"
                             )
+                        response_body.extend(chunk)
     except (TimeoutError, httpx.TimeoutException):
         raise SuggestionTimeout("OpenRouter request timed out") from None
     except (ProviderUnavailable, InvalidSuggestionOutput):
