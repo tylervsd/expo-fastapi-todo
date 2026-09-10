@@ -27,6 +27,7 @@ jest.mock("react-native", () => {
   const TestPressable = (props: Record<string, unknown>) =>
     mockReact.createElement("View", {
       ...props,
+      style: typeof props.style === "function" ? props.style({ pressed: false }) : props.style,
       accessible: true,
       accessibilityState:
         props.disabled === undefined

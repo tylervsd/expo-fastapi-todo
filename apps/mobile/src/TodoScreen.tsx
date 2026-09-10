@@ -430,50 +430,64 @@ export function TodoScreen({
         {hasData && visible.length === 0 && <Text style={styles.empty}>{empty}</Text>}
         {visible.map((item) => (
           <View key={item.id} style={styles.todoRow}>
-            <View style={styles.todoSummary}>
-              <PressableWithKeyDown
-                accessibilityRole="checkbox"
-                accessibilityLabel={item.title}
-                accessibilityState={{ checked: item.completed }}
-                aria-checked={item.completed}
+            <View style={styles.todoTopRow}>
+              <View style={styles.todoSummary}>
+                <PressableWithKeyDown
+                  accessibilityRole="checkbox"
+                  accessibilityLabel={item.title}
+                  accessibilityState={{ checked: item.completed }}
+                  aria-checked={item.completed}
+                  disabled={writesDisabled}
+                  style={styles.checkboxHitbox}
+                  onPress={() => toggleTodo(item.id)}
+                  onKeyDown={(event) => {
+                    if (event.nativeEvent.key === " ") {
+                      event.preventDefault();
+                      toggleTodo(item.id);
+                    }
+                  }}
+                >
+                  <View style={[styles.checkbox, item.completed && styles.checkedBox]}>
+                    {item.completed && <Text style={styles.checkmark}>✓</Text>}
+                  </View>
+                </PressableWithKeyDown>
+                <Text
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                  style={[styles.todoTitle, item.completed && styles.completedTitle]}
+                >
+                  {item.title}
+                </Text>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Edit ${item.title}`}
                 disabled={writesDisabled}
-                style={styles.checkboxHitbox}
-                onPress={() => toggleTodo(item.id)}
-                onKeyDown={(event) => {
-                  if (event.nativeEvent.key === " ") {
-                    event.preventDefault();
-                    toggleTodo(item.id);
-                  }
-                }}
+                style={({ pressed }) => [
+                  styles.rowButton,
+                  styles.editButton,
+                  pressed && styles.rowButtonPressed,
+                  writesDisabled && styles.rowButtonDisabled,
+                ]}
+                onPress={() => startEdit(item.id)}
               >
-                <View style={[styles.checkbox, item.completed && styles.checkedBox]}>
-                  {item.completed && <Text style={styles.checkmark}>✓</Text>}
-                </View>
-              </PressableWithKeyDown>
-              <Text
-                style={[styles.todoTitle, item.completed && styles.completedTitle]}
+                <Text style={[styles.rowButtonText, styles.editButtonText]}>Edit</Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Delete ${item.title}`}
+                disabled={writesDisabled}
+                style={({ pressed }) => [
+                  styles.rowButton,
+                  styles.deleteButton,
+                  pressed && styles.rowButtonPressed,
+                  writesDisabled && styles.rowButtonDisabled,
+                ]}
+                onPress={() => askDelete(item.id)}
               >
-                {item.title}
-              </Text>
+                <Text style={[styles.rowButtonText, styles.deleteButtonText]}>Delete</Text>
+              </Pressable>
             </View>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Edit ${item.title}`}
-              disabled={writesDisabled}
-              style={styles.rowButton}
-              onPress={() => startEdit(item.id)}
-            >
-              <Text style={styles.rowButtonText}>Edit</Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Delete ${item.title}`}
-              disabled={writesDisabled}
-              style={styles.rowButton}
-              onPress={() => askDelete(item.id)}
-            >
-              <Text style={styles.rowButtonText}>Delete</Text>
-            </Pressable>
             {editingId === item.id && (
               <View style={styles.inlineEditor}>
                 <TextInput
@@ -633,8 +647,9 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   todoRow: {
-    borderColor: "#d5dce6",
-    borderRadius: 10,
+    backgroundColor: "#ffffff",
+    borderColor: "#e2e8f0",
+    borderRadius: 14,
     borderWidth: 1,
     gap: 12,
     minHeight: 56,
@@ -642,10 +657,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 8,
   },
+  todoTopRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 8,
+    minWidth: 0,
+  },
   todoSummary: {
     alignItems: "center",
     flexDirection: "row",
-    gap: 12,
+    flex: 1,
+    gap: 8,
+    minWidth: 0,
   },
   checkboxHitbox: {
     alignItems: "center",
@@ -683,18 +706,37 @@ const styles = StyleSheet.create({
   },
   rowButton: {
     alignItems: "center",
-    borderColor: "#aeb9c9",
     borderRadius: 10,
     borderWidth: 1,
+    flexShrink: 0,
     justifyContent: "center",
     minHeight: 44,
     minWidth: 44,
-    paddingHorizontal: 16,
+    paddingHorizontal: 10,
+  },
+  editButton: {
+    backgroundColor: "#e7edff",
+    borderColor: "#c5d3ff",
+  },
+  deleteButton: {
+    backgroundColor: "#fff0f0",
+    borderColor: "#f3c7c7",
+  },
+  rowButtonPressed: {
+    opacity: 0.72,
+  },
+  rowButtonDisabled: {
+    opacity: 0.45,
   },
   rowButtonText: {
-    color: "#173da0",
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: "700",
+  },
+  editButtonText: {
+    color: "#173da0",
+  },
+  deleteButtonText: {
+    color: "#b42318",
   },
   inlineEditor: {
     gap: 10,
