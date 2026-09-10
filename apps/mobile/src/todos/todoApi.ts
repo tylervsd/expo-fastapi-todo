@@ -360,7 +360,13 @@ function requestJson(
             } catch {
               suggestionCode = undefined;
             }
-            if (suggestionCode !== undefined) {
+            const codeMatchesStatus =
+              (suggestionCode === "not_configured" && result.status === 503) ||
+              (suggestionCode === "timeout" && result.status === 504) ||
+              ((suggestionCode === "provider_unavailable" ||
+                suggestionCode === "invalid_output") &&
+                result.status === 502);
+            if (suggestionCode !== undefined && codeMatchesStatus) {
               finish(
                 new TodoApiError(
                   "unavailable",

@@ -653,6 +653,25 @@ describe("todo workflow transport", () => {
   });
 
   it.each([
+    [401, "timeout"],
+    [502, "timeout"],
+    [503, "invalid_output"],
+    [504, "provider_unavailable"],
+  ])("does not trust a suggestion error code with the wrong HTTP status", async (status, code) => {
+    const fetchImpl = jest.fn().mockResolvedValue(
+      response(status, { detail: { code, message: "hidden" } }),
+    );
+    const pending = suggestWorkflowTodos(
+      workflowId,
+      { request_id: requestId, expected_revision: 2, step_id: `${workflowId}:COLLECT_TASKS` },
+      { apiUrl, fetchImpl },
+    );
+    const expectedKind = status === 401 ? "auth-required" : "unavailable";
+    await expect(pending).rejects.toMatchObject({ kind: expectedKind });
+    await expect(pending).rejects.not.toMatchObject({ suggestionCode: code });
+  });
+
+  it.each([
     [
       "task breakdown",
       {

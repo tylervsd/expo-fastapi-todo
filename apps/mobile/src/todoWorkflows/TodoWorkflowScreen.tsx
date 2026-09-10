@@ -360,6 +360,16 @@ export function TodoWorkflowScreen({
     }
     setSuggestionRecord(fetched);
     setSuggestionFetching(false);
+    const retained = pendingRecordRef.current;
+    if (
+      retained?.operation === "suggest" &&
+      retained.workflowId === id &&
+      retained.body.expected_revision === expectedRevision &&
+      retained.body.step_id === expectedStepId &&
+      (fetched.status !== "pending" || fetched.request_id !== retained.requestId)
+    ) {
+      void clearPendingRecord(retained, captured);
+    }
     if (
       fetched.status === "ready" &&
       tasksDraftRef.current === "" &&
@@ -392,6 +402,29 @@ export function TodoWorkflowScreen({
     // a suggestion GET never changes either value.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workflowId, snapshot?.revision, snapshot?.view.step_id, fresh, sessionEpoch]);
+
+  // The pending-record read and the authoritative suggestion GET can finish
+  // in either order on restart. Re-run the resolution check when the stored
+  // record arrives after the GET so a ready/failed result never leaves a
+  // retry lock on an already-settled request.
+  useEffect(() => {
+    const retained = pendingRecord;
+    const fetched = suggestionRecord;
+    if (
+      retained?.operation !== "suggest" ||
+      fetched === null ||
+      retained.workflowId !== fetched.workflow_id ||
+      retained.body.expected_revision !== fetched.base_revision ||
+      retained.body.step_id !== fetched.step_id ||
+      (fetched.status === "pending" && fetched.request_id === retained.requestId)
+    ) {
+      return;
+    }
+    void clearPendingRecord(retained, sessionEpoch);
+    // clearPendingRecord is recreated with the current render state; the
+    // tracked values above are the intended resolution trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingRecord, suggestionRecord, sessionEpoch]);
 
   const reconcileSuggestionAfterWrite = async (
     record: SuggestRecord,
@@ -1535,7 +1568,7 @@ function TaskBreakdownTemplate({
       <TextInput
         ref={inputRef}
         accessibilityLabel="Todo titles (one per line)"
-        editable={!disabled || suggesting}
+        editable={!disabled || suggesting || suggestion?.status === "pending"}
         value={draft}
         multiline
         onChangeText={onChangeDraft}
