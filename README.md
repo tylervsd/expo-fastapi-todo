@@ -16,7 +16,9 @@ The current implementation on `main` includes **Phase 9 — Reliable, resumable 
 
 Implementation and acceptance are distinct. [Guide 09](docs/guides/09-workflow-reliability.md#phase-9-acceptance-record) records observed web acceptance and partial iOS Simulator acceptance. The iOS record includes quick-add, sign-in, the declined-breakdown path, cancellation, restart/resume, and lost-action retry; several scenarios remain unexercised, including the full breakdown path, lost-start/confirmation responses, competing revisions, and accessibility. Consult the guide for the exact observations and gaps. Earlier acceptance records in [Guide 06](docs/guides/06-auth.md#phase-6-acceptance-record), [Guide 07](docs/guides/07-backend-workflows.md#phase-7-acceptance-record), and [Guide 08](docs/guides/08-server-directed-ui.md#phase-8-acceptance-record) are not retroactively marked complete by the merge.
 
-**Next: Phase 10 — LLM-assisted planning with Python and OpenRouter.** Its [draft spec](docs/superpowers/specs/2026-09-10-llm-assisted-planning-design.md) and [implementation plan](docs/superpowers/plans/2026-09-10-llm-assisted-planning.md) are available for review on `codex/phase-10-llm-assisted-planning`; no LLM integration is implemented yet.
+**Phase 10 is implemented on `codex/phase-10-llm-assisted-planning`, but is not merged or checkpointed.** [Guide 10](docs/guides/10-llm-assisted-planning.md) records the 398-test PostgreSQL-backed API suite, 375-test mobile suite, quality gate, and one successful `openrouter/free` structured-output smoke on 2026-09-10. Interactive web and iOS acceptance rows remain unobserved there.
+
+**Next: Phase 11 — interactive AI workflows with CopilotKit and AG-UI.** The [Phase 10 spec](docs/superpowers/specs/2026-09-10-llm-assisted-planning-design.md) and [implementation plan](docs/superpowers/plans/2026-09-10-llm-assisted-planning.md) remain available as the preceding design record.
 
 ## Reference Mac
 
@@ -77,7 +79,7 @@ The repository's `scripts/doctor` command is read-only. It inspects versions, pa
 
 See the [provisional curriculum roadmap](docs/curriculum-roadmap.md) for the fourteen phases (0-13). Each phase gets an approved spec before implementation, so later details can be refined without hiding the boundary between decisions and code.
 
-Phases 7–9 are merged and provide backend workflow modeling, server-directed screens, and reliable resumption through one guided-todo creation feature. Phase 10 adds LLM-assisted planning through Python and OpenRouter; Phase 11 adds interactive AI workflows with CopilotKit and AG-UI. Cross-platform E2E follows in Phase 12, then production hardening in Phase 13. A2UI remains an optional later exercise in declarative UI composition. The [workflow learning plan](docs/workflow-learning-plan.md) describes the proposed behavior and exercises; Phases 10–13 remain planned curriculum additions, not implemented functionality or completed guides.
+Phases 7–9 are merged and provide backend workflow modeling, server-directed screens, and reliable resumption through one guided-todo creation feature. Phase 10 is implemented on its feature branch with automated verification and a provider smoke, but remains unmerged and its interactive acceptance is incomplete. Phase 11 adds interactive AI workflows with CopilotKit and AG-UI. Cross-platform E2E follows in Phase 12, then production hardening in Phase 13. A2UI remains an optional later exercise in declarative UI composition. The [workflow learning plan](docs/workflow-learning-plan.md) describes the proposed behavior and exercises; Phases 11–13 remain planned curriculum additions, not implemented functionality or completed guides.
 
 ## Testing strategy
 
