@@ -2,7 +2,7 @@
 
 This roadmap is provisional. Every phase receives its own approved spec before implementation; the spec defines goals, non-goals, user-visible behavior, contracts, error cases, accessibility considerations, and the intended testing-pyramid layer. The repository evolves on `main` with numbered guides and annotated checkpoint tags rather than permanent phase branches or duplicate repositories.
 
-Phase numbers start at 0 to match the README, existing guides, and checkpoint convention. This revision expands the curriculum to fourteen phases (0-13); it does not renumber existing guides or tags. The implemented checkpoint remains Phase 6. Phases 7 and 8 have feature-branch implementations with acceptance still pending; Phases 9-13 are planned, not completed features.
+Phase numbers start at 0 to match the README, existing guides, and checkpoint convention. This revision expands the curriculum to fourteen phases (0-13); it does not renumber existing guides or tags. The implementation on `main` includes Phases 7–9, with Phase 9 merged in PR #6 (`12cd7f5`). Merge status does not complete outstanding manual acceptance: see the numbered guides, especially Guide 09's partial iOS record. Phase 10 is implemented on its feature branch but is not merged or checkpointed; Phases 11–13 remain planned.
 
 Phases 7-9 build one guided-todo creation feature to teach backend-owned state transitions, server-directed screen templates, and reliable resumption. Phases 10 and 11 extend that feature with validated LLM suggestions and interactive agent-selected components, respectively. This keeps model integration separate from the agent/UI protocol lesson. The existing quick-add and `/todos` contract remain available. See the [workflow learning plan](workflow-learning-plan.md) for the proposed scenario, API examples, state ownership, failure cases, and phase exercises. That plan informs each future approved phase spec; it is not a substitute for the spec gate or an implementation guide.
 
@@ -70,7 +70,7 @@ Phases 7-9 build one guided-todo creation feature to teach backend-owned state t
 - Testing-pyramid layer introduced: Table-driven transition unit tests and targeted API/PostgreSQL tests for saved progress, validation, ownership, cancellation, and commit/rollback behavior.
 - Learning experiment: Submit an action that is invalid in the current state and verify that the backend rejects it without advancing the workflow or creating todos.
 - Non-goals: A general-purpose workflow engine, arbitrary JSON layouts, a new navigation library, background workers, and concurrency/retry guarantees that belong to Phase 9.
-- Spec gate: This phase received its approved spec before implementation, covering the transition table, state-ownership model, command/response examples, persistence boundary, accessibility behavior, error cases, and acceptance criteria. Implementation is complete on its feature branch; web and iOS acceptance observations are pending.
+- Spec gate: This phase received its approved spec before implementation, covering the transition table, state-ownership model, command/response examples, persistence boundary, accessibility behavior, error cases, and acceptance criteria. Implementation is merged; the phase guide still records pending web and iOS acceptance observations.
 
 ## 8. Server-directed screens and reusable templates
 
@@ -80,7 +80,7 @@ Phases 7-9 build one guided-todo creation feature to teach backend-owned state t
 - Testing-pyramid layer introduced: API contract tests and component tests for template selection, accessibility, submitting state, draft reset between questions, and unsupported-template handling.
 - Learning experiment: Add another yes/no question and its branching rule in the backend without adding frontend workflow branching or a new screen component.
 - Non-goals: Downloading executable UI, accepting arbitrary navigation URLs, server-defined layout trees, optimistic workflow advancement, and requiring Expo Router. New template types still need client support.
-- Spec gate: This phase received its approved spec before implementation, covering the supported view/action contracts, state-to-view mapping, client rendering boundary, step identity rules, and unknown-contract fallback. Implementation is complete on its feature branch; web and iOS acceptance observations are pending.
+- Spec gate: This phase received its approved spec before implementation, covering the supported view/action contracts, state-to-view mapping, client rendering boundary, step identity rules, and unknown-contract fallback. Implementation is merged; the phase guide still records pending web and iOS acceptance observations.
 
 ## 9. Reliable, resumable workflows
 
@@ -91,7 +91,7 @@ Phases 7-9 build one guided-todo creation feature to teach backend-owned state t
 - Learning experiment: Commit a confirmation but lose its response, retry with the same submission identifier, and verify one completion result and one intended set of todos. Race different submissions against the same revision and verify only one advances.
 - Non-goals: Offline-first synchronization, event sourcing, distributed exactly-once processing, external side effects, and background orchestration.
 - Spec gate: Before implementation, approve the transaction boundary, idempotency scope and payload checks, atomic conflict behavior, active-workflow discovery, version compatibility, and failure/recovery matrix.
-- Implementation status: Implemented on the `codex/phase-09-workflow-reliability` branch (Guide 09 written from verified behavior; focused suites and the full quality gate green). Web acceptance is observed (all rows: interactive browser flows plus HTTP checks). iOS simulator acceptance is partially observed (Maestro-driven quick-add, signup/sign-in, and start/first-advance verified; remaining rows unexercised post-fix).
+- Implementation status: Merged in PR #6 (`12cd7f5`). Guide 09 records the implementation verification and observed web acceptance. iOS acceptance is partial, including declined breakdown, cancellation, restart/resume, and lost-action retry; see its acceptance table for all remaining gaps.
 
 ## 10. LLM-assisted planning with Python and OpenRouter
 
@@ -102,6 +102,7 @@ Phases 7-9 build one guided-todo creation feature to teach backend-owned state t
 - Learning experiment: Return invalid model output or simulate a timeout and verify that the draft remains recoverable and no todos are created. Resume a saved suggestion set without generating it again.
 - Non-goals: Agent frameworks, streaming UI, background workers, autonomous todo creation, and model-generated layouts. API keys stay in Python-side configuration; validation and bounded usage begin here rather than waiting for hardening.
 - Spec gate: Before implementation, approve the provider/model contract, prompt and output limits, edit/review behavior, request timeout and retry policy, stale-result handling, data sent to the provider, and web/iOS acceptance criteria.
+- Implementation status: Implemented on `codex/phase-10-llm-assisted-planning`. The PostgreSQL-backed API suite (398/398), mobile suite (375/375), quality gate, and one configured `openrouter/free` structured-output smoke passed on 2026-09-10. Guide 10 records these results and leaves interactive web and iOS acceptance rows unobserved; the branch is not merged or checkpointed.
 
 ## 11. Interactive AI workflows with CopilotKit and AG-UI
 

@@ -31,7 +31,7 @@ from app.todo_repository import (
 )
 from app.todo_repository import set_title as set_todo_title
 
-REVISION = "2026090901"
+REVISION = "2026091001"
 
 
 def test_alembic_cli_loads_api_package() -> None:
@@ -60,6 +60,7 @@ def test_migration_creates_expected_todos_shape(database_engine: Engine) -> None
         "sessions",
         "todo_workflow_action_requests",
         "todo_workflow_start_requests",
+        "todo_workflow_suggestion_requests",
         "todo_workflows",
         "todos",
         "users",

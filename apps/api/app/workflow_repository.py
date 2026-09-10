@@ -9,6 +9,7 @@ from sqlalchemy import (
     ForeignKey,
     ForeignKeyConstraint,
     Identity,
+    Index,
     Integer,
     PrimaryKeyConstraint,
     Text,
@@ -164,6 +165,86 @@ class WorkflowActionRequestRow(Base):
     accepted_snapshot: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False
     )
+
+
+class WorkflowSuggestionRequestRow(Base):
+    __tablename__ = "todo_workflow_suggestion_requests"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_suggestion_requests"),
+        UniqueConstraint(
+            "owner_id",
+            "workflow_id",
+            "request_id",
+            name="uq_suggestion_requests_owner_workflow_request",
+        ),
+        ForeignKeyConstraint(
+            ["workflow_id", "owner_id"],
+            ["todo_workflows.public_id", "todo_workflows.owner_id"],
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            f"request_fingerprint ~ '{FINGERPRINT_HEX_PATTERN}'",
+            name="ck_suggestion_requests_fingerprint_hex",
+        ),
+        CheckConstraint(
+            f"base_revision BETWEEN 0 AND {MAX_WORKFLOW_REVISION}",
+            name="ck_suggestion_requests_revision_range",
+        ),
+        CheckConstraint(
+            "char_length(step_id) >= 1",
+            name="ck_suggestion_requests_step_id",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'ready', 'failed', 'superseded')",
+            name="ck_suggestion_requests_status",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(proposed_titles) = 'array'",
+            name="ck_suggestion_requests_titles_array",
+        ),
+        CheckConstraint(
+            "error_code IS NULL OR error_code IN "
+            "('not_configured', 'timeout', 'provider_unavailable', 'invalid_output')",
+            name="ck_suggestion_requests_error_code",
+        ),
+        CheckConstraint(
+            "(status = 'ready' AND error_code IS NULL AND "
+            "CASE WHEN jsonb_typeof(proposed_titles) = 'array' "
+            "THEN jsonb_array_length(proposed_titles) ELSE -1 END BETWEEN 2 AND 10) "
+            "OR (status = 'failed' AND error_code IS NOT NULL AND "
+            "proposed_titles = '[]'::jsonb) OR (status IN ('pending', 'superseded') "
+            "AND error_code IS NULL AND proposed_titles = '[]'::jsonb)",
+            name="ck_suggestion_requests_status_fields",
+        ),
+        Index(
+            "ix_suggestion_requests_owner_workflow_id",
+            "owner_id",
+            "workflow_id",
+            "id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), nullable=False)
+    owner_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    workflow_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False
+    )
+    request_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False
+    )
+    request_fingerprint: Mapped[str] = mapped_column(Text, nullable=False)
+    base_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    step_id: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    proposed_titles: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    error_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+# Short aliases keep the journal row discoverable to service and persistence callers.
+SuggestionRequestRow = WorkflowSuggestionRequestRow
+SuggestionRow = WorkflowSuggestionRequestRow
 
 
 def create_workflow(

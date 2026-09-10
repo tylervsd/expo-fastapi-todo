@@ -15,3 +15,8 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 *.pyc
+
+# Local credentials; only placeholder examples belong in Git.
+.env
+.env.*
+!.env.example

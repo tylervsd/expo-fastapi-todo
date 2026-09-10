@@ -3,7 +3,12 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-
 import { QueryClientProvider, timeoutManager, type QueryClient } from "@tanstack/react-query";
 import { StyleSheet } from "react-native";
 import { createAppQueryClient } from "../../App";
-import { TodoApiError, type TodoWorkflow, type WorkflowActionRequest } from "../todos/todoApi";
+import {
+  TodoApiError,
+  type TodoWorkflow,
+  type WorkflowActionRequest,
+  type WorkflowSuggestion,
+} from "../todos/todoApi";
 import {
   createMemoryPendingWriteStorage,
   createPendingWriteStore,
@@ -89,6 +94,8 @@ type MockWorkflowApi = {
   startWorkflow: jest.MockedFunction<TodoWorkflowScreenApi["startWorkflow"]>;
   getWorkflow: jest.MockedFunction<TodoWorkflowScreenApi["getWorkflow"]>;
   advanceWorkflow: jest.MockedFunction<TodoWorkflowScreenApi["advanceWorkflow"]>;
+  getSuggestion: jest.MockedFunction<TodoWorkflowScreenApi["getSuggestion"]>;
+  suggestWorkflow: jest.MockedFunction<TodoWorkflowScreenApi["suggestWorkflow"]>;
   listWorkflows: jest.MockedFunction<TodoWorkflowScreenApi["listWorkflows"]>;
 };
 
@@ -96,6 +103,10 @@ const makeApi = (): MockWorkflowApi => ({
   startWorkflow: jest.fn() as MockWorkflowApi["startWorkflow"],
   getWorkflow: jest.fn() as MockWorkflowApi["getWorkflow"],
   advanceWorkflow: jest.fn() as MockWorkflowApi["advanceWorkflow"],
+  getSuggestion: jest.fn(async (_id: string, _options: { signal: AbortSignal }): Promise<WorkflowSuggestion> => {
+    throw new TodoApiError("not-found", "That plan has no saved todo suggestions.");
+  }) as MockWorkflowApi["getSuggestion"],
+  suggestWorkflow: jest.fn() as MockWorkflowApi["suggestWorkflow"],
   listWorkflows: jest.fn() as MockWorkflowApi["listWorkflows"],
 });
 
@@ -151,6 +162,42 @@ const offerWorkflow: TodoWorkflow = {
       { id: "no", label: "No" },
     ],
   },
+};
+
+const readySuggestion: WorkflowSuggestion = {
+  contract_version: 1,
+  workflow_id: WORKFLOW_ID,
+  request_id: REQUEST_ID,
+  base_revision: 2,
+  step_id: `${WORKFLOW_ID}:COLLECT_TASKS`,
+  status: "ready",
+  proposed_titles: ["Choose a date", "Invite guests"],
+  error_code: null,
+};
+
+const newerSuggestion: WorkflowSuggestion = {
+  ...readySuggestion,
+  request_id: REQUEST_ID_2,
+  proposed_titles: ["Newer saved title", "Another newer title"],
+};
+
+const pendingSuggestion: WorkflowSuggestion = {
+  ...readySuggestion,
+  status: "pending",
+  proposed_titles: [],
+};
+
+const failedSuggestion: WorkflowSuggestion = {
+  ...readySuggestion,
+  status: "failed",
+  proposed_titles: [],
+  error_code: "invalid_output",
+};
+
+const supersededSuggestion: WorkflowSuggestion = {
+  ...readySuggestion,
+  status: "superseded",
+  proposed_titles: [],
 };
 
 const collectWorkflow: TodoWorkflow = {
@@ -228,6 +275,19 @@ const completedWorkflow: TodoWorkflow = {
         completed: false,
       },
     ],
+  },
+};
+
+const savedSuggestionWrite: PendingWorkflowWrite = {
+  version: 1,
+  ownerId: USER_ID,
+  requestId: REQUEST_ID,
+  operation: "suggest",
+  workflowId: WORKFLOW_ID,
+  body: {
+    request_id: REQUEST_ID,
+    expected_revision: 2,
+    step_id: `${WORKFLOW_ID}:COLLECT_TASKS`,
   },
 };
 
@@ -761,6 +821,294 @@ const driveToCollect = async (api: MockWorkflowApi) => {
   );
   await waitForQuiescence();
 };
+
+it("offers suggestions only from the server-supported task breakdown template", async () => {
+  const api = makeApi();
+  await renderHost(api);
+  await driveToCollect(api);
+  expect(screen.getByRole("button", { name: "Suggest todos" })).toBeTruthy();
+  api.getWorkflow.mockResolvedValue(collectWorkflow);
+  api.getSuggestion.mockResolvedValueOnce(readySuggestion);
+  api.suggestWorkflow.mockResolvedValueOnce(readySuggestion);
+
+  await fireEvent.press(screen.getByRole("button", { name: "Suggest todos" }));
+  await waitFor(() => expect(api.suggestWorkflow).toHaveBeenCalledWith(WORKFLOW_ID, {
+    request_id: REQUEST_ID,
+    expected_revision: 2,
+    step_id: `${WORKFLOW_ID}:COLLECT_TASKS`,
+  }));
+  await waitFor(() =>
+    expect(screen.getByLabelText("Todo titles (one per line)")).toHaveProp(
+      "value",
+      "Choose a date\nInvite guests",
+    ),
+  );
+  expect(api.advanceWorkflow).toHaveBeenCalledTimes(2);
+});
+
+it("keeps a user edit when a deferred suggestion completes", async () => {
+  const api = makeApi();
+  await renderHost(api);
+  await driveToCollect(api);
+  api.getWorkflow.mockResolvedValue(collectWorkflow);
+  const pending = deferred<WorkflowSuggestion>();
+  api.suggestWorkflow.mockReturnValueOnce(pending.promise);
+  await fireEvent.press(screen.getByRole("button", { name: "Suggest todos" }));
+  await fireEvent.changeText(
+    screen.getByLabelText("Todo titles (one per line)"),
+    "My own task",
+  );
+  api.getSuggestion.mockResolvedValueOnce(readySuggestion);
+  expect(screen.getByLabelText("Todo titles (one per line)")).toHaveProp("value", "My own task");
+  await act(async () => pending.resolve(readySuggestion));
+  await waitFor(() => expect(screen.queryByText("Getting todo suggestions…")).toBeNull());
+  expect(screen.getByLabelText("Todo titles (one per line)")).toHaveProp(
+    "value",
+    "My own task",
+  );
+  expect(screen.getByRole("button", { name: "Apply saved suggestions" })).toBeTruthy();
+});
+
+it("ignores a deferred suggestion after the workflow advances to another step", async () => {
+  const api = makeApi();
+  const { client } = await renderHost(api);
+  await driveToCollect(api);
+  api.getWorkflow.mockResolvedValue(collectWorkflow);
+  const pending = deferred<WorkflowSuggestion>();
+  api.suggestWorkflow.mockReturnValueOnce(pending.promise);
+  await fireEvent.press(screen.getByRole("button", { name: "Suggest todos" }));
+  api.getWorkflow.mockResolvedValueOnce(reviewWorkflow);
+  await act(async () => client.setQueryData(workflowQueryKey(USER_ID, WORKFLOW_ID), reviewWorkflow));
+  await waitFor(() => expect(screen.getByRole("header", { name: "Review your plan" })).toBeTruthy());
+  await act(async () => pending.resolve(readySuggestion));
+  await waitFor(() => expect(screen.getByRole("header", { name: "Review your plan" })).toBeTruthy());
+  expect(screen.queryByText("Choose a date")).toBeNull();
+  expect(client.getQueryData(workflowQueryKey(USER_ID, WORKFLOW_ID))).toEqual(reviewWorkflow);
+});
+
+it("ignores a deferred suggestion after sign-out", async () => {
+  let current = true;
+  const api = makeApi();
+  const { client } = await renderHost(api, createAppQueryClient(), {
+    isSessionCurrent: () => current,
+  });
+  await driveToCollect(api);
+  api.getWorkflow.mockResolvedValue(collectWorkflow);
+  const pending = deferred<WorkflowSuggestion>();
+  api.suggestWorkflow.mockReturnValueOnce(pending.promise);
+  await fireEvent.press(screen.getByRole("button", { name: "Suggest todos" }));
+  current = false;
+  await act(async () => pending.resolve(readySuggestion));
+  expect(client.getQueryData(workflowQueryKey(USER_ID, WORKFLOW_ID))).toEqual(collectWorkflow);
+  expect(screen.getByLabelText("Todo titles (one per line)")).toHaveProp("value", "");
+});
+
+it("ignores a deferred suggestion after same-owner re-login changes the epoch", async () => {
+  let epoch = 0;
+  const api = makeApi();
+  const { client } = await renderHost(api, createAppQueryClient(), {
+    sessionEpoch: epoch,
+    isSessionCurrent: (captured) => captured === epoch,
+  });
+  await driveToCollect(api);
+  api.getWorkflow.mockResolvedValue(collectWorkflow);
+  const pending = deferred<WorkflowSuggestion>();
+  api.suggestWorkflow.mockReturnValueOnce(pending.promise);
+  await fireEvent.press(screen.getByRole("button", { name: "Suggest todos" }));
+  epoch = 1;
+  await act(async () => pending.resolve(readySuggestion));
+  expect(client.getQueryData(workflowQueryKey(USER_ID, WORKFLOW_ID))).toEqual(collectWorkflow);
+  expect(screen.getByLabelText("Todo titles (one per line)")).toHaveProp("value", "");
+});
+
+it("retains a live request when reconciliation observes a newer suggestion", async () => {
+  const api = makeApi();
+  const store = createPendingWriteStore(createMemoryPendingWriteStorage());
+  const { client } = await renderHost(api, createAppQueryClient(), { store });
+  await driveToCollect(api);
+  api.getWorkflow.mockResolvedValue(collectWorkflow);
+  const pending = deferred<WorkflowSuggestion>();
+  api.suggestWorkflow.mockReturnValueOnce(pending.promise);
+  await fireEvent.press(screen.getByRole("button", { name: "Suggest todos" }));
+  api.getSuggestion.mockResolvedValueOnce(newerSuggestion);
+  await act(async () => pending.resolve(readySuggestion));
+  await waitFor(() => expect(screen.getByLabelText("Todo titles (one per line)")).toHaveProp(
+    "value",
+    "Newer saved title\nAnother newer title",
+  ));
+  expect(screen.queryByText("Choose a date")).toBeNull();
+  expect(await store.read(USER_ID)).toEqual(
+    expect.objectContaining({ requestId: REQUEST_ID }),
+  );
+  expect(client.getQueryData(workflowQueryKey(USER_ID, WORKFLOW_ID))).toEqual(collectWorkflow);
+});
+
+it("does not mutate draft or cache when a deferred suggestion resolves after unmount", async () => {
+  const api = makeApi();
+  const { view, client } = await renderHost(api);
+  await driveToCollect(api);
+  api.getWorkflow.mockResolvedValue(collectWorkflow);
+  const pending = deferred<WorkflowSuggestion>();
+  api.suggestWorkflow.mockReturnValueOnce(pending.promise);
+  await fireEvent.press(screen.getByRole("button", { name: "Suggest todos" }));
+  await view.unmount();
+  await act(async () => pending.resolve(readySuggestion));
+  expect(client.getQueryData(workflowQueryKey(USER_ID, WORKFLOW_ID))).toEqual(collectWorkflow);
+});
+
+it("recovers saved pending and failed suggestions without creating todos", async () => {
+  const api = makeApi();
+  await renderHost(api);
+  await driveToCollect(api);
+  api.getWorkflow.mockResolvedValue(collectWorkflow);
+  api.suggestWorkflow.mockResolvedValueOnce(pendingSuggestion);
+  api.getSuggestion.mockResolvedValueOnce(pendingSuggestion);
+  await fireEvent.press(screen.getByRole("button", { name: "Suggest todos" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Start another request" })).toBeTruthy());
+  expect(screen.queryByRole("button", { name: "Confirm plan" })).toBeNull();
+  expect(screen.queryByText("Getting todo suggestions…")).toBeNull();
+
+  api.getSuggestion.mockResolvedValueOnce(failedSuggestion);
+  await fireEvent.press(screen.getByRole("button", { name: "Check status" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Try suggestions again" })).toBeTruthy());
+  expect(api.advanceWorkflow).toHaveBeenCalledTimes(2);
+});
+
+it("clears a retained suggestion retry when mount recovers a ready result", async () => {
+  const store = createPendingWriteStore(createMemoryPendingWriteStorage());
+  await store.save(savedSuggestionWrite);
+  const api = makeApi();
+  api.getWorkflow.mockResolvedValue(collectWorkflow);
+  api.getSuggestion.mockResolvedValue(readySuggestion);
+  await renderHost(api, createAppQueryClient(), {
+    store,
+    initialWorkflowId: WORKFLOW_ID,
+  });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Apply saved suggestions" })).toBeTruthy());
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Retry saved request" })).toBeNull());
+  expect(api.suggestWorkflow).not.toHaveBeenCalled();
+  expect(await store.read(USER_ID)).toBeNull();
+});
+
+it.each([
+  ["failed", failedSuggestion],
+  ["superseded", supersededSuggestion],
+])("clears a retained retry after a %s result is recovered", async (_status, result) => {
+  const store = createPendingWriteStore(createMemoryPendingWriteStorage());
+  await store.save(savedSuggestionWrite);
+  const api = makeApi();
+  api.getWorkflow.mockResolvedValue(collectWorkflow);
+  api.getSuggestion.mockResolvedValue(result);
+  await renderHost(api, createAppQueryClient(), {
+    store,
+    initialWorkflowId: WORKFLOW_ID,
+  });
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Retry saved request" })).toBeNull());
+  expect(api.suggestWorkflow).not.toHaveBeenCalled();
+  expect(await store.read(USER_ID)).toBeNull();
+});
+
+it("does not post a retained suggestion until explicit retry or discard", async () => {
+  const store = createPendingWriteStore(createMemoryPendingWriteStorage());
+  await store.save(savedSuggestionWrite);
+  const api = makeApi();
+  api.getWorkflow.mockResolvedValue(collectWorkflow);
+  api.getSuggestion.mockResolvedValue(pendingSuggestion);
+  await renderHost(api, createAppQueryClient(), {
+    store,
+    initialWorkflowId: WORKFLOW_ID,
+  });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Retry saved request" })).toBeTruthy());
+  expect(api.suggestWorkflow).not.toHaveBeenCalled();
+  await fireEvent.press(screen.getByRole("button", { name: "Discard saved request" }));
+  expect(screen.getByText(/may still finish or be billed/)).toBeTruthy();
+  await fireEvent.press(screen.getByRole("button", { name: "Discard saved suggestion anyway" }));
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Retry saved request" })).toBeNull());
+  expect(api.suggestWorkflow).not.toHaveBeenCalled();
+  expect(await store.read(USER_ID)).toBeNull();
+});
+
+it("starts another pending request with a new UUID after an explicit warning", async () => {
+  const api = makeApi();
+  let requestNumber = 0;
+  api.getWorkflow.mockResolvedValue(collectWorkflow);
+  await renderHost(api, createAppQueryClient(), {
+    generateRequestId: () => (requestNumber++ === 0 ? REQUEST_ID : REQUEST_ID_2),
+    initialWorkflowId: WORKFLOW_ID,
+  });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Suggest todos" })).toHaveProp(
+    "accessibilityState",
+    expect.objectContaining({ disabled: false }),
+  ));
+  api.suggestWorkflow.mockResolvedValueOnce(pendingSuggestion).mockResolvedValueOnce({
+    ...readySuggestion,
+    request_id: REQUEST_ID_2,
+  });
+  api.getSuggestion.mockResolvedValueOnce(pendingSuggestion).mockResolvedValueOnce({
+    ...readySuggestion,
+    request_id: REQUEST_ID_2,
+  });
+  await fireEvent.press(screen.getByRole("button", { name: "Suggest todos" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Start another request" })).toBeTruthy());
+  await fireEvent.press(screen.getByRole("button", { name: "Start another request" }));
+  expect(screen.getByText(/may bill the earlier request/)).toBeTruthy();
+  await fireEvent.press(screen.getByRole("button", { name: "Start another request anyway" }));
+  await waitFor(() => expect(api.suggestWorkflow).toHaveBeenCalledTimes(2));
+  expect(api.suggestWorkflow.mock.calls[1][1]).toEqual({
+    request_id: REQUEST_ID_2,
+    expected_revision: 2,
+    step_id: `${WORKFLOW_ID}:COLLECT_TASKS`,
+  });
+});
+
+it("retains a deferred second suggestion request until reconciliation", async () => {
+  const secondRequest = deferred<WorkflowSuggestion>();
+  const api = makeApi();
+  api.getWorkflow.mockResolvedValue(collectWorkflow);
+  api.getSuggestion.mockResolvedValue(pendingSuggestion);
+  const { store } = await renderHost(api, createAppQueryClient(), {
+    initialWorkflowId: WORKFLOW_ID,
+    generateRequestId: () => REQUEST_ID_2,
+  });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Start another request" })).toBeTruthy());
+
+  api.suggestWorkflow.mockReturnValueOnce(secondRequest.promise);
+  await fireEvent.press(screen.getByRole("button", { name: "Start another request" }));
+  await fireEvent.press(screen.getByRole("button", { name: "Start another request anyway" }));
+  await waitFor(() => expect(api.suggestWorkflow).toHaveBeenCalledTimes(1));
+  expect(await store.read(USER_ID)).toEqual(
+    expect.objectContaining({ requestId: REQUEST_ID_2 }),
+  );
+
+  // The first reconciliation can observe an older server result. It must
+  // not clear B before the authoritative GET catches up.
+  api.getSuggestion.mockResolvedValueOnce(pendingSuggestion);
+  await act(async () => secondRequest.resolve(newerSuggestion));
+  await waitFor(() => expect(store.read(USER_ID)).resolves.toEqual(
+    expect.objectContaining({ requestId: REQUEST_ID_2 }),
+  ));
+
+  api.getSuggestion.mockResolvedValueOnce(newerSuggestion);
+  await fireEvent.press(screen.getByRole("button", { name: "Check status" }));
+  await waitFor(() => expect(store.read(USER_ID)).resolves.toBeNull());
+});
+
+it("requires explicit replacement before applying saved suggestions over edits", async () => {
+  const api = makeApi();
+  api.getWorkflow.mockResolvedValue(collectWorkflow);
+  api.getSuggestion.mockResolvedValue(readySuggestion);
+  await renderHost(api, createAppQueryClient(), { initialWorkflowId: WORKFLOW_ID });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Apply saved suggestions" })).toBeTruthy());
+  await fireEvent.changeText(screen.getByLabelText("Todo titles (one per line)"), "My own task");
+  await fireEvent.press(screen.getByRole("button", { name: "Apply saved suggestions" }));
+  expect(screen.getByRole("button", { name: "Replace draft with saved suggestions" })).toBeTruthy();
+  expect(screen.getByLabelText("Todo titles (one per line)")).toHaveProp("value", "My own task");
+  await fireEvent.press(screen.getByRole("button", { name: "Replace draft with saved suggestions" }));
+  expect(screen.getByLabelText("Todo titles (one per line)")).toHaveProp(
+    "value",
+    "Choose a date\nInvite guests",
+  );
+});
 
 const driveToReview = async (api: MockWorkflowApi) => {
   await driveToCollect(api);

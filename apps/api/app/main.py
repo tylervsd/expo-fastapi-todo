@@ -1,5 +1,5 @@
 import re
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Literal
@@ -44,6 +44,27 @@ from app.database import (
     get_database_url,
 )
 from app.passwords import DUMMY_PASSWORD_HASH, hash_password, verify_password
+from app.suggestion_provider import (
+    InvalidSuggestionOutput,
+    OpenRouterConfig,
+    ProviderUnavailable,
+    SuggestionsNotConfigured,
+    SuggestionTimeout,
+    get_openrouter_config,
+    request_todo_suggestions,
+)
+from app.suggestion_service import (
+    InvalidStoredSuggestion,
+    InvalidSuggestionState,
+    StaleSuggestion,
+    SuggestionErrorCode,
+    SuggestionInProgress,
+    SuggestionSnapshot,
+    SuggestionStatus,
+    finish_suggestion,
+    get_current_suggestion,
+    reserve_suggestion,
+)
 from app.title_validation import canonicalize_title
 from app.todo_repository import TodoRow, delete_todo, set_completed, set_title
 from app.todo_repository import create_todo as create_todo_row
@@ -152,6 +173,27 @@ class SessionResponse(BaseModel):
     token: str
     expires_at: datetime
     user: UserPublic
+
+
+class TodoWorkflowSuggestionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: UUID
+    expected_revision: StrictInt = Field(ge=0, le=MAX_WORKFLOW_REVISION)
+    step_id: StrictStr
+
+
+class TodoWorkflowSuggestionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    contract_version: Literal[1]
+    workflow_id: UUID
+    request_id: UUID
+    base_revision: StrictInt
+    step_id: StrictStr
+    status: SuggestionStatus
+    proposed_titles: list[StrictStr]
+    error_code: SuggestionErrorCode | None
 
 
 class TodoWorkflowStart(BaseModel):
@@ -313,7 +355,15 @@ class TodoUpdate(BaseModel):
         return self
 
 
-def create_app(session_factory: sessionmaker[Session] | None = None) -> FastAPI:
+SuggestionCallable = Callable[
+    [str, OpenRouterConfig], Awaitable[tuple[str, ...]]
+]
+
+
+def create_app(
+    session_factory: sessionmaker[Session] | None = None,
+    suggestion_callable: SuggestionCallable | None = None,
+) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         engine: Engine | None = None
@@ -329,6 +379,9 @@ def create_app(session_factory: sessionmaker[Session] | None = None) -> FastAPI:
                 engine.dispose()
 
     app = FastAPI(title="Expo FastAPI Todo API", lifespan=lifespan)
+    suggestion_runner: SuggestionCallable = (
+        suggestion_callable or request_todo_suggestions
+    )
 
     def get_session() -> Iterator[Session]:
         with app.state.session_factory() as session:
@@ -521,6 +574,41 @@ def create_app(session_factory: sessionmaker[Session] | None = None) -> FastAPI:
     def database_unavailable() -> HTTPException:
         return HTTPException(status_code=503, detail="Database unavailable.")
 
+    def as_suggestion_response(
+        snapshot: SuggestionSnapshot,
+    ) -> TodoWorkflowSuggestionResponse:
+        return TodoWorkflowSuggestionResponse(
+            contract_version=1,
+            workflow_id=snapshot.workflow_id,
+            request_id=snapshot.request_id,
+            base_revision=snapshot.base_revision,
+            step_id=snapshot.step_id,
+            status=snapshot.status,
+            proposed_titles=list(snapshot.proposed_titles),
+            error_code=snapshot.error_code,
+        )
+
+    def suggestion_failure(error_code: SuggestionErrorCode) -> HTTPException:
+        if error_code is SuggestionErrorCode.NOT_CONFIGURED:
+            status_code = 503
+            message = "Todo suggestions are not configured."
+        elif error_code is SuggestionErrorCode.TIMEOUT:
+            status_code = 504
+            message = "Todo suggestions timed out."
+        elif error_code is SuggestionErrorCode.INVALID_OUTPUT:
+            status_code = 502
+            message = "Todo suggestions returned invalid output."
+        else:
+            status_code = 502
+            message = "Todo suggestion provider is unavailable."
+        return HTTPException(
+            status_code=status_code,
+            detail={"code": error_code.value, "message": message},
+        )
+
+    def suggestion_conflict(code: str, message: str) -> HTTPException:
+        return workflow_conflict(code, message)
+
     @app.post(
         "/todo-workflows", response_model=TodoWorkflowResponse, status_code=201
     )
@@ -593,6 +681,183 @@ def create_app(session_factory: sessionmaker[Session] | None = None) -> FastAPI:
         if snapshot is None:
             raise workflow_not_found()
         return as_workflow_response(snapshot)
+
+    @app.post(
+        "/todo-workflows/{workflow_id}/suggestions",
+        response_model=TodoWorkflowSuggestionResponse,
+        status_code=201,
+    )
+    async def suggest_todo_workflow(
+        workflow_id: UUID,
+        payload: TodoWorkflowSuggestionRequest,
+        user: Annotated[UserRow, Depends(get_current_user)],
+        session: Annotated[Session, Depends(get_session)],
+    ) -> TodoWorkflowSuggestionResponse | JSONResponse:
+        try:
+            reservation = reserve_suggestion(
+                session,
+                user.id,
+                workflow_id,
+                payload.request_id,
+                payload.expected_revision,
+                payload.step_id,
+            )
+        except RequestIdReused as exc:
+            raise suggestion_conflict(
+                "request_id_reused",
+                "This request ID was already used with different details.",
+            ) from exc
+        except SuggestionInProgress as exc:
+            raise suggestion_conflict(
+                "suggestion_in_progress",
+                "A suggestion request is already in progress.",
+            ) from exc
+        except StaleSuggestion as exc:
+            raise suggestion_conflict(
+                "stale_suggestion",
+                "This suggestion request is no longer current.",
+            ) from exc
+        except StaleWorkflowStep as exc:
+            raise suggestion_conflict(
+                "stale_step",
+                "This plan changed. Reload it and try again.",
+            ) from exc
+        except InvalidSuggestionState as exc:
+            raise suggestion_conflict(
+                "invalid_state",
+                "Suggestions are only available while collecting todo titles.",
+            ) from exc
+        except UnsupportedWorkflowDefinition as exc:
+            raise suggestion_conflict(
+                "unsupported_workflow_definition",
+                "This plan uses an unsupported workflow definition.",
+            ) from exc
+        except InvalidStoredSuggestion as exc:
+            raise database_unavailable() from exc
+        except (OperationalError, SQLAlchemyTimeoutError) as exc:
+            raise database_unavailable() from exc
+
+        if reservation is None:
+            raise workflow_not_found()
+        if isinstance(reservation, SuggestionSnapshot):
+            if reservation.status is SuggestionStatus.FAILED:
+                assert reservation.error_code is not None
+                raise suggestion_failure(reservation.error_code)
+            response = as_suggestion_response(reservation)
+            return JSONResponse(
+                status_code=200, content=jsonable_encoder(response.model_dump())
+            )
+
+        # The injected callable is a credential-free test seam. The real
+        # provider resolves configuration only after reservation, so a replay
+        # above never consults environment configuration or calls OpenRouter.
+        try:
+            config = (
+                get_openrouter_config()
+                if suggestion_callable is None
+                else OpenRouterConfig(api_key="", model="")
+            )
+        except SuggestionsNotConfigured:
+            error_code = SuggestionErrorCode.NOT_CONFIGURED
+            titles: tuple[str, ...] | None = None
+        else:
+            try:
+                titles = await suggestion_runner(reservation.goal, config)
+                error_code = None
+            except SuggestionTimeout:
+                titles = None
+                error_code = SuggestionErrorCode.TIMEOUT
+            except ProviderUnavailable:
+                titles = None
+                error_code = SuggestionErrorCode.PROVIDER_UNAVAILABLE
+            except InvalidSuggestionOutput:
+                titles = None
+                error_code = SuggestionErrorCode.INVALID_OUTPUT
+            except SuggestionsNotConfigured:
+                titles = None
+                error_code = SuggestionErrorCode.NOT_CONFIGURED
+            except Exception:  # noqa: BLE001 - isolate provider failures
+                # Do not expose provider details or leave an unknown failure
+                # as a permanently pending request.
+                titles = None
+                error_code = SuggestionErrorCode.PROVIDER_UNAVAILABLE
+
+        # Keep reservation, provider work, and finalization in distinct
+        # transactions. This also closes any read transaction opened by a
+        # dependency before the second short transaction begins.
+        session.rollback()
+        try:
+            if error_code is not None:
+                finished = finish_suggestion(
+                    session,
+                    user.id,
+                    workflow_id,
+                    payload.request_id,
+                    titles=None,
+                    error_code=error_code,
+                )
+            else:
+                assert titles is not None
+                try:
+                    finished = finish_suggestion(
+                        session,
+                        user.id,
+                        workflow_id,
+                        payload.request_id,
+                        titles=tuple(titles),
+                        error_code=None,
+                    )
+                except StaleSuggestion:
+                    raise
+                except (TypeError, ValueError):
+                    finished = finish_suggestion(
+                        session,
+                        user.id,
+                        workflow_id,
+                        payload.request_id,
+                        titles=None,
+                        error_code=SuggestionErrorCode.INVALID_OUTPUT,
+                    )
+                    error_code = SuggestionErrorCode.INVALID_OUTPUT
+        except StaleSuggestion as exc:
+            raise suggestion_conflict(
+                "stale_suggestion",
+                "This suggestion request is no longer current.",
+            ) from exc
+        except InvalidStoredSuggestion as exc:
+            raise database_unavailable() from exc
+        except (OperationalError, SQLAlchemyTimeoutError) as exc:
+            raise database_unavailable() from exc
+
+        if finished is None:
+            raise workflow_not_found()
+        if error_code is not None:
+            raise suggestion_failure(error_code)
+        return as_suggestion_response(finished)
+
+    @app.get(
+        "/todo-workflows/{workflow_id}/suggestions",
+        response_model=TodoWorkflowSuggestionResponse,
+    )
+    def get_todo_workflow_suggestion(
+        workflow_id: UUID,
+        user: Annotated[UserRow, Depends(get_current_user)],
+        session: Annotated[Session, Depends(get_session)],
+    ) -> TodoWorkflowSuggestionResponse:
+        try:
+            snapshot = get_current_suggestion(session, user.id, workflow_id)
+        except UnsupportedWorkflowDefinition as exc:
+            raise suggestion_conflict(
+                "unsupported_workflow_definition",
+                "This plan uses an unsupported workflow definition.",
+            ) from exc
+        except InvalidStoredSuggestion as exc:
+            raise database_unavailable() from exc
+        except (OperationalError, SQLAlchemyTimeoutError) as exc:
+            raise database_unavailable() from exc
+        if snapshot is None:
+            raise workflow_not_found()
+        return as_suggestion_response(snapshot)
 
     @app.post(
         "/todo-workflows/{workflow_id}/actions", response_model=TodoWorkflowResponse
