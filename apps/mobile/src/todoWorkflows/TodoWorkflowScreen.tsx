@@ -118,6 +118,8 @@ export function TodoWorkflowScreen({
   const tasksDraftRef = useRef(tasksDraft);
   const tasksDraftEditCounterRef = useRef(tasksDraftEditCounter);
   const suggestionFetchSequence = useRef(0);
+  const hydratedSuggestionRequestIds = useRef(new Set<string>());
+  const liveRequestIds = useRef(new Set<string>());
   const previousStepId = useRef<string | null>(null);
   const titleInput = useRef<TextInput>(null);
   const tasksInput = useRef<TextInput>(null);
@@ -152,7 +154,12 @@ export function TodoWorkflowScreen({
       if (record === null || record.ownerId !== owner) return;
       const targetWorkflow =
         record.operation === "start" ? null : record.workflowId;
-      setPendingRecord(record);
+      if (record.operation === "suggest" && !liveRequestIds.current.has(record.requestId)) {
+        hydratedSuggestionRequestIds.current.add(record.requestId);
+      }
+      setPendingRecord((current) =>
+        current !== null && liveRequestIds.current.has(current.requestId) ? current : record,
+      );
       if (targetWorkflow !== null) {
         setWorkflowId((current) => current ?? targetWorkflow);
       }
@@ -282,6 +289,23 @@ export function TodoWorkflowScreen({
 
   type CurrentFetch = { ok: true; snapshot: TodoWorkflow } | { ok: false; message: string };
 
+  const shouldClearSuggestionRecord = (
+    retained: SuggestRecord,
+    fetched: WorkflowSuggestion,
+  ): boolean => {
+    if (
+      retained.workflowId !== fetched.workflow_id ||
+      retained.body.expected_revision !== fetched.base_revision ||
+      retained.body.step_id !== fetched.step_id
+    ) {
+      return false;
+    }
+    if (hydratedSuggestionRequestIds.current.has(retained.requestId)) {
+      return fetched.status !== "pending" || fetched.request_id !== retained.requestId;
+    }
+    return fetched.status !== "pending" && fetched.request_id === retained.requestId;
+  };
+
   const fetchCurrentSnapshot = async (
     id: string,
     captured: number
@@ -363,10 +387,7 @@ export function TodoWorkflowScreen({
     const retained = pendingRecordRef.current;
     if (
       retained?.operation === "suggest" &&
-      retained.workflowId === id &&
-      retained.body.expected_revision === expectedRevision &&
-      retained.body.step_id === expectedStepId &&
-      (fetched.status !== "pending" || fetched.request_id !== retained.requestId)
+      shouldClearSuggestionRecord(retained, fetched)
     ) {
       void clearPendingRecord(retained, captured);
     }
@@ -413,10 +434,7 @@ export function TodoWorkflowScreen({
     if (
       retained?.operation !== "suggest" ||
       fetched === null ||
-      retained.workflowId !== fetched.workflow_id ||
-      retained.body.expected_revision !== fetched.base_revision ||
-      retained.body.step_id !== fetched.step_id ||
-      (fetched.status === "pending" && fetched.request_id === retained.requestId)
+      !shouldClearSuggestionRecord(retained, fetched)
     ) {
       return;
     }
@@ -770,6 +788,10 @@ export function TodoWorkflowScreen({
     setLocalError(null);
     setWriteError(null);
     const captured = sessionEpoch;
+    liveRequestIds.current.add(record.requestId);
+    if (record.operation === "suggest") {
+      hydratedSuggestionRequestIds.current.delete(record.requestId);
+    }
     setPersisting(true);
     // The write is in flight from here: surface it immediately so a second
     // write cannot replace it and the callbacks below only ever clear it.

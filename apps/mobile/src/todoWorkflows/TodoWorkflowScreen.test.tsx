@@ -1059,6 +1059,30 @@ it("starts another pending request with a new UUID after an explicit warning", a
   });
 });
 
+it("retains a deferred second suggestion request until reconciliation", async () => {
+  const secondRequest = deferred<WorkflowSuggestion>();
+  const api = makeApi();
+  api.getWorkflow.mockResolvedValue(collectWorkflow);
+  api.getSuggestion.mockResolvedValue(pendingSuggestion);
+  const { store } = await renderHost(api, createAppQueryClient(), {
+    initialWorkflowId: WORKFLOW_ID,
+    generateRequestId: () => REQUEST_ID_2,
+  });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Start another request" })).toBeTruthy());
+
+  api.suggestWorkflow.mockReturnValueOnce(secondRequest.promise);
+  await fireEvent.press(screen.getByRole("button", { name: "Start another request" }));
+  await fireEvent.press(screen.getByRole("button", { name: "Start another request anyway" }));
+  await waitFor(() => expect(api.suggestWorkflow).toHaveBeenCalledTimes(1));
+  expect(await store.read(USER_ID)).toEqual(
+    expect.objectContaining({ requestId: REQUEST_ID_2 }),
+  );
+
+  api.getSuggestion.mockResolvedValueOnce(newerSuggestion);
+  await act(async () => secondRequest.resolve(newerSuggestion));
+  await waitFor(() => expect(store.read(USER_ID)).resolves.toBeNull());
+});
+
 it("requires explicit replacement before applying saved suggestions over edits", async () => {
   const api = makeApi();
   api.getWorkflow.mockResolvedValue(collectWorkflow);
