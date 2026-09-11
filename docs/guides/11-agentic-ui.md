@@ -336,7 +336,7 @@ durable workflow and any reserved/saved suggestion remain recoverable
 through the existing screen.
 
 No production quota, pruning, telemetry, or exactly-once provider billing
-is claimed; Phase 13 owns that measured hardening. Android, physical
+is claimed; Phase 21 owns that measured hardening. Android, physical
 devices, production deployment, token refresh during a run, reconnection,
 and a full assistive-technology audit remain unobserved; package support
 claims are not evidence for them. Phase 12 owns

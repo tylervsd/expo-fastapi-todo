@@ -20,7 +20,7 @@ Implementation and acceptance are distinct. [Guide 09](docs/guides/09-workflow-r
 
 **Phase 11 is merged, with the acceptance follow-up included in this revision.** The follow-up (`61fb30c`) fixes validation of assistant-ui's opaque run IDs and records interactive acceptance. [Guide 11](docs/guides/11-agentic-ui.md#9-acceptance-record) records 501 passing API tests, 522 passing mobile tests, and 14 live OpenRouter calls. Web birthday/hiking and iOS birthday flows completed with edited/removable suggestions and explicit confirmation. Cancellation and sign-out passed on both platforms using controlled delays. Some live responses were invalid and required explicit retries; full assistive-technology and manually injected malformed-tool checks remain unobserved.
 
-The [Phase 11 spec](docs/superpowers/specs/2026-09-10-agentic-ui-design.md) and [implementation plan](docs/superpowers/plans/2026-09-10-agentic-ui.md) describe the direct connection from assistant-ui to the existing FastAPI server over AG-UI, with no additional backend service. **Next curriculum phase: Phase 12 — cross-platform E2E**, followed by production hardening in Phase 13. Phase 11 acceptance does not retroactively close earlier guides' acceptance gaps.
+The [Phase 11 spec](docs/superpowers/specs/2026-09-10-agentic-ui-design.md) and [implementation plan](docs/superpowers/plans/2026-09-10-agentic-ui.md) describe the direct connection from assistant-ui to the existing FastAPI server over AG-UI, with no additional backend service. **Next curriculum phase: Phase 12 — cross-platform E2E.** A CI security baseline precedes it, followed by the provisional Google Cloud, Cloudflare Pages, Terraform, and startup-services track in Phases 13–27. Phase 11 acceptance does not retroactively close earlier guides' acceptance gaps.
 
 ## Reference Mac
 
@@ -79,9 +79,9 @@ The repository's `scripts/doctor` command is read-only. It inspects versions, pa
 
 ## Curriculum roadmap
 
-See the [provisional curriculum roadmap](docs/curriculum-roadmap.md) for the fourteen phases (0-13). Each phase gets an approved spec before implementation, so later details can be refined without hiding the boundary between decisions and code.
+See the [provisional curriculum roadmap](docs/curriculum-roadmap.md) for the 28 phases (0–27). Each phase gets an approved spec before implementation, so later details can be refined without hiding the boundary between decisions and code.
 
-Phases 7–9 are merged and provide backend workflow modeling, server-directed screens, and reliable resumption through one guided-todo creation feature. Phase 10 is merged with automated verification and a provider smoke; its documented interactive acceptance remains incomplete. Phase 11 is merged and adds interactive AI workflows with assistant-ui and AG-UI; its acceptance results and remaining limits are described above. Cross-platform E2E follows in Phase 12, then production hardening in Phase 13. A2UI remains an optional later exercise in declarative UI composition. The [workflow learning plan](docs/workflow-learning-plan.md) describes the proposed behavior and exercises; Phases 12–13 remain planned curriculum additions, not implemented functionality or completed guides.
+Phases 7–9 are merged and provide backend workflow modeling, server-directed screens, and reliable resumption through one guided-todo creation feature. Phase 10 is merged with automated verification and a provider smoke; its documented interactive acceptance remains incomplete. Phase 11 is merged and adds interactive AI workflows with assistant-ui and AG-UI; its acceptance results and remaining limits are described above. Cross-platform E2E follows in Phase 12. Phases 13–27 then progress from Google Cloud foundations through Cloud Run, IAM, Secret Manager, Cloud SQL, Cloudflare Pages, Terraform, delivery, async work, observability, KMS, recovery, object storage, events, analytics, and push notifications. A2UI remains an optional later exercise in declarative UI composition. These future phases are planned curriculum additions, not implemented functionality or completed guides.
 
 ## Testing strategy
 
