@@ -74,6 +74,7 @@ MAX_AGENT_BODY_BYTES = 32 * 1024
 MAX_AGENT_MESSAGES = 12
 MAX_AGENT_TEXT_CODE_POINTS = 1_000
 MAX_AGENT_TOOL_RESULT_BYTES = 4 * 1024
+MAX_AGENT_RUN_ID_CODE_POINTS = 128
 
 _CLARIFICATION_FIELDS: tuple[str, ...] = (
     "date",
@@ -134,10 +135,15 @@ def validate_run_input(run_input: RunAgentInput) -> AgentState:
         UUID(str(run_input.thread_id))
     except (TypeError, ValueError, AttributeError):
         raise AgentValidationError("agent thread id must be a UUID") from None
-    try:
-        UUID(str(run_input.run_id))
-    except (TypeError, ValueError, AttributeError):
-        raise AgentValidationError("agent run id must be a UUID") from None
+    run_id = run_input.run_id
+    if (
+        not isinstance(run_id, str)
+        or not run_id
+        or len(run_id) > MAX_AGENT_RUN_ID_CODE_POINTS
+        or not run_id.isascii()
+        or not all(char.isalnum() or char in "_-" for char in run_id)
+    ):
+        raise AgentValidationError("agent run id must be a bounded safe string")
 
     messages = run_input.messages or []
     if len(messages) > MAX_AGENT_MESSAGES:

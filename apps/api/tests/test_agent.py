@@ -489,28 +489,54 @@ def test_non_uuid_thread_id_fails_without_choice_call(
     assert calls == []
 
 
-def test_non_uuid_run_id_fails_without_choice_call(
+def test_assistant_ui_opaque_run_id_streams_and_correlates_tool_call(
     database_session: Session, session_factory: sessionmaker[Session]
 ) -> None:
     del database_session
     owner_id = setup_owner(session_factory)
+    workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
     calls: list[str] = []
+    # @assistant-ui/core's public generateId() currently emits this opaque,
+    # non-UUID nanoid-style value.
+    run_id = "dnp0PvD"
+    run = make_run(
+        thread_id=workflow_id,
+        run_id=run_id,
+        messages=[user_msg("u1", "Help me plan")],
+        state=agent_state(workflow_id, revision, step_id),
+    )
+    with session_factory() as session:
+        events = collect(
+            agent_events(
+                run, owner_id, session, choose=fake_choice("budget", calls=calls)
+            )
+        )
+
+    assert event_types(events) == [
+        "RUN_STARTED",
+        "TOOL_CALL_START",
+        "TOOL_CALL_ARGS",
+        "TOOL_CALL_END",
+        "RUN_FINISHED",
+    ]
+    assert events[1].tool_call_id == "dnp0PvD:clarify_plan:0"
+    assert calls == ["Plan birthday party"]
+
+
+@pytest.mark.parametrize("run_id", ("", "unsafe:run", "x" * 129))
+def test_run_id_rejects_empty_unsafe_or_unbounded_values(run_id: str) -> None:
     run = RunAgentInput.model_construct(
         threadId=str(uuid4()),
-        runId="nope",
+        runId=run_id,
         messages=[],
         tools=[],
         context=[],
         forwardedProps={},
         state={},
     )
-    with session_factory() as session:
-        events = collect(
-            agent_events(run, owner_id, session, choose=fake_choice(calls=calls))
-        )
 
-    assert event_types(events)[-1] == "RUN_ERROR"
-    assert calls == []
+    with pytest.raises(AgentValidationError):
+        validate_run_input(run)
 
 
 def test_unknown_state_fields_fail_before_provider_call(
@@ -849,7 +875,7 @@ def test_review_titles_reload_from_saved_suggestion(
     assert tuple(args["titles"]) == titles
 
 
-def test_clarify_history_pair_continues_to_review(
+def test_assistant_ui_opaque_run_id_history_pair_continues_to_review(
     database_session: Session, session_factory: sessionmaker[Session]
 ) -> None:
     del database_session
@@ -857,7 +883,7 @@ def test_clarify_history_pair_continues_to_review(
     workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
     request_id = make_ready(session_factory, owner_id, workflow_id, revision, step_id)
     calls: list[str] = []
-    run_id = uuid4()
+    run_id = "dnp0PvD"
     call_id = f"{run_id}:clarify_plan:0"
     run = make_run(
         thread_id=workflow_id,
@@ -879,6 +905,7 @@ def test_clarify_history_pair_continues_to_review(
     assert event_types(events)[0] == "RUN_STARTED"
     assert event_types(events)[-1] == "RUN_FINISHED"
     assert events[1].tool_call_name == "review_todo_suggestions"
+    assert events[1].tool_call_id == "dnp0PvD:review_todo_suggestions:0"
     assert calls == []
 
 
