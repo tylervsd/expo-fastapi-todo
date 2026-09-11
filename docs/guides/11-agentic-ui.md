@@ -231,7 +231,7 @@ a newer snapshot discards late events and results.
 ## 8. Verification performed
 
 The following checks were run on 2026-09-10 (America/Los_Angeles) at the
-Task 6 HEAD. The API suite ran against the isolated PostgreSQL
+PR review-fix revision. The API suite ran against the isolated PostgreSQL
 `todo_test` database on 127.0.0.1:5433 (the existing `db-test` compose
 container):
 
@@ -247,8 +247,8 @@ pnpm --dir apps/mobile export:web
 npx --prefix apps/mobile expo export --platform ios --output-dir dist-ios-verify
 ```
 
-The PostgreSQL-backed API suite passed **497/497** tests and the mobile
-suite passed **506/506** tests across 17 suites. Typecheck, Ruff,
+The PostgreSQL-backed API suite passed **498/498** tests and the mobile
+suite passed **522/522** tests across 17 suites. Typecheck, Ruff,
 `git diff --check`, Markdown lint (0 issues across 47 files), and
 local-link checks were clean. Web and iOS bundle exports completed
 successfully; a successful export is not evidence of interactive behavior
@@ -260,12 +260,19 @@ carries only pre-existing dependency deprecation warnings (Alembic,
 Starlette/httpx, AnyIO); they are not failures.
 
 The full `pnpm quality` gate passes on this branch end to end (root
-Markdown/link/shell checks, root tests, API suite at 497 passed, mobile
-lint at 0 errors with 45 warnings, mobile suite at 506 passed, typecheck,
+Markdown/link/shell checks, root tests, API suite at 498 passed, mobile
+lint at 0 errors with 45 warnings, mobile suite at 522 passed, typecheck,
 and web export). An earlier fix round found 15 mobile-lint errors in
 Phase 11 files; the quality-fix wave (`acfc1c9`) resolved all 15 with no
 behavior change and a clean re-review, leaving the warning count
 untouched.
+
+The PR review fixes add a chunked-body regression proving `/agent` stops
+reading immediately after exceeding 32 KiB, and two pending-to-terminal
+status-check regressions for failed and superseded suggestions. The latter
+prove the agent card releases its submitting state, manual controls recover,
+and no tool continuation or workflow transition is sent. Waiters settle before
+the saved pending record is cleared, including the reload ordering path.
 
 ## 9. Acceptance record
 
@@ -280,7 +287,7 @@ manually observing the platform UIs or the live model.
 
 | Target | Date/runtime | Question selection and form response | Editable/removable suggestions | Interruption/replay | Malformed/unknown fallback | Sign-out isolation, accessibility, explicit confirm |
 | --- | --- | --- | --- | --- | --- | --- |
-| Automated API and mobile tests | 2026-09-10, PostgreSQL `todo_test` with Python 3.14 (497 API tests) and Jest with `jest-expo` (506 mobile tests, 17 suites) | ☑ catalog-only choice, fixed local copy, 1–200 answer bounds, fingerprint behavior | ☑ edited titles through `submit_tasks`; edited-title ack emits no-write finish without regeneration | ☑ cancellation closes provider work; interrupted clarification restarts explicitly; `Retry saved request` reuses the stored ID | ☑ unknown names/versions/extra keys, mismatched IDs, stale revisions fail closed with safe errors | ☑ owner-hidden lookup, session teardown, parser-level a11y attributes, zero todos before `confirm` |
+| Automated API and mobile tests | 2026-09-10, PostgreSQL `todo_test` with Python 3.14 (498 API tests) and Jest with `jest-expo` (522 mobile tests, 17 suites) | ☑ catalog-only choice, fixed local copy, 1–200 answer bounds, fingerprint behavior | ☑ edited titles through `submit_tasks`; edited-title ack emits no-write finish without regeneration | ☑ cancellation closes provider work; interrupted clarification restarts explicitly; `Retry saved request` reuses the stored ID | ☑ unknown names/versions/extra keys, mismatched IDs, stale revisions fail closed with safe errors | ☑ owner-hidden lookup, session teardown, parser-level a11y attributes, zero todos before `confirm` |
 | Live model | — | ☐ pending: two decision requests plus suggestion requests require separate user authorization with a stated bounded budget; not run in this pass | ☐ pending | ☐ pending | — | — |
 | Web UI | 2026-09-10, production bundle export only | ☐ unobserved; export completed but no interactive browser session drove the agent flow | ☐ unobserved | ☐ unobserved | ☐ unobserved | ☐ unobserved |
 | iOS Simulator UI | 2026-09-10, production bundle export only | ☐ unobserved; export completed and a booted iPhone 17 Pro simulator existed, but no interactive Expo Go session drove the agent flow | ☐ unobserved | ☐ unobserved | ☐ unobserved | ☐ unobserved |

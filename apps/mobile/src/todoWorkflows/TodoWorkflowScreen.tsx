@@ -373,6 +373,28 @@ export function TodoWorkflowScreen({
     return fetched.status !== "pending" && fetched.request_id === retained.requestId;
   };
 
+  const settleAgentSuggestionWaiter = (
+    requestId: string,
+    fetched: WorkflowSuggestion,
+    captured: number,
+  ): void => {
+    const waiter = agentSuggestWaiters.current.get(requestId);
+    if (
+      waiter === undefined ||
+      waiter.captured !== captured ||
+      !mountedRef.current ||
+      !isSessionCurrent(captured) ||
+      fetched.request_id !== requestId
+    ) {
+      return;
+    }
+    if (fetched.status === "ready") waiter.resolve(fetched);
+    else if (fetched.status === "failed" || fetched.status === "superseded") {
+      waiter.reject(new Error("Todo suggestions are unavailable. Try again."));
+    } else return;
+    agentSuggestWaiters.current.delete(requestId);
+  };
+
   const fetchCurrentSnapshot = async (
     id: string,
     captured: number
@@ -456,6 +478,7 @@ export function TodoWorkflowScreen({
       retained?.operation === "suggest" &&
       shouldClearSuggestionRecord(retained, fetched)
     ) {
+      settleAgentSuggestionWaiter(retained.requestId, fetched, captured);
       void clearPendingRecord(retained, captured);
     }
     if (
@@ -513,15 +536,9 @@ export function TodoWorkflowScreen({
     ) {
       return;
     }
-    // A ready poll outcome also settles an agent-tool promise that is still
-    // waiting on this exact request.
-    if (fetched.status === "ready" && fetched.request_id === retained.requestId) {
-      const waiter = agentSuggestWaiters.current.get(retained.requestId);
-      if (waiter !== undefined) {
-        agentSuggestWaiters.current.delete(retained.requestId);
-        waiter.resolve(fetched);
-      }
-    }
+    // This runs when storage arrives after a suggestion poll, so it has the
+    // same guarded waiter settlement as the live fetch path.
+    settleAgentSuggestionWaiter(retained.requestId, fetched, sessionEpoch);
     void clearPendingRecord(retained, sessionEpoch);
     // clearPendingRecord is recreated with the current render state; the
     // tracked values above are the intended resolution trigger.
@@ -1138,6 +1155,7 @@ export function TodoWorkflowScreen({
   const suggestionControlDisabled =
     !fresh || isFetching || suggestionPending || suggestionFetching || reconciling ||
     livePending !== null || agentBusy;
+  const suggestionStatusDisabled = !fresh || isFetching || ioBusy;
   const suggestionInFlight =
     suggestionPending ||
     suggestionFetching ||
@@ -1644,6 +1662,7 @@ export function TodoWorkflowScreen({
             suggestion={suggestionRecord}
             suggestionError={suggestionError}
             suggestionControlsDisabled={suggestionControlDisabled}
+            suggestionStatusDisabled={suggestionStatusDisabled}
             replaceSuggestions={replaceSuggestions}
             onCancelReplace={() => setReplaceSuggestions(false)}
             newSuggestionWarning={newSuggestionWarning}
@@ -1915,6 +1934,7 @@ function TaskBreakdownTemplate({
   suggestion,
   suggestionError,
   suggestionControlsDisabled,
+  suggestionStatusDisabled,
   replaceSuggestions,
   newSuggestionWarning,
   onConfirmStartAnother,
@@ -1939,6 +1959,7 @@ function TaskBreakdownTemplate({
   suggestion: WorkflowSuggestion | null;
   suggestionError: string | null;
   suggestionControlsDisabled: boolean;
+  suggestionStatusDisabled: boolean;
   replaceSuggestions: boolean;
   newSuggestionWarning: boolean;
   onConfirmStartAnother: () => void;
@@ -2007,7 +2028,7 @@ function TaskBreakdownTemplate({
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Check status"
-            disabled={suggestionControlsDisabled}
+            disabled={suggestionStatusDisabled}
             style={styles.refreshButton}
             onPress={onCheckSuggestion}
           >

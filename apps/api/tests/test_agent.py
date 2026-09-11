@@ -1563,6 +1563,31 @@ def test_route_rejects_oversize_body(
         assert response.status_code == 413
 
 
+def test_route_stops_reading_oversize_chunked_body(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    with route_client(session_factory, database_session, fake_choice()) as client:
+        headers = route_auth_headers(client)
+        consumed = []
+
+        async def chunks():
+            for chunk in (b" " * (32 * 1024), b"x", b"unread tail"):
+                consumed.append(len(chunk))
+                yield chunk
+
+        async def send():
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=client.app), base_url="http://test"
+            ) as streaming_client:
+                return await streaming_client.post(
+                    "/agent", headers=headers, content=chunks()
+                )
+
+        response = asyncio.run(send())
+        assert response.status_code == 413
+        assert consumed == [32 * 1024, 1]
+
+
 def test_route_rejects_too_many_messages(
     database_session: Session, session_factory: sessionmaker[Session]
 ) -> None:

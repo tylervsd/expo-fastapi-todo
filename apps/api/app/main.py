@@ -924,11 +924,13 @@ def create_app(
         user: Annotated[UserRow, Depends(get_current_user)],
         session: Annotated[Session, Depends(get_session)],
     ) -> StreamingResponse:
-        raw_body = await request.body()
-        if len(raw_body) > MAX_AGENT_BODY_BYTES:
-            raise HTTPException(
-                status_code=413, detail="Agent request body is too large."
-            )
+        raw_body = bytearray()
+        async for chunk in request.stream():
+            if len(raw_body) + len(chunk) > MAX_AGENT_BODY_BYTES:
+                raise HTTPException(
+                    status_code=413, detail="Agent request body is too large."
+                )
+            raw_body.extend(chunk)
         try:
             payload = json.loads(raw_body.decode("utf-8"))
         except (UnicodeDecodeError, ValueError):

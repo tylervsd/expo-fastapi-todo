@@ -2681,6 +2681,76 @@ describe("agent clarification and review flow", () => {
     expect(api.advanceWorkflow.mock.calls.length).toBe(advanceCallsBeforeAgentFlow);
   }, 30000);
 
+  it.each([
+    ["failed", failedSuggestion],
+    ["superseded", supersededSuggestion],
+  ] as const)("releases the agent card after Check status finds a %s suggestion", async (_status, terminal) => {
+    const bodies: AgentPost[] = [];
+    installAgentFixture(bodies);
+    const api = makeApi();
+    api.suggestWorkflow.mockResolvedValueOnce({
+      ...pendingSuggestion,
+      request_id: REQUEST_ID,
+      base_revision: 2,
+      step_id: `${WORKFLOW_ID}:COLLECT_TASKS`,
+    });
+    api.getSuggestion.mockImplementation(() => notFoundSuggestion());
+    await reachCollectTasks(api);
+    api.getWorkflow.mockResolvedValue(collectWorkflow);
+    // The write resolves pending; only a later explicit status check can
+    // prove the same request reached a terminal outcome.
+    api.getSuggestion.mockRejectedValueOnce(
+      new TodoApiError("not-found", "That plan has no saved todo suggestions."),
+    );
+    api.getSuggestion.mockResolvedValueOnce({
+      ...pendingSuggestion,
+      request_id: REQUEST_ID,
+      base_revision: 2,
+      step_id: `${WORKFLOW_ID}:COLLECT_TASKS`,
+    });
+    api.getSuggestion.mockResolvedValue({
+      ...terminal,
+      request_id: REQUEST_ID,
+      base_revision: 2,
+      step_id: `${WORKFLOW_ID}:COLLECT_TASKS`,
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Ask agent for help" })).toBeTruthy(),
+    );
+    await fireEvent.press(screen.getByRole("button", { name: "Ask agent for help" }));
+    await waitFor(() => expect(screen.getByLabelText("Your answer")).toBeTruthy(), {
+      timeout: 10000,
+    });
+    await fireEvent.changeText(screen.getByLabelText("Your answer"), "next Saturday");
+    const advanceCallsBeforeAgentFlow = api.advanceWorkflow.mock.calls.length;
+    await fireEvent.press(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Check status" })).toBeTruthy(), {
+      timeout: 10000,
+    });
+    expect(
+      screen.getByRole("button", { name: "Check status" }).props.accessibilityState?.disabled,
+    ).toBe(false);
+    await fireEvent.press(screen.getByRole("button", { name: "Check status" }));
+    // The terminal poll outcome settles the exact waiter before it clears the
+    // pending record: the card exits Sending,
+    // manual controls re-enable, and no tool result starts a continuation.
+    await waitFor(
+      () =>
+        expect(
+          screen.getByRole("button", { name: "Continue" }).props.accessibilityState?.disabled,
+        ).toBe(false),
+      { timeout: 10000 },
+    );
+    expect(
+      screen.getByRole("button", { name: "Suggest todos" }).props.accessibilityState?.disabled,
+    ).toBe(false);
+    expect(screen.queryByRole("button", { name: "Retry saved request" })).toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(bodies).toHaveLength(1);
+    expect(api.advanceWorkflow.mock.calls.length).toBe(advanceCallsBeforeAgentFlow);
+  }, 30000);
+
   it("accepts agent suggestions through submit_tasks and never confirms todos itself", async () => {
     const bodies: AgentPost[] = [];
     installAgentFixture(bodies);
