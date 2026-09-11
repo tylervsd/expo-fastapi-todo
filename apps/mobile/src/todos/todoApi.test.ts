@@ -607,6 +607,8 @@ describe("todo workflow transport", () => {
     ["extra key", { field: "date", value: "soon", extra: true }],
     ["missing value", { field: "date" }],
     ["non-string value", { field: "date", value: 42 }],
+    ["lone high surrogate value", { field: "date", value: "ok\ud83d" }],
+    ["lone low surrogate value", { field: "date", value: "ok\ude00" }],
     ["null", null],
     ["array", []],
   ])("rejects %s clarification", (_label, clarification) => {

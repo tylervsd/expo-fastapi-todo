@@ -152,6 +152,11 @@ describe("agent tool argument parsers", () => {
     ["one title", JSON.stringify({ contract_version: 1, workflow_id: WORKFLOW_ID, expected_revision: 2, step_id: "s", suggestion_request_id: REQUEST_ID, titles: ["Only"] })],
     ["eleven titles", JSON.stringify({ contract_version: 1, workflow_id: WORKFLOW_ID, expected_revision: 2, step_id: "s", suggestion_request_id: REQUEST_ID, titles: Array.from({ length: 11 }, (_, i) => `Title ${i}`) })],
     ["blank title", JSON.stringify({ contract_version: 1, workflow_id: WORKFLOW_ID, expected_revision: 2, step_id: "s", suggestion_request_id: REQUEST_ID, titles: ["Fine title", "   "] })],
+    ["padded title", JSON.stringify({ contract_version: 1, workflow_id: WORKFLOW_ID, expected_revision: 2, step_id: "s", suggestion_request_id: REQUEST_ID, titles: ["Fine title", "  Padded title  "] })],
+    ["NUL title", JSON.stringify({ contract_version: 1, workflow_id: WORKFLOW_ID, expected_revision: 2, step_id: "s", suggestion_request_id: REQUEST_ID, titles: ["Fine title", "ab\0cd"] })],
+    ["overlength title", JSON.stringify({ contract_version: 1, workflow_id: WORKFLOW_ID, expected_revision: 2, step_id: "s", suggestion_request_id: REQUEST_ID, titles: ["Fine title", "x".repeat(121)] })],
+    ["lone high surrogate title", JSON.stringify({ contract_version: 1, workflow_id: WORKFLOW_ID, expected_revision: 2, step_id: "s", suggestion_request_id: REQUEST_ID, titles: ["Fine title", "ok\ud83d"] })],
+    ["lone low surrogate title", JSON.stringify({ contract_version: 1, workflow_id: WORKFLOW_ID, expected_revision: 2, step_id: "s", suggestion_request_id: REQUEST_ID, titles: ["Fine title", "ok\ude00"] })],
     ["extra key", JSON.stringify({ contract_version: 1, workflow_id: WORKFLOW_ID, expected_revision: 2, step_id: "s", suggestion_request_id: REQUEST_ID, titles: ["A fine title", "Another fine title"], action: "confirm" })],
     ["wrong version", JSON.stringify({ contract_version: 7, workflow_id: WORKFLOW_ID, expected_revision: 2, step_id: "s", suggestion_request_id: REQUEST_ID, titles: ["A fine title", "Another fine title"] })],
     ["non-uuid request", JSON.stringify({ contract_version: 1, workflow_id: WORKFLOW_ID, expected_revision: 2, step_id: "s", suggestion_request_id: "nope", titles: ["A fine title", "Another fine title"] })],
@@ -167,6 +172,9 @@ describe("agent tool argument parsers", () => {
     ["empty", "", false],
     ["blank", "   ", false],
     ["oversize", "x".repeat(201), false],
+    ["lone high surrogate", "ok\ud83d", false],
+    ["lone low surrogate", "ok\ude00", false],
+    ["emoji pair", "caf\u00e9 \ud83c\udf82 party", true],
     ["embedded NUL", "ab\0cd", false],
     ["leading NUL", "\0next Saturday", false],
   ])("validates answers (%s)", (_label, value, valid) => {
@@ -187,7 +195,7 @@ describe("agent tool argument parsers", () => {
     ).toBe(true);
   });
 
-  it.each(["ab\0cd", "", "   ", "x".repeat(201)])(
+  it.each(["ab\0cd", "", "   ", "x".repeat(201), "ok\ud83d", "ok\ude00"])(
     "every UI-invalid answer is pending-store-invalid (%s)",
     (value) => {
       expect(isAnswerValid(value)).toBe(false);
@@ -443,6 +451,23 @@ describe("ReviewSuggestionsCardView", () => {
     expect(screen.getByLabelText("Suggestion 1 of 2")).toBeTruthy();
     expect(screen.getByLabelText("Suggestion 2 of 2")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Use these suggestions" })).toBeTruthy();
+  });
+
+  it("renders recovery without submitting when tool titles are not canonical", async () => {
+    const paddedArgsText = JSON.stringify({
+      contract_version: 1,
+      workflow_id: WORKFLOW_ID,
+      expected_revision: 2,
+      step_id: `${WORKFLOW_ID}:COLLECT_TASKS`,
+      suggestion_request_id: REQUEST_ID,
+      titles: ["Choose a date", "  Invite guests  "],
+    });
+    const { submitTitles } = await renderReviewCard({ argsText: paddedArgsText });
+    expect(
+      screen.getByText("The agent sent suggestions this app cannot use. Continue manually below."),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Use these suggestions" })).toBeNull();
+    expect(submitTitles).not.toHaveBeenCalled();
   });
 
   it("edits titles and removes extras, keeping at least two", async () => {

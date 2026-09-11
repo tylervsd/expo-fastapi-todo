@@ -232,6 +232,25 @@ function parseSuggestionErrorCode(value: unknown): WorkflowSuggestionErrorCode |
   }
 }
 
+/** Count Unicode code points, returning null for unpaired surrogates. This is
+ *  the same surrogate-aware walk normalizeTodoTitle uses, shared so answer
+ *  and clarification validation agree with the server exactly. */
+export function countCodePoints(value: string): number | null {
+  let codePoints = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return null;
+      index += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return null;
+    }
+    codePoints += 1;
+  }
+  return codePoints;
+}
+
 export function normalizeTodoTitle(input: string): string | null {
   if (typeof input !== "string") return null;
   const title = input.trim();
@@ -887,11 +906,8 @@ export function isWorkflowSuggestionClarification(
   }
   const trimmed = record.value.trim();
   if (trimmed.length === 0) return false;
-  let codePoints = 0;
-  for (const _ of trimmed) {
-    codePoints += 1;
-    if (codePoints > 200) return false;
-  }
+  const codePoints = countCodePoints(trimmed);
+  if (codePoints === null || codePoints > 200) return false;
   return true;
 }
 

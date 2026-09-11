@@ -2624,6 +2624,63 @@ describe("agent clarification and review flow", () => {
     expect(api.advanceWorkflow.mock.calls.length).toBe(advanceCallsBeforeAgentFlow);
   }, 30000);
 
+  it("releases the agent card when the provider suggestion fails", async () => {
+    const bodies: AgentPost[] = [];
+    installAgentFixture(bodies);
+    const api = makeApi();
+    const gate = deferred<WorkflowSuggestion>();
+    api.suggestWorkflow.mockReturnValueOnce(gate.promise);
+    api.getSuggestion.mockImplementation(() => notFoundSuggestion());
+    await reachCollectTasks(api);
+    api.getWorkflow.mockResolvedValue(collectWorkflow);
+    // The ask-time probe finds nothing (fresh choice); the settle-time GET
+    // then proves the request failed terminally.
+    api.getSuggestion.mockRejectedValueOnce(
+      new TodoApiError("not-found", "That plan has no saved todo suggestions."),
+    );
+    api.getSuggestion.mockResolvedValue({
+      ...failedSuggestion,
+      request_id: REQUEST_ID,
+      base_revision: 2,
+      step_id: `${WORKFLOW_ID}:COLLECT_TASKS`,
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Ask agent for help" })).toBeTruthy(),
+    );
+    await fireEvent.press(screen.getByRole("button", { name: "Ask agent for help" }));
+    await waitFor(() => expect(screen.getByLabelText("Your answer")).toBeTruthy(), {
+      timeout: 10000,
+    });
+    await fireEvent.changeText(screen.getByLabelText("Your answer"), "next Saturday");
+    const advanceCallsBeforeAgentFlow = api.advanceWorkflow.mock.calls.length;
+    await fireEvent.press(screen.getByRole("button", { name: "Continue" }));
+    // While the agent-owned write is unresolved, manual suggestion writes lock.
+    expect(
+      screen.getByRole("button", { name: "Suggest todos" }).props.accessibilityState?.disabled,
+    ).toBe(true);
+    await act(async () => {
+      gate.reject(
+        new TodoApiError("unavailable", "Suggestion timed out.", undefined, "timeout"),
+      );
+    });
+    // The failed outcome settles the exact waiter: the card exits Sending,
+    // manual controls re-enable, and no tool result starts a continuation.
+    await waitFor(
+      () =>
+        expect(
+          screen.getByRole("button", { name: "Continue" }).props.accessibilityState?.disabled,
+        ).toBe(false),
+      { timeout: 10000 },
+    );
+    expect(
+      screen.getByRole("button", { name: "Suggest todos" }).props.accessibilityState?.disabled,
+    ).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(bodies).toHaveLength(1);
+    expect(api.advanceWorkflow.mock.calls.length).toBe(advanceCallsBeforeAgentFlow);
+  }, 30000);
+
   it("accepts agent suggestions through submit_tasks and never confirms todos itself", async () => {
     const bodies: AgentPost[] = [];
     installAgentFixture(bodies);

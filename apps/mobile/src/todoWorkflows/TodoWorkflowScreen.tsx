@@ -536,6 +536,28 @@ export function TodoWorkflowScreen({
     }
   };
 
+  // Reject the agent-tool waiter only when the authoritative suggestion GET
+  // proves this exact request reached a terminal non-ready outcome. Ready
+  // and pending outcomes stay with the suggestion poller and the saved
+  // request path, which settle or retry them explicitly.
+  const rejectAgentSuggestOnTerminalOutcome = (
+    record: SuggestRecord,
+    saved: WorkflowSuggestion | null,
+    captured: number,
+    message: string,
+  ): void => {
+    if (
+      saved === null ||
+      saved.request_id !== record.requestId ||
+      (saved.status !== "failed" && saved.status !== "superseded") ||
+      !mountedRef.current ||
+      !isSessionCurrent(captured)
+    ) {
+      return;
+    }
+    rejectAgentSuggestWaiter(record.requestId, message);
+  };
+
   const rejectAgentTasksWaiter = (requestId: string, message: string): void => {
     const waiter = agentTasksWaiters.current.get(requestId);
     if (waiter !== undefined) {
@@ -640,13 +662,29 @@ export function TodoWorkflowScreen({
   ): void => {
     if (!mountedRef.current || !isSessionCurrent(captured)) return;
     if (error instanceof TodoApiError && error.suggestionCode !== undefined) {
-      void reconcileSuggestionAfterWrite(record, captured, error.message);
+      // A provider failure is terminal for the agent card only once the
+      // authoritative GET proves it: failed/superseded outcomes clear the
+      // pending record, so the waiter must settle too or the card would
+      // hold its submitting lock (and the manual lock) forever.
+      void (async () => {
+        const saved = await reconcileSuggestionAfterWrite(record, captured, error.message);
+        rejectAgentSuggestOnTerminalOutcome(record, saved, captured, error.message);
+      })();
       return;
     }
     if (error instanceof TodoApiError && error.kind === "conflict") {
       if (error.conflictCode === "stale_suggestion") {
-        void reconcileSuggestionAfterWrite(record, captured, error.message);
+        void (async () => {
+          const saved = await reconcileSuggestionAfterWrite(record, captured, error.message);
+          rejectAgentSuggestOnTerminalOutcome(record, saved, captured, error.message);
+        })();
         return;
+      }
+      // Definitive conflicts: this request ID can never succeed as issued
+      // (reused ID, stale step, invalid state). Release the agent card now;
+      // the pending record stays for explicit manual retry or discard.
+      if (error.conflictCode !== undefined) {
+        rejectAgentSuggestWaiter(record.requestId, error.message);
       }
       setWriteError({ message: error.message, lock: true });
       return;

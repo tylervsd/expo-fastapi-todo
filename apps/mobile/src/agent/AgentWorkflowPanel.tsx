@@ -23,6 +23,7 @@ import type { AgentState } from "./AgentRuntimeProvider";
 import {
   CLARIFICATION_FIELDS,
   TodoApiError,
+  countCodePoints,
   normalizeTodoTitle,
   type ClarificationField,
   type KnownTodoWorkflow,
@@ -150,9 +151,9 @@ export type ReviewArgs = {
   titles: string[];
 };
 
-/** Parse exact version-1 review_todo_suggestions arguments. Title checks stay
- *  lenient for display (2–10 non-blank strings); edits are validated against
- *  the canonical bounds before anything is submitted. */
+/** Parse exact version-1 review_todo_suggestions arguments. Titles must be
+ *  canonical (normalizeTodoTitle is identity): anything needing
+ *  canonicalization renders a safe recovery message and never advances. */
 export function parseReviewArgs(argsText: string): ReviewArgs | null {
   let parsed: unknown;
   try {
@@ -184,7 +185,7 @@ export function parseReviewArgs(argsText: string): ReviewArgs | null {
     args.titles.length > 10 ||
     !args.titles.every(
       (title): title is string =>
-        typeof title === "string" && title.trim().length > 0,
+        typeof title === "string" && normalizeTodoTitle(title) === title,
     )
   ) {
     return null;
@@ -201,13 +202,14 @@ export function parseReviewArgs(argsText: string): ReviewArgs | null {
 
 /** The shared 1–200-code-point answer bound (measured after trimming, in code
  *  points so emoji and astral text count like the server does). Mirrors the
- *  pending-store validator exactly, including NUL rejection, so every
- *  UI-valid answer is durable-store-valid. */
+ *  pending-store validator exactly, including NUL and unpaired-surrogate
+ *  rejection, so every UI-valid answer is durable-store-valid. */
 export function isAnswerValid(value: string): boolean {
   if (typeof value !== "string" || value.includes("\0")) return false;
   const trimmed = value.trim();
   if (trimmed.length === 0) return false;
-  return [...trimmed].length <= 200;
+  const codePoints = countCodePoints(trimmed);
+  return codePoints !== null && codePoints <= 200;
 }
 
 export type ClarifyResult = {
