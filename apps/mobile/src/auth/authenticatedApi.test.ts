@@ -182,6 +182,23 @@ describe("workflow calls", () => {
     });
   });
 
+  it("passes an exact clarification through with the bearer header", async () => {
+    const transport = makeWorkflowTransport();
+    const api = createAuthenticatedApi(() => "tok", jest.fn(), transport);
+    const request = {
+      request_id: startRequest.request_id,
+      expected_revision: 0,
+      step_id: `${workflowId}:ASSESS_TASK`,
+      clarification: { field: "budget" as const, value: "under $50" },
+    };
+
+    await api.suggestWorkflow(workflowId, request);
+
+    expect(transport.suggestWorkflowTodos).toHaveBeenCalledWith(workflowId, request, {
+      token: "tok",
+    });
+  });
+
   it("captures the token once and reports it on later auth-required", async () => {
     const transport = makeWorkflowTransport();
     let current: string | null = "old";

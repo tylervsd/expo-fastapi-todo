@@ -15,11 +15,15 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   normalizeTodoTitle,
   TodoApiError,
+  type KnownTodoWorkflow,
   type TodoWorkflow,
   type TodoWorkflowAction,
   type WorkflowSuggestion,
 } from "../todos/todoApi";
+import type { ClarificationField } from "../todos/todoApi";
 import type { TodoWorkflowScreenApi } from "../auth/authenticatedApi";
+import { AgentRuntimeProvider } from "../agent/AgentRuntimeProvider";
+import { AgentWorkflowPanel } from "../agent/AgentWorkflowPanel";
 import {
   defaultUuidGenerator,
   pendingWriteStore,
@@ -107,6 +111,37 @@ export function TodoWorkflowScreen({
   } | null>(null);
   const [pendingRecord, setPendingRecord] = useState<PendingWorkflowWrite | null>(null);
   const [persisting, setPersisting] = useState(false);
+  const [agentBusy, setAgentBusy] = useState(false);
+  // Flips when the agent thread UI mounts inside the runtime provider,
+  // i.e. after the state gate releases gated step templates on first mount.
+  const [agentTreeReady, setAgentTreeReady] = useState(false);
+  const [suggestionProbe, setSuggestionProbe] = useState<{
+    revision: number;
+    step_id: string;
+  } | null>(null);
+  // Agent-tool promises resolve through the single screen-owned write path:
+  // settle callbacks and the suggestion poller settle them, while discard,
+  // reload, unmount, and session replacement reject what can no longer run.
+  const agentSuggestWaiters = useRef(
+    new Map<
+      string,
+      {
+        resolve: (suggestion: WorkflowSuggestion) => void;
+        reject: (error: Error) => void;
+        captured: number;
+      }
+    >(),
+  );
+  const agentTasksWaiters = useRef(
+    new Map<
+      string,
+      {
+        resolve: (workflow: KnownTodoWorkflow) => void;
+        reject: (error: Error) => void;
+        captured: number;
+      }
+    >(),
+  );
   const [reconciling, setReconciling] = useState(false);
   const [reconcileFailed, setReconcileFailed] = useState(false);
   const [focusSignal, setFocusSignal] = useState(0);
@@ -115,6 +150,11 @@ export function TodoWorkflowScreen({
   const reconcileAbortRef = useRef<AbortController | null>(null);
   const suggestionAbortRef = useRef<AbortController | null>(null);
   const focusedSignal = useRef(-1);
+  // Whether the last served focus ran with the agent thread UI mounted.
+  // The runtime gate withholds step templates on first mount, so a focus
+  // served before the gate releases misses its control; the arrival signal
+  // below re-serves the current view exactly once per mount.
+  const focusTreeReady = useRef(false);
   const tasksDraftRef = useRef(tasksDraft);
   const tasksDraftEditCounterRef = useRef(tasksDraftEditCounter);
   const suggestionFetchSequence = useRef(0);
@@ -131,7 +171,34 @@ export function TodoWorkflowScreen({
     mountedRef.current = false;
     reconcileAbortRef.current?.abort();
     suggestionAbortRef.current?.abort();
+    const gone = new Error("The session changed. Ask the agent again.");
+    for (const [id, waiter] of agentSuggestWaiters.current) {
+      agentSuggestWaiters.current.delete(id);
+      waiter.reject(gone);
+    }
+    for (const [id, waiter] of agentTasksWaiters.current) {
+      agentTasksWaiters.current.delete(id);
+      waiter.reject(gone);
+    }
   }, []);
+
+  // A replaced session orphans in-flight agent promises: their settle
+  // callbacks guard on the captured epoch and will never run.
+  useEffect(() => {
+    const gone = new Error("The session changed. Ask the agent again.");
+    for (const [id, waiter] of agentSuggestWaiters.current) {
+      if (waiter.captured !== sessionEpoch) {
+        agentSuggestWaiters.current.delete(id);
+        waiter.reject(gone);
+      }
+    }
+    for (const [id, waiter] of agentTasksWaiters.current) {
+      if (waiter.captured !== sessionEpoch) {
+        agentTasksWaiters.current.delete(id);
+        waiter.reject(gone);
+      }
+    }
+  }, [sessionEpoch]);
 
   const livePending =
     pendingRecord !== null && pendingRecord.ownerId === userId ? pendingRecord : null;
@@ -306,6 +373,28 @@ export function TodoWorkflowScreen({
     return fetched.status !== "pending" && fetched.request_id === retained.requestId;
   };
 
+  const settleAgentSuggestionWaiter = (
+    requestId: string,
+    fetched: WorkflowSuggestion,
+    captured: number,
+  ): void => {
+    const waiter = agentSuggestWaiters.current.get(requestId);
+    if (
+      waiter === undefined ||
+      waiter.captured !== captured ||
+      !mountedRef.current ||
+      !isSessionCurrent(captured) ||
+      fetched.request_id !== requestId
+    ) {
+      return;
+    }
+    if (fetched.status === "ready") waiter.resolve(fetched);
+    else if (fetched.status === "failed" || fetched.status === "superseded") {
+      waiter.reject(new Error("Todo suggestions are unavailable. Try again."));
+    } else return;
+    agentSuggestWaiters.current.delete(requestId);
+  };
+
   const fetchCurrentSnapshot = async (
     id: string,
     captured: number
@@ -389,6 +478,7 @@ export function TodoWorkflowScreen({
       retained?.operation === "suggest" &&
       shouldClearSuggestionRecord(retained, fetched)
     ) {
+      settleAgentSuggestionWaiter(retained.requestId, fetched, captured);
       void clearPendingRecord(retained, captured);
     }
     if (
@@ -418,7 +508,15 @@ export function TodoWorkflowScreen({
     const revision = snapshot.revision;
     const currentStepId = snapshot.view.step_id;
     const editCounter = tasksDraftEditCounterRef.current;
-    void fetchSuggestionRecord(id, captured, revision, currentStepId, editCounter);
+    // Mark the settled suggestion probe so the agent panel only starts its
+    // first run after the authoritative workflow and suggestion state that
+    // run must observe are both in hand.
+    void (async () => {
+      await fetchSuggestionRecord(id, captured, revision, currentStepId, editCounter);
+      if (mountedRef.current && isSessionCurrent(captured)) {
+        setSuggestionProbe({ revision, step_id: currentStepId });
+      }
+    })();
     // The workflow revision and step identity are the authoritative trigger;
     // a suggestion GET never changes either value.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -438,27 +536,68 @@ export function TodoWorkflowScreen({
     ) {
       return;
     }
+    // This runs when storage arrives after a suggestion poll, so it has the
+    // same guarded waiter settlement as the live fetch path.
+    settleAgentSuggestionWaiter(retained.requestId, fetched, sessionEpoch);
     void clearPendingRecord(retained, sessionEpoch);
     // clearPendingRecord is recreated with the current render state; the
     // tracked values above are the intended resolution trigger.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingRecord, suggestionRecord, sessionEpoch]);
 
+  const rejectAgentSuggestWaiter = (requestId: string, message: string): void => {
+    const waiter = agentSuggestWaiters.current.get(requestId);
+    if (waiter !== undefined) {
+      agentSuggestWaiters.current.delete(requestId);
+      waiter.reject(new Error(message));
+    }
+  };
+
+  // Reject the agent-tool waiter only when the authoritative suggestion GET
+  // proves this exact request reached a terminal non-ready outcome. Ready
+  // and pending outcomes stay with the suggestion poller and the saved
+  // request path, which settle or retry them explicitly.
+  const rejectAgentSuggestOnTerminalOutcome = (
+    record: SuggestRecord,
+    saved: WorkflowSuggestion | null,
+    captured: number,
+    message: string,
+  ): void => {
+    if (
+      saved === null ||
+      saved.request_id !== record.requestId ||
+      (saved.status !== "failed" && saved.status !== "superseded") ||
+      !mountedRef.current ||
+      !isSessionCurrent(captured)
+    ) {
+      return;
+    }
+    rejectAgentSuggestWaiter(record.requestId, message);
+  };
+
+  const rejectAgentTasksWaiter = (requestId: string, message: string): void => {
+    const waiter = agentTasksWaiters.current.get(requestId);
+    if (waiter !== undefined) {
+      agentTasksWaiters.current.delete(requestId);
+      waiter.reject(new Error(message));
+    }
+  };
+
   const reconcileSuggestionAfterWrite = async (
     record: SuggestRecord,
     captured: number,
     message: string | null,
-  ): Promise<void> => {
-    if (!mountedRef.current || !isSessionCurrent(captured)) return;
+  ): Promise<WorkflowSuggestion | null> => {
+    if (!mountedRef.current || !isSessionCurrent(captured)) return null;
     setReconciling(true);
     setSuggestionError(null);
     try {
       const current = await fetchCurrentSnapshot(record.workflowId, captured);
-      if (!mountedRef.current || !isSessionCurrent(captured) || current === null) return;
+      if (!mountedRef.current || !isSessionCurrent(captured) || current === null) return null;
       if (!current.ok) {
         setReconcileFailed(true);
         setWriteError({ message: current.message, lock: true });
-        return;
+        return null;
       }
       const sameStep =
         current.snapshot.revision === record.body.expected_revision &&
@@ -468,7 +607,7 @@ export function TodoWorkflowScreen({
         if (message !== null && mountedRef.current && isSessionCurrent(captured)) {
           setWriteError({ message, lock: false });
         }
-        return;
+        return null;
       }
       const saved = await fetchSuggestionRecord(
         record.workflowId,
@@ -477,11 +616,11 @@ export function TodoWorkflowScreen({
         record.body.step_id,
         tasksDraftEditCounterRef.current,
       );
-      if (!mountedRef.current || !isSessionCurrent(captured)) return;
+      if (!mountedRef.current || !isSessionCurrent(captured)) return null;
       if (saved === null) {
         setPendingRecord(record);
         setWriteError({ message: RECOVERY_PENDING, lock: true });
-        return;
+        return null;
       }
       if (saved.request_id !== record.requestId || saved.status === "pending") {
         // A different result may be an older read that raced the request, and
@@ -490,12 +629,13 @@ export function TodoWorkflowScreen({
         // request settled.
         setPendingRecord(record);
         setWriteError({ message: RECOVERY_PENDING, lock: true });
-        return;
+        return null;
       }
       await clearPendingRecord(record, captured);
-      if (!mountedRef.current || !isSessionCurrent(captured)) return;
+      if (!mountedRef.current || !isSessionCurrent(captured)) return null;
       if (message !== null) setWriteError({ message, lock: false });
       else setWriteError(null);
+      return saved;
     } finally {
       if (mountedRef.current && isSessionCurrent(captured)) setReconciling(false);
     }
@@ -516,7 +656,20 @@ export function TodoWorkflowScreen({
       setWriteError({ message: INVALID_RESPONSE, lock: true });
       return;
     }
-    await reconcileSuggestionAfterWrite(record, captured, null);
+    const saved = await reconcileSuggestionAfterWrite(record, captured, null);
+    // Resolve the agent promise only on a ready match: pending outcomes stay
+    // registered for the suggestion poller, and mismatches stay retryable.
+    if (
+      saved !== null &&
+      saved.status === "ready" &&
+      saved.request_id === record.requestId
+    ) {
+      const waiter = agentSuggestWaiters.current.get(record.requestId);
+      if (waiter !== undefined) {
+        agentSuggestWaiters.current.delete(record.requestId);
+        waiter.resolve(saved);
+      }
+    }
   };
 
   const settleSuggestionError = (
@@ -526,13 +679,29 @@ export function TodoWorkflowScreen({
   ): void => {
     if (!mountedRef.current || !isSessionCurrent(captured)) return;
     if (error instanceof TodoApiError && error.suggestionCode !== undefined) {
-      void reconcileSuggestionAfterWrite(record, captured, error.message);
+      // A provider failure is terminal for the agent card only once the
+      // authoritative GET proves it: failed/superseded outcomes clear the
+      // pending record, so the waiter must settle too or the card would
+      // hold its submitting lock (and the manual lock) forever.
+      void (async () => {
+        const saved = await reconcileSuggestionAfterWrite(record, captured, error.message);
+        rejectAgentSuggestOnTerminalOutcome(record, saved, captured, error.message);
+      })();
       return;
     }
     if (error instanceof TodoApiError && error.kind === "conflict") {
       if (error.conflictCode === "stale_suggestion") {
-        void reconcileSuggestionAfterWrite(record, captured, error.message);
+        void (async () => {
+          const saved = await reconcileSuggestionAfterWrite(record, captured, error.message);
+          rejectAgentSuggestOnTerminalOutcome(record, saved, captured, error.message);
+        })();
         return;
+      }
+      // Definitive conflicts: this request ID can never succeed as issued
+      // (reused ID, stale step, invalid state). Release the agent card now;
+      // the pending record stays for explicit manual retry or discard.
+      if (error.conflictCode !== undefined) {
+        rejectAgentSuggestWaiter(record.requestId, error.message);
       }
       setWriteError({ message: error.message, lock: true });
       return;
@@ -551,8 +720,8 @@ export function TodoWorkflowScreen({
       keepMessage: boolean;
       clearFirst: boolean;
     }
-  ): Promise<void> => {
-    if (!mountedRef.current || !isSessionCurrent(captured)) return;
+  ): Promise<TodoWorkflow | null> => {
+    if (!mountedRef.current || !isSessionCurrent(captured)) return null;
     setReconciling(true);
     setReconcileFailed(false);
     try {
@@ -564,27 +733,28 @@ export function TodoWorkflowScreen({
       // indicator (the pending record stays, keeping its own retry lock).
       if (options.clearFirst && options.clearRecord !== null) {
         const cleared = await clearPendingRecord(options.clearRecord, captured);
-        if (!mountedRef.current || !isSessionCurrent(captured)) return;
-        if (!cleared) return;
+        if (!mountedRef.current || !isSessionCurrent(captured)) return null;
+        if (!cleared) return null;
       }
       const fetched = await fetchCurrentSnapshot(id, captured);
-      if (!mountedRef.current || !isSessionCurrent(captured)) return;
-      if (fetched === null) return;
+      if (!mountedRef.current || !isSessionCurrent(captured)) return null;
+      if (fetched === null) return null;
       if (!fetched.ok) {
         setReconcileFailed(true);
         setWriteError({ message: fetched.message, lock: true });
-        return;
+        return null;
       }
       noteTerminalOutcome(fetched.snapshot);
       setReconcileFailed(false);
       let cleared = true;
       if (!options.clearFirst && options.clearRecord !== null) {
         cleared = await clearPendingRecord(options.clearRecord, captured);
-        if (!mountedRef.current || !isSessionCurrent(captured)) return;
+        if (!mountedRef.current || !isSessionCurrent(captured)) return null;
       }
-      if (!cleared) return;
+      if (!cleared) return null;
       if (options.clearRecord !== null) setPendingRecord(null);
       if (!options.keepMessage) setWriteError(null);
+      return fetched.snapshot;
     } finally {
       if (mountedRef.current && isSessionCurrent(captured)) setReconciling(false);
     }
@@ -668,11 +838,24 @@ export function TodoWorkflowScreen({
     void queryClient.invalidateQueries({
       queryKey: ["todo-workflows", userId, "active"],
     });
-    await reconcileAfterWrite(response.workflow_id, captured, {
+    const reconciled = await reconcileAfterWrite(response.workflow_id, captured, {
       clearRecord: record,
       keepMessage: false,
       clearFirst: false,
     });
+    // Resolve the agent promise only on the REVIEW snapshot: anything else
+    // stays registered for an explicit retry, discard, or reload.
+    const waiter = agentTasksWaiters.current.get(record.requestId);
+    if (waiter === undefined) return;
+    if (
+      reconciled !== null &&
+      "state" in reconciled &&
+      reconciled.state === "REVIEW" &&
+      reconciled.workflow_id === record.workflowId
+    ) {
+      agentTasksWaiters.current.delete(record.requestId);
+      waiter.resolve(reconciled);
+    }
   };
 
   const settleAdvanceError = (record: AdvanceRecord, error: unknown, captured: number): void => {
@@ -684,6 +867,7 @@ export function TodoWorkflowScreen({
         // submitted stale answer stays explained after the current step
         // renders. The next write or manual reload clears it.
         setWriteError({ message: error.message, lock: true, sticky: true });
+        rejectAgentTasksWaiter(record.requestId, error.message);
         void reconcileAfterWrite(record.workflowId, captured, {
           clearRecord: record,
           keepMessage: true,
@@ -701,6 +885,7 @@ export function TodoWorkflowScreen({
         return;
       }
       setWriteError({ message: error.message, lock: false });
+      rejectAgentTasksWaiter(record.requestId, error.message);
       void reconcileAfterWrite(record.workflowId, captured, {
         clearRecord: record,
         keepMessage: true,
@@ -710,6 +895,7 @@ export function TodoWorkflowScreen({
     }
     if (error instanceof TodoApiError && error.kind === "validation") {
       setWriteError({ message: SERVER_INVALID, lock: false });
+      rejectAgentTasksWaiter(record.requestId, SERVER_INVALID);
       void (async () => {
         await clearPendingRecord(record, captured);
       })();
@@ -717,6 +903,7 @@ export function TodoWorkflowScreen({
     }
     if (error instanceof TodoApiError && error.kind === "not-found") {
       setWriteError({ message: error.message, lock: false });
+      rejectAgentTasksWaiter(record.requestId, error.message);
       void (async () => {
         await clearPendingRecord(record, captured);
         void queryClient.invalidateQueries({
@@ -787,6 +974,7 @@ export function TodoWorkflowScreen({
   const persistAndSend = (
     record: PendingWorkflowWrite,
     replacedRecord: PendingWorkflowWrite | null = null,
+    notifyUnsent: (() => void) | null = null,
   ): void => {
     if (busy.current) return;
     busy.current = true;
@@ -819,14 +1007,119 @@ export function TodoWorkflowScreen({
           isSessionCurrent(captured)
         ) {
           setPendingRecord(record);
+          notifyUnsent?.();
         }
       } catch {
         await handleSaveFailure(record, captured);
+        if (mountedRef.current && isSessionCurrent(captured)) {
+          notifyUnsent?.();
+        }
       } finally {
         if (mountedRef.current && isSessionCurrent(captured)) setPersisting(false);
         busy.current = false;
       }
     })();
+  };
+
+  const rejectAgentSendWaiter = (requestId: string): void => {
+    rejectAgentSuggestWaiter(
+      requestId,
+      "The plan was saved, but the request was not sent. Retry or discard the saved request.",
+    );
+    rejectAgentTasksWaiter(
+      requestId,
+      "The suggestions are saved. Retry or discard the saved request.",
+    );
+  };
+
+  // Agent-tool entry points share the single screen-owned write path: the
+  // record is durable and retryable through the existing machinery, while
+  // the returned promise settles only the agent interaction.
+  const submitAgentSuggestion = (
+    field: ClarificationField,
+    value: string,
+    requestId: string,
+  ): Promise<WorkflowSuggestion> => {
+    const captured = sessionEpoch;
+    if (workflowId === null || busy.current || pendingRecordRef.current !== null) {
+      return Promise.reject(new Error(PENDING_EXISTS));
+    }
+    const cached = queryClient.getQueryData<TodoWorkflow>(
+      workflowQueryKey(userId, workflowId)
+    );
+    if (
+      cached === undefined ||
+      cached.workflow_id !== workflowId ||
+      !("state" in cached) ||
+      cached.view.type !== "task_breakdown"
+    ) {
+      return Promise.reject(new Error("Reload the plan and try again."));
+    }
+    const record: SuggestRecord = {
+      version: 1,
+      ownerId: userId,
+      requestId,
+      operation: "suggest",
+      workflowId,
+      body: {
+        request_id: requestId,
+        expected_revision: cached.revision,
+        step_id: cached.view.step_id,
+        clarification: { field, value },
+      },
+    };
+    return new Promise<WorkflowSuggestion>((resolve, reject) => {
+      agentSuggestWaiters.current.set(requestId, { resolve, reject, captured });
+      persistAndSend(record, null, () => rejectAgentSendWaiter(requestId));
+    });
+  };
+
+  const submitAgentTasks = (
+    titles: string[],
+    _suggestionRequestId: string,
+  ): Promise<KnownTodoWorkflow> => {
+    // The suggestion identity travels in the panel's review result, not the
+    // advance body: the server re-reads the saved proposal as authority.
+    const captured = sessionEpoch;
+    if (workflowId === null || busy.current || pendingRecordRef.current !== null) {
+      return Promise.reject(new Error(PENDING_EXISTS));
+    }
+    const cached = queryClient.getQueryData<TodoWorkflow>(
+      workflowQueryKey(userId, workflowId)
+    );
+    if (
+      cached === undefined ||
+      cached.workflow_id !== workflowId ||
+      !("state" in cached) ||
+      cached.view.type !== "task_breakdown"
+    ) {
+      return Promise.reject(new Error("Reload the plan and try again."));
+    }
+    if (
+      titles.length < cached.view.min_titles ||
+      titles.length > cached.view.max_titles ||
+      titles.some((title) => normalizeTodoTitle(title) === null)
+    ) {
+      return Promise.reject(new Error(SERVER_INVALID));
+    }
+    const requestId = generateRequestId();
+    const record: AdvanceRecord = {
+      version: 1,
+      ownerId: userId,
+      requestId,
+      operation: "advance",
+      workflowId,
+      body: {
+        request_id: requestId,
+        expected_revision: cached.revision,
+        step_id: cached.view.step_id,
+        action: { action: "submit_tasks", titles },
+      },
+    };
+    return new Promise<KnownTodoWorkflow>((resolve, reject) => {
+      agentTasksWaiters.current.set(requestId, { resolve, reject, captured });
+      persistAndSend(record, null, () => rejectAgentSendWaiter(requestId));
+    });
   };
 
   const startMutation = useMutation({
@@ -858,10 +1151,11 @@ export function TodoWorkflowScreen({
   const buttonsDisabled =
     !fresh || isFetching || advancePending || suggestionPending || persisting ||
     suggestionFetching || reconciling || reconcileFailed || livePending !== null ||
-    suggestionRecord?.status === "pending";
+    suggestionRecord?.status === "pending" || agentBusy;
   const suggestionControlDisabled =
     !fresh || isFetching || suggestionPending || suggestionFetching || reconciling ||
-    livePending !== null;
+    livePending !== null || agentBusy;
+  const suggestionStatusDisabled = !fresh || isFetching || ioBusy;
   const suggestionInFlight =
     suggestionPending ||
     suggestionFetching ||
@@ -880,8 +1174,11 @@ export function TodoWorkflowScreen({
   }, [workflowQuery.data, queryClient, userId]);
 
   useEffect(() => {
-    if (focusSignal === focusedSignal.current) return;
+    const signalNew = focusSignal !== focusedSignal.current;
+    const treeNewlyReady = agentTreeReady && !focusTreeReady.current;
+    if (!signalNew && !treeNewlyReady) return;
     focusedSignal.current = focusSignal;
+    focusTreeReady.current = agentTreeReady;
     if (view === undefined) {
       titleInput.current?.focus();
       return;
@@ -915,7 +1212,7 @@ export function TodoWorkflowScreen({
         focusButton(backButton);
         break;
     }
-  }, [focusSignal, view]);
+  }, [focusSignal, view, agentTreeReady]);
 
   const submitStart = () => {
     if (busy.current || startPending || persisting || livePending !== null) return;
@@ -1153,6 +1450,7 @@ export function TodoWorkflowScreen({
         if (!mountedRef.current || !isSessionCurrent(captured)) return;
         setPendingRecord(null);
         setDiscardSuggestionWarning(false);
+        rejectAgentSendWaiter(record.requestId);
         setWriteError({ message: DISCARD_WARNING, lock: false });
         void queryClient.invalidateQueries({
           queryKey: ["todo-workflows", userId, "active"],
@@ -1214,6 +1512,7 @@ export function TodoWorkflowScreen({
           // before consuming it, so a stale reload cannot clear the retry.
           if (!mountedRef.current || !isSessionCurrent(captured)) return;
           setPendingRecord(null);
+          rejectAgentSendWaiter(record.requestId);
         }
         setReconcileFailed(false);
         setWriteError(null);
@@ -1222,6 +1521,17 @@ export function TodoWorkflowScreen({
         if (mountedRef.current && isSessionCurrent(captured)) setReconciling(false);
       }
     })();
+  };
+
+  const handleAgentBusy = (busy: boolean): void => {
+    // Competing workflow and suggestion writes stay disabled only while the
+    // agent panel owns an unresolved write; same-value reports are ignored
+    // so the notification cannot ping-pong between the two components.
+    setAgentBusy((current) => (current === busy ? current : busy));
+  };
+
+  const handleAgentReady = (ready: boolean): void => {
+    setAgentTreeReady((current) => (current === ready ? current : ready));
   };
 
   const showWriteError =
@@ -1242,6 +1552,45 @@ export function TodoWorkflowScreen({
     (reconcileFailed ||
       (hasData && isStale && !isFetching) ||
       (workflowId !== null && !hasData && getAlert !== null));
+
+  // The workflow-scoped runtime wraps the active step template together
+  // with the agent panel so both share one runtime identity across
+  // COLLECT_TASKS → REVIEW. On the breakdown step the runtime is created
+  // only after the suggestion probe settles, so its mount-time initial
+  // state carries the probed ready request ID exactly once; other steps
+  // mount immediately since no probe runs there and recovery reads history.
+  const agentWorkflow =
+    workflowId !== null && snapshot !== undefined && "state" in snapshot
+      ? snapshot
+      : null;
+  const agentProbeReady =
+    agentWorkflow === null ||
+    agentWorkflow.view.type !== "task_breakdown" ||
+    (suggestionProbe !== null &&
+      suggestionProbe.revision === agentWorkflow.revision &&
+      suggestionProbe.step_id === agentWorkflow.view.step_id);
+  const agentRuntimeReady = agentWorkflow !== null && agentProbeReady;
+  const agentInitialState =
+    agentWorkflow === null
+      ? null
+      : {
+          contract_version: 1 as const,
+          expected_revision: agentWorkflow.revision,
+          step_id: agentWorkflow.view.step_id,
+          suggestion_request_id:
+            suggestionRecord !== null &&
+            suggestionRecord.status === "ready" &&
+            suggestionRecord.base_revision === agentWorkflow.revision &&
+            suggestionRecord.step_id === agentWorkflow.view.step_id
+              ? suggestionRecord.request_id
+              : null,
+        };
+  const agentDataReady =
+    agentWorkflow !== null &&
+    fresh &&
+    suggestionProbe !== null &&
+    suggestionProbe.revision === agentWorkflow.revision &&
+    suggestionProbe.step_id === agentWorkflow.view.step_id;
 
   const renderView = () => {
     if (definitionUnsupported) {
@@ -1313,6 +1662,7 @@ export function TodoWorkflowScreen({
             suggestion={suggestionRecord}
             suggestionError={suggestionError}
             suggestionControlsDisabled={suggestionControlDisabled}
+            suggestionStatusDisabled={suggestionStatusDisabled}
             replaceSuggestions={replaceSuggestions}
             onCancelReplace={() => setReplaceSuggestions(false)}
             newSuggestionWarning={newSuggestionWarning}
@@ -1366,7 +1716,34 @@ export function TodoWorkflowScreen({
         keyboardShouldPersistTaps="handled"
         contentContainerStyle={styles.content}
       >
-        {renderView()}
+        {agentRuntimeReady &&
+        agentWorkflow !== null &&
+        agentInitialState !== null &&
+        workflowId !== null ? (
+          <View testID="agent-runtime-mount">
+            <AgentRuntimeProvider
+              workflowId={workflowId}
+              initialState={agentInitialState}
+            >
+              {renderView()}
+              <AgentWorkflowPanel
+                userId={userId}
+                workflow={agentWorkflow}
+                api={api}
+                generateRequestId={generateRequestId}
+                sessionEpoch={sessionEpoch}
+                isSessionCurrent={isSessionCurrent}
+                submitAgentSuggestion={submitAgentSuggestion}
+                submitAgentTasks={submitAgentTasks}
+                dataReady={agentDataReady}
+                onBusyChange={handleAgentBusy}
+                onReadyChange={handleAgentReady}
+              />
+            </AgentRuntimeProvider>
+          </View>
+        ) : (
+          renderView()
+        )}
         {livePending !== null && (
           <View style={styles.screen}>
             {livePending.operation === "suggest" && discardSuggestionWarning && (
@@ -1557,6 +1934,7 @@ function TaskBreakdownTemplate({
   suggestion,
   suggestionError,
   suggestionControlsDisabled,
+  suggestionStatusDisabled,
   replaceSuggestions,
   newSuggestionWarning,
   onConfirmStartAnother,
@@ -1581,6 +1959,7 @@ function TaskBreakdownTemplate({
   suggestion: WorkflowSuggestion | null;
   suggestionError: string | null;
   suggestionControlsDisabled: boolean;
+  suggestionStatusDisabled: boolean;
   replaceSuggestions: boolean;
   newSuggestionWarning: boolean;
   onConfirmStartAnother: () => void;
@@ -1649,7 +2028,7 @@ function TaskBreakdownTemplate({
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Check status"
-            disabled={suggestionControlsDisabled}
+            disabled={suggestionStatusDisabled}
             style={styles.refreshButton}
             onPress={onCheckSuggestion}
           >

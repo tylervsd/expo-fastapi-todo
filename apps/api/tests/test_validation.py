@@ -309,3 +309,86 @@ def test_auth_models_reject_malformed_bodies(
 ) -> None:
     with pytest.raises(ValidationError):
         model.model_validate(payload)
+
+
+def test_agent_state_accepts_exact_shape() -> None:
+    from app.agent import AgentState
+
+    workflow_id = uuid4()
+    request_id = uuid4()
+    state = AgentState.model_validate(
+        {
+            "contract_version": 1,
+            "expected_revision": 2,
+            "step_id": f"{workflow_id}:COLLECT_TASKS",
+            "suggestion_request_id": str(request_id),
+        }
+    )
+    assert state.contract_version == 1
+    assert state.expected_revision == 2
+    assert state.suggestion_request_id == request_id
+
+    empty = AgentState.model_validate(
+        {
+            "contract_version": 1,
+            "expected_revision": 0,
+            "step_id": "step",
+            "suggestion_request_id": None,
+        }
+    )
+    assert empty.suggestion_request_id is None
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {
+            "contract_version": 1,
+            "expected_revision": 0,
+            "step_id": "step",
+        },
+        {
+            "contract_version": 2,
+            "expected_revision": 0,
+            "step_id": "step",
+            "suggestion_request_id": None,
+        },
+        {
+            "contract_version": 1,
+            "expected_revision": True,
+            "step_id": "step",
+            "suggestion_request_id": None,
+        },
+        {
+            "contract_version": 1,
+            "expected_revision": -1,
+            "step_id": "step",
+            "suggestion_request_id": None,
+        },
+        {
+            "contract_version": 1,
+            "expected_revision": 2147483648,
+            "step_id": "step",
+            "suggestion_request_id": None,
+        },
+        {
+            "contract_version": 1,
+            "expected_revision": 0,
+            "step_id": "step",
+            "suggestion_request_id": "not-a-uuid",
+        },
+        {
+            "contract_version": 1,
+            "expected_revision": 0,
+            "step_id": "step",
+            "suggestion_request_id": None,
+            "extra": "rejected",
+        },
+    ],
+)
+def test_agent_state_rejects_non_exact_shape(payload: dict[str, object]) -> None:
+    from app.agent import AgentState
+
+    with pytest.raises(ValidationError):
+        AgentState.model_validate(payload)

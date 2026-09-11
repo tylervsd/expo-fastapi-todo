@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from app.title_validation import ECMASCRIPT_TRIM_CHARS
 from app.workflow_domain import (
     CURRENT_WORKFLOW_DEFINITION_VERSION,
     MAX_WORKFLOW_REVISION,
@@ -57,6 +58,44 @@ class InvalidStoredSuggestion(ValueError):
     """A persisted suggestion record failed closed validation."""
 
 
+ClarificationField = Literal["date", "location", "people", "budget", "constraints"]
+
+_CLARIFICATION_FIELDS = frozenset({"date", "location", "people", "budget", "constraints"})
+
+MAX_CLARIFICATION_CODE_POINTS = 200
+
+
+@dataclass(frozen=True)
+class Clarification:
+    """One bounded answer to a server-chosen clarification question."""
+
+    field: ClarificationField
+    value: str
+
+
+def normalize_clarification(clarification: Clarification) -> Clarification:
+    """Validate and canonicalize a clarification exactly once.
+
+    The field must be one of the fixed catalog values and the value must
+    hold 1 to 200 code points after trimming. Surrounding whitespace is not
+    significant and is removed so retries hash identically.
+    """
+    field = clarification.field
+    value = clarification.value
+    if not isinstance(field, str) or field not in _CLARIFICATION_FIELDS:
+        raise ValueError("clarification field is not in the catalog")
+    if not isinstance(value, str):
+        raise TypeError("clarification value must be a string")
+    canonical = value.strip(ECMASCRIPT_TRIM_CHARS)
+    if "\x00" in canonical:
+        raise ValueError("clarification value must not contain NUL")
+    if any(0xD800 <= ord(character) <= 0xDFFF for character in canonical):
+        raise ValueError("clarification value must not contain an unpaired surrogate")
+    if not 1 <= len(canonical) <= MAX_CLARIFICATION_CODE_POINTS:
+        raise ValueError("clarification value must contain 1 to 200 code points")
+    return Clarification(field, canonical)  # type: ignore[arg-type]
+
+
 @dataclass(frozen=True)
 class SuggestionSnapshot:
     workflow_id: UUID
@@ -76,6 +115,7 @@ class SuggestionReservation:
     step_id: str
     goal: str
     request_fingerprint: str
+    clarification: Clarification | None = None
 
     @property
     def goal_title(self) -> str:
@@ -87,17 +127,31 @@ class SuggestionReservation:
 
 
 def _suggestion_fingerprint(
-    workflow_id: UUID, expected_revision: int, step_id: str, goal: str
+    workflow_id: UUID,
+    expected_revision: int,
+    step_id: str,
+    goal: str,
+    clarification: Clarification | None = None,
 ) -> str:
-    return fingerprint_payload(
-        {
-            "operation": "suggest",
-            "workflow_id": str(workflow_id),
-            "expected_revision": expected_revision,
-            "step_id": step_id,
-            "title": goal,
+    """Hash the canonical suggestion identity.
+
+    `clarification` must already be normalized (reserve_suggestion does this
+    once before calling); it is consumed verbatim so omission keeps the exact
+    Phase 10 payload.
+    """
+    payload: dict[str, Any] = {
+        "operation": "suggest",
+        "workflow_id": str(workflow_id),
+        "expected_revision": expected_revision,
+        "step_id": step_id,
+        "title": goal,
+    }
+    if clarification is not None:
+        payload["clarification"] = {
+            "field": clarification.field,
+            "value": clarification.value,
         }
-    )
+    return fingerprint_payload(payload)
 
 
 def _validate_active_workflow(
@@ -214,13 +268,21 @@ def reserve_suggestion(
     request_id: UUID,
     expected_revision: int,
     step_id: str,
+    clarification: Clarification | None = None,
 ) -> SuggestionReservation | SuggestionSnapshot | None:
+    canonical_clarification = (
+        normalize_clarification(clarification) if clarification is not None else None
+    )
     with session.begin():
         workflow = lock_workflow(session, workflow_id, owner_id)
         if workflow is None:
             return None
         fingerprint = _suggestion_fingerprint(
-            workflow_id, expected_revision, step_id, workflow.title
+            workflow_id,
+            expected_revision,
+            step_id,
+            workflow.title,
+            canonical_clarification,
         )
         existing = session.scalar(
             select(WorkflowSuggestionRequestRow).where(
@@ -281,6 +343,7 @@ def reserve_suggestion(
             step_id=step_id,
             goal=workflow.title,
             request_fingerprint=fingerprint,
+            clarification=canonical_clarification,
         )
 
 

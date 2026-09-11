@@ -232,6 +232,25 @@ function parseSuggestionErrorCode(value: unknown): WorkflowSuggestionErrorCode |
   }
 }
 
+/** Count Unicode code points, returning null for unpaired surrogates. This is
+ *  the same surrogate-aware walk normalizeTodoTitle uses, shared so answer
+ *  and clarification validation agree with the server exactly. */
+export function countCodePoints(value: string): number | null {
+  let codePoints = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return null;
+      index += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return null;
+    }
+    codePoints += 1;
+  }
+  return codePoints;
+}
+
 export function normalizeTodoTitle(input: string): string | null {
   if (typeof input !== "string") return null;
   const title = input.trim();
@@ -846,7 +865,51 @@ export type WorkflowSuggestionRequest = {
   request_id: string;
   expected_revision: number;
   step_id: string;
+  clarification?: WorkflowSuggestionClarification;
 };
+
+/** Fixed clarification catalog shared with the Python agent (Task 2/3). The
+ *  server chooses only the field; question copy stays local to the panel. */
+export const CLARIFICATION_FIELDS = [
+  "date",
+  "location",
+  "people",
+  "budget",
+  "constraints",
+] as const;
+
+export type ClarificationField = (typeof CLARIFICATION_FIELDS)[number];
+
+export type WorkflowSuggestionClarification = {
+  field: ClarificationField;
+  value: string;
+};
+
+const isClarificationField = (value: unknown): value is ClarificationField =>
+  typeof value === "string" &&
+  (CLARIFICATION_FIELDS as readonly string[]).includes(value);
+
+/** Client-side shape check mirroring the server bounds: catalog field plus a
+ *  1–200-code-point answer after trimming. The server remains authoritative;
+ *  this keeps invalid payloads out of durable pending storage. */
+export function isWorkflowSuggestionClarification(
+  value: unknown
+): value is WorkflowSuggestionClarification {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  if (!exactObject(record, ["field", "value"])) return false;
+  if (!isClarificationField(record.field)) return false;
+  if (typeof record.value !== "string" || record.value.includes("\0")) {
+    return false;
+  }
+  const trimmed = record.value.trim();
+  if (trimmed.length === 0) return false;
+  const codePoints = countCodePoints(trimmed);
+  if (codePoints === null || codePoints > 200) return false;
+  return true;
+}
 
 export type WorkflowSuggestionStatus = "pending" | "ready" | "failed" | "superseded";
 

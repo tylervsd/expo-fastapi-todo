@@ -1,15 +1,18 @@
+import json
 import re
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Protocol
 from uuid import UUID, uuid4
 
+from ag_ui.core import RunAgentInput
+from ag_ui.encoder import EventEncoder
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import (
     BaseModel,
@@ -18,6 +21,7 @@ from pydantic import (
     StrictBool,
     StrictInt,
     StrictStr,
+    ValidationError,
     field_validator,
     model_validator,
 )
@@ -26,6 +30,14 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.agent import (
+    MAX_AGENT_BODY_BYTES,
+    AgentValidationError,
+    ChoiceCallable,
+    agent_sse_body,
+    choose_clarification,
+    validate_run_input,
+)
 from app.auth_repository import (
     UserRow,
     create_session,
@@ -54,6 +66,8 @@ from app.suggestion_provider import (
     request_todo_suggestions,
 )
 from app.suggestion_service import (
+    Clarification,
+    ClarificationField,
     InvalidStoredSuggestion,
     InvalidSuggestionState,
     StaleSuggestion,
@@ -63,6 +77,7 @@ from app.suggestion_service import (
     SuggestionStatus,
     finish_suggestion,
     get_current_suggestion,
+    normalize_clarification,
     reserve_suggestion,
 )
 from app.title_validation import canonicalize_title
@@ -175,12 +190,31 @@ class SessionResponse(BaseModel):
     user: UserPublic
 
 
+class SuggestionClarification(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    field: ClarificationField
+    value: StrictStr
+
+    @model_validator(mode="after")
+    def canonical_clarification(self) -> SuggestionClarification:
+        try:
+            canonical = normalize_clarification(
+                Clarification(self.field, self.value)
+            )
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        self.value = canonical.value
+        return self
+
+
 class TodoWorkflowSuggestionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     request_id: UUID
     expected_revision: StrictInt = Field(ge=0, le=MAX_WORKFLOW_REVISION)
     step_id: StrictStr
+    clarification: SuggestionClarification | None = None
 
 
 class TodoWorkflowSuggestionResponse(BaseModel):
@@ -355,14 +389,20 @@ class TodoUpdate(BaseModel):
         return self
 
 
-SuggestionCallable = Callable[
-    [str, OpenRouterConfig], Awaitable[tuple[str, ...]]
-]
+class SuggestionCallable(Protocol):
+    async def __call__(
+        self,
+        goal: str,
+        config: OpenRouterConfig,
+        *,
+        clarification: Clarification | None = None,
+    ) -> tuple[str, ...]: ...
 
 
 def create_app(
     session_factory: sessionmaker[Session] | None = None,
     suggestion_callable: SuggestionCallable | None = None,
+    agent_choice: ChoiceCallable | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -382,6 +422,7 @@ def create_app(
     suggestion_runner: SuggestionCallable = (
         suggestion_callable or request_todo_suggestions
     )
+    agent_chooser: ChoiceCallable = agent_choice or choose_clarification
 
     def get_session() -> Iterator[Session]:
         with app.state.session_factory() as session:
@@ -694,6 +735,13 @@ def create_app(
         session: Annotated[Session, Depends(get_session)],
     ) -> TodoWorkflowSuggestionResponse | JSONResponse:
         try:
+            clarification = (
+                Clarification(
+                    payload.clarification.field, payload.clarification.value
+                )
+                if payload.clarification is not None
+                else None
+            )
             reservation = reserve_suggestion(
                 session,
                 user.id,
@@ -701,6 +749,7 @@ def create_app(
                 payload.request_id,
                 payload.expected_revision,
                 payload.step_id,
+                clarification=clarification,
             )
         except RequestIdReused as exc:
             raise suggestion_conflict(
@@ -761,8 +810,18 @@ def create_app(
             error_code = SuggestionErrorCode.NOT_CONFIGURED
             titles: tuple[str, ...] | None = None
         else:
+            # Without clarification the legacy two-argument seam is retained so
+            # Phase 10 callables keep working; the keyword is only used when
+            # a clarification was supplied.
             try:
-                titles = await suggestion_runner(reservation.goal, config)
+                if reservation.clarification is None:
+                    titles = await suggestion_runner(reservation.goal, config)
+                else:
+                    titles = await suggestion_runner(
+                        reservation.goal,
+                        config,
+                        clarification=reservation.clarification,
+                    )
                 error_code = None
             except SuggestionTimeout:
                 titles = None
@@ -858,6 +917,50 @@ def create_app(
         if snapshot is None:
             raise workflow_not_found()
         return as_suggestion_response(snapshot)
+
+    @app.post("/agent")
+    async def run_agent(
+        request: Request,
+        user: Annotated[UserRow, Depends(get_current_user)],
+        session: Annotated[Session, Depends(get_session)],
+    ) -> StreamingResponse:
+        raw_body = bytearray()
+        async for chunk in request.stream():
+            if len(raw_body) + len(chunk) > MAX_AGENT_BODY_BYTES:
+                raise HTTPException(
+                    status_code=413, detail="Agent request body is too large."
+                )
+            raw_body.extend(chunk)
+        try:
+            payload = json.loads(raw_body.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            raise HTTPException(
+                status_code=422, detail="Agent request body must be JSON."
+            ) from None
+        try:
+            run_input = RunAgentInput.model_validate(payload)
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=422, detail="Agent request is malformed."
+            ) from exc
+        try:
+            validate_run_input(run_input)
+        except AgentValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        encoder = EventEncoder()
+
+        async def stream() -> AsyncIterator[str]:
+            async for chunk in agent_sse_body(
+                run_input,
+                user.id,
+                session,
+                choose=agent_chooser,
+                is_disconnected=request.is_disconnected,
+            ):
+                yield chunk
+
+        return StreamingResponse(stream(), media_type=encoder.get_content_type())
 
     @app.post(
         "/todo-workflows/{workflow_id}/actions", response_model=TodoWorkflowResponse

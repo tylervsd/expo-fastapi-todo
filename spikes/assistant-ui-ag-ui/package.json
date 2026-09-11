@@ -1,0 +1,21 @@
+{
+  "name": "assistant-ui-ag-ui-spike",
+  "private": true,
+  "main": "index.ts",
+  "dependencies": {
+    "@ag-ui/client": "0.0.59",
+    "@assistant-ui/react-ag-ui": "0.0.58",
+    "@assistant-ui/react-native": "0.1.40",
+    "@expo/metro-runtime": "~57.0.15",
+    "expo": "57.0.19",
+    "expo-crypto": "~57.0.2",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-native": "0.86.3",
+    "react-native-web": "^0.21.2"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.4",
+    "typescript": "~6.0.3"
+  }
+}

@@ -13,6 +13,7 @@ import {
   type TodoRequestOptions,
 } from "../todos/todoApi";
 import { createAuthenticatedApi, defaultTransport, type TodoTransport } from "./authenticatedApi";
+import { AgentSessionProvider } from "../agent/AgentSessionProvider";
 import { AuthScreen } from "./AuthScreen";
 import { tokenStorage, type TokenStorage } from "./tokenStorage";
 
@@ -203,6 +204,11 @@ export function AuthProvider({
   // eslint-disable-next-line react-hooks/refs -- both closures read identity at call time (query/event), never during render
   const todoApi = createAuthenticatedApi(() => liveRef.current?.token ?? null, handleAuthRequired, transport);
 
+  // Lazy token read for the session-scoped agent factory: the closure runs
+  // at agent-creation time, never during render, so the bearer token stays
+  // in liveRef and out of React state, props, query keys, and logs.
+  const getSessionToken = useCallback(() => liveRef.current?.token ?? null, []);
+
   if (status === "unknown") {
     return (
       <SessionEpochContext.Provider value={epochControls}>
@@ -229,21 +235,31 @@ export function AuthProvider({
 
   return (
     <SessionEpochContext.Provider value={epochControls}>
-      {children}
-      <View style={styles.signedIn}>
-        <View style={styles.header}>
-          <Text style={styles.username}>Signed in as {user.username}</Text>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Sign out"
-            style={styles.signOutButton}
-            onPress={signOut}
-          >
-            <Text style={styles.signOutButtonText}>Sign out</Text>
-          </Pressable>
+      {/* Session-scoped agent factory: keyed by era so replacement, logout,
+          or unmount discards the old closure (and aborts its agents) while
+          the token itself never reaches workflow props, query keys, agent
+          state, pending storage, or logs. */}
+      <AgentSessionProvider
+        key={sessionEpoch}
+        getToken={getSessionToken}
+        sessionEpoch={sessionEpoch}
+      >
+        {children}
+        <View style={styles.signedIn}>
+          <View style={styles.header}>
+            <Text style={styles.username}>Signed in as {user.username}</Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Sign out"
+              style={styles.signOutButton}
+              onPress={signOut}
+            >
+              <Text style={styles.signOutButtonText}>Sign out</Text>
+            </Pressable>
+          </View>
+          <TodoExperience userId={user.id} api={todoApi} sessionEpoch={sessionEpoch} isSessionCurrent={isSessionCurrent} />
         </View>
-        <TodoExperience userId={user.id} api={todoApi} sessionEpoch={sessionEpoch} isSessionCurrent={isSessionCurrent} />
-      </View>
+      </AgentSessionProvider>
     </SessionEpochContext.Provider>
   );
 }

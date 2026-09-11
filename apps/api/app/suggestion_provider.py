@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError
 
+from app.suggestion_service import Clarification, normalize_clarification
 from app.title_validation import canonicalize_title
 from app.workflow_domain import InvalidWorkflowInput, create_submit_tasks
 
@@ -63,12 +64,20 @@ def get_openrouter_config() -> OpenRouterConfig:
     return OpenRouterConfig(api_key=api_key, model=model)
 
 
-def _request_payload(goal: str, model: str) -> dict[str, Any]:
+def _request_payload(
+    goal: str, model: str, clarification: Clarification | None = None
+) -> dict[str, Any]:
+    if clarification is None:
+        user_content = goal
+    else:
+        user_content = (
+            f"{goal}\nClarification [{clarification.field}]: {clarification.value}"
+        )
     return {
         "model": model,
         "messages": [
             {"role": "system", "content": SYSTEM_INSTRUCTION},
-            {"role": "user", "content": goal},
+            {"role": "user", "content": user_content},
         ],
         "provider": {"require_parameters": True},
         "response_format": {
@@ -129,20 +138,20 @@ def _extract_titles(response_body: bytes) -> tuple[str, ...]:
         raise _invalid_output() from None
 
 
-async def request_todo_suggestions(
-    goal: str,
+async def _post_openrouter_json(
+    payload: dict[str, Any],
     config: OpenRouterConfig,
     *,
     transport: httpx.AsyncBaseTransport | None = None,
-) -> tuple[str, ...]:
+) -> bytes:
+    """Send one bounded, redacted OpenRouter JSON request.
+
+    Shared by todo suggestions and the Task 3 agent choice so both use the
+    same output cap, deadline, timeouts, and error mapping.
+    """
     api_key = config.api_key.strip()
-    model = config.model.strip()
-    if not api_key or not model:
+    if not api_key or not config.model.strip():
         raise SuggestionsNotConfigured("OpenRouter suggestions are not configured")
-    try:
-        canonical_goal = canonicalize_title(goal)
-    except ValueError:
-        raise InvalidSuggestionOutput("OpenRouter goal is invalid") from None
 
     timeout = httpx.Timeout(
         HTTP_READ_TIMEOUT_SECONDS,
@@ -160,7 +169,7 @@ async def request_todo_suggestions(
                         "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json",
                     },
-                    json=_request_payload(canonical_goal, model),
+                    json=payload,
                 ) as response:
                     if not response.is_success:
                         raise ProviderUnavailable(
@@ -180,4 +189,34 @@ async def request_todo_suggestions(
     except httpx.HTTPError:
         raise ProviderUnavailable("OpenRouter provider was unavailable") from None
 
-    return _extract_titles(bytes(response_body))
+    return bytes(response_body)
+
+
+async def request_todo_suggestions(
+    goal: str,
+    config: OpenRouterConfig,
+    *,
+    clarification: Clarification | None = None,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> tuple[str, ...]:
+    api_key = config.api_key.strip()
+    model = config.model.strip()
+    if not api_key or not model:
+        raise SuggestionsNotConfigured("OpenRouter suggestions are not configured")
+    try:
+        canonical_goal = canonicalize_title(goal)
+    except ValueError:
+        raise InvalidSuggestionOutput("OpenRouter goal is invalid") from None
+    try:
+        canonical_clarification = (
+            normalize_clarification(clarification) if clarification is not None else None
+        )
+    except (TypeError, ValueError):
+        raise InvalidSuggestionOutput("OpenRouter clarification is invalid") from None
+
+    response_body = await _post_openrouter_json(
+        _request_payload(canonical_goal, model, canonical_clarification),
+        config,
+        transport=transport,
+    )
+    return _extract_titles(response_body)
