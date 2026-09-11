@@ -259,15 +259,13 @@ provider/event fixtures and make no paid or network calls. Test output
 carries only pre-existing dependency deprecation warnings (Alembic,
 Starlette/httpx, AnyIO); they are not failures.
 
-The full `pnpm quality` gate does **not** pass on this branch: root
-Markdown/link checks and root tests pass, but it stops at mobile lint
-(`expo lint`) with 15 errors in Phase 11 files — `AgentRuntimeProvider.tsx`
-(ref access during render in the state gate), `AuthProvider.tsx` (ref value
-read during render), `compatibility.test.tsx` (immutability), one conditional
-`useAgentSession` call in `AuthProvider.test.tsx`, and one synchronous
-`setState`-in-effect in `AgentRuntimeProvider.test.tsx` — plus 45 warnings.
-The same gate passes on the base commit, so these are new findings for a
-code fix round, not docs work. `README.md` states exactly this boundary.
+The full `pnpm quality` gate passes on this branch end to end (root
+Markdown/link/shell checks, root tests, API suite at 497 passed, mobile
+lint at 0 errors with 45 warnings, mobile suite at 506 passed, typecheck,
+and web export). An earlier fix round found 15 mobile-lint errors in
+Phase 11 files; the quality-fix wave (`acfc1c9`) resolved all 15 with no
+behavior change and a clean re-review, leaving the warning count
+untouched.
 
 ## 9. Acceptance record
 
