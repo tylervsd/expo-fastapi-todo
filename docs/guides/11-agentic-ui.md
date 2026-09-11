@@ -10,8 +10,8 @@ AG-UI run renders the saved titles as an editable checklist. Accepting the
 edits uses the existing `submit_tasks` transition; only the existing explicit
 `confirm` transition creates todos.
 
-This guide describes Phase 11 and the acceptance fix on
-`codex/phase-11-acceptance`. Interactive web and iOS checks and live model
+Phase 11 was merged in PR #8 (`e99eca0`). The acceptance fix (`61fb30c`)
+is pushed on `codex/phase-11-acceptance` and is not yet merged into `main`. Interactive web and iOS checks and live model
 calls were observed on 2026-09-10. The record below separates live results,
 controlled interruption checks, and automated coverage; it is not a claim
 of production reliability or a completed accessibility audit.
@@ -248,8 +248,10 @@ pnpm --dir apps/mobile export:web
 npx --prefix apps/mobile expo export --platform ios --output-dir dist-ios-verify
 ```
 
-The PostgreSQL-backed API suite passed **498/498** tests and the mobile
-suite passed **522/522** tests across 17 suites. Typecheck, Ruff,
+After the acceptance run-ID fix, the PostgreSQL-backed API suite passed
+**501/501** tests and the mobile
+suite passed **522/522** tests across 17 suites. Ruff and whitespace checks
+passed for the fix. The earlier PR verification also passed typecheck,
 `git diff --check`, Markdown lint (0 issues across 47 files), and
 local-link checks were clean. Web and iOS bundle exports completed
 successfully; a successful export is not evidence of interactive behavior
@@ -260,7 +262,7 @@ provider/event fixtures and make no paid or network calls. Test output
 carries only pre-existing dependency deprecation warnings (Alembic,
 Starlette/httpx, AnyIO); they are not failures.
 
-The full `pnpm quality` gate passes on this branch end to end (root
+Before the acceptance follow-up, the full `pnpm quality` gate passed (root
 Markdown/link/shell checks, root tests, API suite at 498 passed, mobile
 lint at 0 errors with 45 warnings, mobile suite at 522 passed, typecheck,
 and web export). An earlier fix round found 15 mobile-lint errors in
@@ -288,7 +290,7 @@ manually observing the platform UIs or the live model.
 
 | Target | Date/runtime | Question selection and form response | Editable/removable suggestions | Interruption/replay | Malformed/unknown fallback | Sign-out isolation, accessibility, explicit confirm |
 | --- | --- | --- | --- | --- | --- | --- |
-| Automated API and mobile tests | 2026-09-10, PostgreSQL `todo_test` with Python 3.14 (498 API tests) and Jest with `jest-expo` (522 mobile tests, 17 suites) | ☑ catalog-only choice, fixed local copy, 1–200 answer bounds, fingerprint behavior | ☑ edited titles through `submit_tasks`; edited-title ack emits no-write finish without regeneration | ☑ cancellation closes provider work; interrupted clarification restarts explicitly; `Retry saved request` reuses the stored ID | ☑ unknown names/versions/extra keys, mismatched IDs, stale revisions fail closed with safe errors | ☑ owner-hidden lookup, session teardown, parser-level a11y attributes, zero todos before `confirm` |
+| Automated API and mobile tests | 2026-09-10, PostgreSQL `todo_test` with Python 3.14 (501 API tests) and Jest with `jest-expo` (522 mobile tests, 17 suites) | ☑ catalog-only choice, fixed local copy, 1–200 answer bounds, fingerprint behavior | ☑ edited titles through `submit_tasks`; edited-title ack emits no-write finish without regeneration | ☑ cancellation closes provider work; interrupted clarification restarts explicitly; `Retry saved request` reuses the stored ID | ☑ unknown names/versions/extra keys, mismatched IDs, stale revisions fail closed with safe errors | ☑ owner-hidden lookup, session teardown, parser-level a11y attributes, zero todos before `confirm` |
 | Live model | 2026-09-10, `openrouter/free`, 14 calls of 500 authorized | ☑ five valid choices: four date, one location; three choice failures | ☑ three valid proposals (5, 5, 8 titles); three suggestion failures; explicit retry recovered the hiking flow | No automatic retries; recovery was user-driven | Invalid outputs failed safely; not all failure causes were captured | Web birthday/hiking and native birthday flows completed |
 | Web UI | 2026-09-10, Expo 57, in-app browser | ☑ live date/location forms submitted | ☑ live titles edited/removed, then reviewed and confirmed | ☑ reload restored saved proposal without another provider call; controlled delayed run cancelled and unlocked manual controls | Automated coverage only | ☑ double-click confirmation created one set; sign-out during delayed run stayed signed out; labels/focus observed, full screen-reader audit pending |
 | iOS Simulator UI | 2026-09-10, iPhone 17 Pro, iOS 26.5, Expo Go 57 | ☑ live date form submitted | ☑ live proposal edited from 8 to 7 titles; separate fixture proposal reduced from 3 to 2 | ☑ controlled delayed run cancelled and unlocked manual controls | Automated coverage only | ☑ explicit confirmation created seven live todos; sign-out during delayed run stayed signed out; accessible labels observed, full VoiceOver audit pending |
