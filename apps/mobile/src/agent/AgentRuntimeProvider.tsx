@@ -31,9 +31,13 @@ function AgentStateGate({
   const current = useAgUiState<AgentState>();
   const installed = useRef(false);
   const [ready, setReady] = useState(false);
-  const snapshot = useRef(initialState);
+  // Mount-time snapshot via the state initializer (first render wins, later
+  // props ignored): identical semantics to the previous ref snapshot, but
+  // with no ref read during render. It serves both installation and
+  // readiness, and later revision changes are never installed or compared.
+  const [snapshot] = useState(initialState);
   const { contract_version, expected_revision, step_id, suggestion_request_id } =
-    snapshot.current;
+    snapshot;
 
   useEffect(() => {
     if (installed.current) return;
@@ -52,24 +56,18 @@ function AgentStateGate({
     suggestion_request_id,
   ]);
 
-  useEffect(() => {
-    if (
-      !ready &&
-      current?.contract_version === contract_version &&
-      current?.expected_revision === expected_revision &&
-      current?.step_id === step_id &&
-      current?.suggestion_request_id === suggestion_request_id
-    ) {
-      setReady(true);
-    }
-  }, [
-    ready,
-    current,
-    contract_version,
-    expected_revision,
-    step_id,
-    suggestion_request_id,
-  ]);
+  // Latch readiness during render (not in an effect): once the gate observes
+  // its own snapshot back through the public state hook, children enable and
+  // stay enabled — later Task 5 state updates never disable them again.
+  if (
+    !ready &&
+    current?.contract_version === contract_version &&
+    current?.expected_revision === expected_revision &&
+    current?.step_id === step_id &&
+    current?.suggestion_request_id === suggestion_request_id
+  ) {
+    setReady(true);
+  }
 
   if (!ready) return null;
   return <>{children}</>;

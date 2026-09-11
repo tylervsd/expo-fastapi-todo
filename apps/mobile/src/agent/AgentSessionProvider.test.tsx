@@ -28,17 +28,23 @@ afterEach(() => {
 
 type SessionValue = { createAgent: (workflowId: string) => HttpAgent };
 
+// Stable fixture token getters: shared closures so rerenders reuse the same
+// factory identity; the replacement test uses a distinct era getter.
+const sessionGetToken = () => "tok";
+const sessionGetTokenOld = () => "tok-old";
+const sessionGetTokenNew = () => "tok-new";
+
 function Capture({ seen }: { seen: SessionValue[] }) {
   const value = useAgentSession();
   seen.push(value);
   return <View testID="session-capture" />;
 }
 
-const renderSession = async (props?: { token?: string; sessionEpoch?: number }) => {
+const renderSession = async (props?: { getToken?: () => string | null; sessionEpoch?: number }) => {
   const seen: SessionValue[] = [];
   const view = await render(
     <AgentSessionProvider
-      token={props?.token ?? "tok"}
+      getToken={props?.getToken ?? sessionGetToken}
       sessionEpoch={props?.sessionEpoch ?? 1}
     >
       <Capture seen={seen} />
@@ -49,7 +55,7 @@ const renderSession = async (props?: { token?: string; sessionEpoch?: number }) 
 
 describe("AgentSessionProvider", () => {
   it("builds agents against the existing API URL with the exact bearer header", async () => {
-    const { seen } = await renderSession({ token: "tok" });
+    const { seen } = await renderSession();
     const agent = seen[seen.length - 1].createAgent(WORKFLOW_A);
 
     expect(agent.url).toBe(`${API_URL}/agent`);
@@ -58,7 +64,7 @@ describe("AgentSessionProvider", () => {
   });
 
   it("sends no cookie, client URL, or extra agent configuration", async () => {
-    const { seen } = await renderSession({ token: "tok" });
+    const { seen } = await renderSession();
     const agent = seen[seen.length - 1].createAgent(WORKFLOW_A);
 
     expect(agent.url).not.toBe("/agent");
@@ -69,12 +75,12 @@ describe("AgentSessionProvider", () => {
   });
 
   it("keeps a stable factory and agent for one workflow and session", async () => {
-    const { view, seen } = await renderSession({ token: "tok", sessionEpoch: 1 });
+    const { view, seen } = await renderSession({ sessionEpoch: 1 });
     const first = seen[seen.length - 1];
     const agentA = first.createAgent(WORKFLOW_A);
 
     await view.rerender(
-      <AgentSessionProvider token="tok" sessionEpoch={1}>
+      <AgentSessionProvider getToken={sessionGetToken} sessionEpoch={1}>
         <Capture seen={seen} />
       </AgentSessionProvider>,
     );
@@ -87,7 +93,7 @@ describe("AgentSessionProvider", () => {
   });
 
   it("mints distinct agents for distinct workflows", async () => {
-    const { seen } = await renderSession({ token: "tok", sessionEpoch: 1 });
+    const { seen } = await renderSession({ sessionEpoch: 1 });
     const factory = seen[seen.length - 1];
     const agentA = factory.createAgent(WORKFLOW_A);
     const agentB = factory.createAgent(WORKFLOW_B);
@@ -99,11 +105,11 @@ describe("AgentSessionProvider", () => {
   });
 
   it("mints agents with the new bearer header after token replacement", async () => {
-    const { view, seen } = await renderSession({ token: "tok-old", sessionEpoch: 1 });
+    const { view, seen } = await renderSession({ getToken: sessionGetTokenOld, sessionEpoch: 1 });
     const before = seen[seen.length - 1];
 
     await view.rerender(
-      <AgentSessionProvider token="tok-new" sessionEpoch={2}>
+      <AgentSessionProvider getToken={sessionGetTokenNew} sessionEpoch={2}>
         <Capture seen={seen} />
       </AgentSessionProvider>,
     );
@@ -117,7 +123,7 @@ describe("AgentSessionProvider", () => {
 
   it("exposes only the factory and aborts created agents on unmount", async () => {
     const abortSpy = jest.spyOn(HttpAgent.prototype, "abortRun");
-    const { view, seen } = await renderSession({ token: "tok", sessionEpoch: 1 });
+    const { view, seen } = await renderSession({ sessionEpoch: 1 });
     const factory = seen[seen.length - 1];
 
     expect(Object.keys(factory)).toEqual(["createAgent"]);

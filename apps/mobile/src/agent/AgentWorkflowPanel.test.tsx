@@ -910,6 +910,10 @@ function notFound(): Promise<never> {
   );
 }
 
+// Stable fixture token getter: one shared closure so session identity is
+// constant across renders and rerenders in these panel tests.
+const panelGetToken = () => "tok";
+
 async function renderPanelHarness(overrides: {
   workflow?: KnownTodoWorkflow;
   getSuggestion?: jest.Mock;
@@ -937,7 +941,7 @@ async function renderPanelHarness(overrides: {
   const onReadyChange = overrides.onReadyChange;
   const workflow = overrides.workflow ?? collectWorkflow;
   const view = await render(
-    <AgentSessionProvider token="tok" sessionEpoch={overrides.sessionEpoch ?? 1}>
+    <AgentSessionProvider getToken={panelGetToken} sessionEpoch={overrides.sessionEpoch ?? 1}>
       <AgentRuntimeProvider
         workflowId={workflow.workflow_id}
         initialState={
@@ -1491,7 +1495,7 @@ describe("AgentWorkflowPanel integration", () => {
       { timeout: 10000 },
     );
     await harness.view.rerender(
-      <AgentSessionProvider token="tok" sessionEpoch={1}>
+      <AgentSessionProvider getToken={panelGetToken} sessionEpoch={1}>
         <AgentRuntimeProvider
           workflowId={WORKFLOW_ID}
           initialState={{

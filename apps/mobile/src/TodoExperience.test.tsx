@@ -133,6 +133,9 @@ const makeShellApi = (): MockShellApi =>
 
 // The workflow screen mounts the workflow-scoped agent runtime against the
 // existing API URL; the shell harness provides the session it consumes.
+// Stable fixture token getter: one shared closure so session identity is
+// constant across renders in these shell tests.
+const shellGetToken = () => "tok";
 let savedShellApiUrl: string | undefined;
 
 const renderShell = async (
@@ -142,7 +145,7 @@ const renderShell = async (
 ) => {
   liveClients.push(client);
   const view = await render(
-    <AgentSessionProvider token="tok" sessionEpoch={0}>
+    <AgentSessionProvider getToken={shellGetToken} sessionEpoch={0}>
       <QueryClientProvider client={client}>
         <TodoExperience
           userId={userId}

@@ -5,7 +5,7 @@ import { HttpAgent } from "@ag-ui/client";
 import { createAppQueryClient } from "../../App";
 import { TodoApiError, type AuthUser, type Todo } from "../todos/todoApi";
 import { AuthProvider, SessionEpochContext } from "./AuthProvider";
-import { useAgentSession } from "../agent/AgentSessionProvider";
+import { useAgentSessionOrNull } from "../agent/AgentSessionProvider";
 import { PENDING_WRITE_KEY_PREFIX } from "../todoWorkflows/pendingWorkflowWrite";
 import { createMemoryTokenStorage, type TokenStorage } from "./tokenStorage";
 import type { TodoTransport } from "./authenticatedApi";
@@ -736,16 +736,11 @@ describe("agent session factory", () => {
   type AgentFactory = { createAgent: (workflowId: string) => HttpAgent };
 
   // Children render before a session exists too, so the probe tolerates the
-  // missing factory outside the signed-in branch. The hook still runs its
-  // context read on every render, keeping hook order stable.
+  // missing factory outside the signed-in branch via the nullable hook.
+  // The hook call itself stays unconditional on every render, keeping hook
+  // order stable.
   const AgentProbe = ({ seen }: { seen: Array<AgentFactory | null> }) => {
-    let value: AgentFactory | null = null;
-    try {
-      value = useAgentSession();
-    } catch {
-      value = null;
-    }
-    seen.push(value);
+    seen.push(useAgentSessionOrNull());
     return null;
   };
 

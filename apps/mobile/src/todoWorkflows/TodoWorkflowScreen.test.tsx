@@ -330,6 +330,10 @@ timeoutManager.setTimeoutProvider({
 
 const liveClients: QueryClient[] = [];
 
+// Stable fixture token getter: one shared closure so session identity is
+// constant across renders in these host tests.
+const hostGetToken = () => "tok";
+
 type RenderHostOptions = {
   userId?: string;
   store?: PendingWriteStore;
@@ -349,7 +353,7 @@ const renderHost = async (
   const store =
     options.store ?? createPendingWriteStore(createMemoryPendingWriteStorage());
   const view = await render(
-    <AgentSessionProvider token="tok" sessionEpoch={options.sessionEpoch ?? 0}>
+    <AgentSessionProvider getToken={hostGetToken} sessionEpoch={options.sessionEpoch ?? 0}>
       <QueryClientProvider client={client}>
         <TodoWorkflowScreen
           userId={options.userId ?? USER_ID}

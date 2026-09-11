@@ -14,6 +14,10 @@ const WORKFLOW_A = "6fc33b84-16a8-4d8e-ae94-fc50bb457d72";
 const WORKFLOW_B = "9ab4d5e6-16a8-4d8e-ae94-fc50bb457d72";
 const RUN_ID = "11111111-1111-4111-8111-111111111111";
 
+// Stable fixture token getter: one shared closure so rerenders reuse the
+// same factory identity, matching the session-scoped provider contract.
+const harnessGetToken = () => "tok";
+
 const STATE_A: AgentState = {
   contract_version: 1,
   expected_revision: 2,
@@ -101,17 +105,17 @@ function Harness({
   workflowId,
   initialState,
   mounts,
-  token = "tok",
+  getToken = harnessGetToken,
   sessionEpoch = 1,
 }: {
   workflowId: string;
   initialState: AgentState;
   mounts: Array<AgentState | undefined>;
-  token?: string;
+  getToken?: () => string | null;
   sessionEpoch?: number;
 }) {
   return (
-    <AgentSessionProvider token={token} sessionEpoch={sessionEpoch}>
+    <AgentSessionProvider getToken={getToken} sessionEpoch={sessionEpoch}>
       <AgentRuntimeProvider workflowId={workflowId} initialState={initialState}>
         <ReadyProbe mounts={mounts} />
       </AgentRuntimeProvider>
@@ -164,7 +168,7 @@ function RunHarness({
   seenIds: Set<string>;
 }) {
   return (
-    <AgentSessionProvider token="tok" sessionEpoch={1}>
+    <AgentSessionProvider getToken={harnessGetToken} sessionEpoch={1}>
       <AgentRuntimeProvider workflowId={workflowId} initialState={initialState}>
         <ReadyProbe mounts={mounts} />
         <ThreadPrimitive.Root>
@@ -320,8 +324,12 @@ describe("AgentRuntimeProvider", () => {
     // follow the same snapshot instead of deadlocking against the new props.
     function SwitchingHarness() {
       const [state, setState] = useState<AgentState>(STATE_A);
+      // Deferred past mount: the gate's install effect (child-first) still
+      // runs with STATE_A before this switch lands, so readiness must follow
+      // the mount-time snapshot instead of deadlocking against new props.
       useEffect(() => {
-        setState(revised);
+        const timer = setTimeout(() => setState(revised), 0);
+        return () => clearTimeout(timer);
       }, []);
       return (
         <Harness workflowId={WORKFLOW_A} initialState={state} mounts={mounts} />

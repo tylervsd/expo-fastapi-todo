@@ -204,6 +204,11 @@ export function AuthProvider({
   // eslint-disable-next-line react-hooks/refs -- both closures read identity at call time (query/event), never during render
   const todoApi = createAuthenticatedApi(() => liveRef.current?.token ?? null, handleAuthRequired, transport);
 
+  // Lazy token read for the session-scoped agent factory: the closure runs
+  // at agent-creation time, never during render, so the bearer token stays
+  // in liveRef and out of React state, props, query keys, and logs.
+  const getSessionToken = useCallback(() => liveRef.current?.token ?? null, []);
+
   if (status === "unknown") {
     return (
       <SessionEpochContext.Provider value={epochControls}>
@@ -228,9 +233,6 @@ export function AuthProvider({
     );
   }
 
-  // eslint-disable-next-line react-hooks/refs -- signed-in renders only commit after liveRef is set (restore/login set identity before status), so this mirrors committed state; replacement/logout re-render through the epoch bump below
-  const sessionToken = liveRef.current?.token ?? "";
-
   return (
     <SessionEpochContext.Provider value={epochControls}>
       {/* Session-scoped agent factory: keyed by era so replacement, logout,
@@ -239,7 +241,7 @@ export function AuthProvider({
           state, pending storage, or logs. */}
       <AgentSessionProvider
         key={sessionEpoch}
-        token={sessionToken}
+        getToken={getSessionToken}
         sessionEpoch={sessionEpoch}
       >
         {children}

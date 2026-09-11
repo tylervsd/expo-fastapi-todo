@@ -29,11 +29,17 @@ export type AgentSession = {
 const AgentSessionContext = createContext<AgentSession | null>(null);
 
 export function useAgentSession(): AgentSession {
-  const value = useContext(AgentSessionContext);
+  const value = useAgentSessionOrNull();
   if (value === null) {
     throw new Error("useAgentSession must be used inside AgentSessionProvider");
   }
   return value;
+}
+
+// Nullable read for test probes that mount outside the signed-in branch:
+// the hook call itself stays unconditional, so hook order never changes.
+export function useAgentSessionOrNull(): AgentSession | null {
+  return useContext(AgentSessionContext);
 }
 
 function agentUrl(): string {
@@ -44,11 +50,14 @@ function agentUrl(): string {
 }
 
 export function AgentSessionProvider({
-  token,
+  getToken,
   sessionEpoch,
   children,
 }: {
-  token: string;
+  // Lazy token read: called at agent-creation time (event/effect), never
+  // during render, so the bearer token stays in the caller's private ref
+  // and out of React state, props snapshots, query keys, and logs.
+  getToken: () => string | null;
   sessionEpoch: number;
   children?: ReactNode;
 }): React.JSX.Element {
@@ -59,6 +68,8 @@ export function AgentSessionProvider({
 
   const createAgent = useCallback(
     (workflowId: string) => {
+      const token = getToken();
+      if (!token) throw new Error("No session token for agent creation");
       const agent = new HttpAgent({
         url: agentUrl(),
         headers: { Authorization: `Bearer ${token}` },
@@ -67,7 +78,7 @@ export function AgentSessionProvider({
       agentsRef.current?.add(agent);
       return agent;
     },
-    [token],
+    [getToken],
   );
 
   // sessionEpoch keys the value identity to the authentication era: even if a

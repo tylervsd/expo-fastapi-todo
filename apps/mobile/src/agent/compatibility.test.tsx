@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo } from "react";
 import { Button, Text, View } from "react-native";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import {
@@ -119,7 +119,9 @@ function FixtureApp({ fetchImpl }: { fetchImpl: jest.Mock }) {
     [fetchImpl],
   );
   const runtime = useAgUiRuntime({ agent });
-  FixtureThread.capturedRuntime = runtime as unknown as typeof FixtureThread.capturedRuntime;
+  useEffect(() => {
+    FixtureThread.capturedRuntime = runtime as unknown as typeof FixtureThread.capturedRuntime;
+  }, [runtime]);
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <StateProbe />
@@ -131,7 +133,9 @@ function FixtureApp({ fetchImpl }: { fetchImpl: jest.Mock }) {
 
 function StateProbe() {
   const setState = useAgUiSetState();
-  (StateProbe as { setState?: unknown }).setState = setState;
+  useEffect(() => {
+    (StateProbe as { setState?: unknown }).setState = setState;
+  }, [setState]);
   return null;
 }
 
