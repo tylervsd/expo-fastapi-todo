@@ -169,7 +169,51 @@ fail closed. Rendering, replay, reconnection, and completion events never
 create or confirm todos; todos remain zero until the unchanged explicit
 **Confirm** button succeeds.
 
-## 6. Manual fallback and accessibility
+## 6. Event and tool contract (as implemented)
+
+Every run emits `RUN_STARTED`, balanced message/tool-call events, then
+exactly one `RUN_FINISHED` or `RUN_ERROR`. Tool calls stream as the
+subsequence `TOOL_CALL_START`, `TOOL_CALL_ARGS`, `TOOL_CALL_END`, so a
+clarification run observes exactly `RUN_STARTED`, `TOOL_CALL_START`,
+`TOOL_CALL_ARGS`, `TOOL_CALL_END`, `RUN_FINISHED`. Tool-call IDs are
+`{runId}:clarify_plan:0` or `{runId}:review_todo_suggestions:0`; a
+repeated ID within a run fails closed. Text events are optional status
+copy and never carry workflow state. This ordering and the single-terminal
+rule are proven by the protocol encoder test and the agent order test;
+the client continuation test proves the second POST carries the installed
+state and the tool result.
+
+`clarify_plan` arguments are an exact object:
+
+```json
+{"contract_version":1,"workflow_id":"uuid","expected_revision":2,
+ "step_id":"uuid:COLLECT_TASKS","field":"date"}
+```
+
+Its result is exact and bounded:
+
+```json
+{"contract_version":1,"suggestion_request_id":"uuid"}
+```
+
+`review_todo_suggestions` repeats `contract_version`, workflow identity,
+revision, step, and suggestion request ID, and adds `titles` with Phase
+10's 2–10 canonical-title bounds:
+
+```json
+{"contract_version":1,"workflow_id":"uuid","expected_revision":2,
+ "step_id":"uuid:COLLECT_TASKS","suggestion_request_id":"uuid",
+ "titles":["Choose a date","Invite guests"]}
+```
+
+Its exact result is
+`{"contract_version":1,"request_id":"uuid","accepted_revision":3}`.
+Unknown names, versions, extra keys, malformed arguments, mismatched IDs,
+stale revisions/steps, and unsupported fields render a safe recovery
+message and cannot call `advance`. The client renderer accepts only these
+canonical server-owned names and exact argument shapes.
+
+## 7. Manual fallback and accessibility
 
 Both allowlisted components use native controls with visible labels,
 44-point targets, focus movement (arrival and completion, including after
@@ -184,7 +228,7 @@ revision, step, run, tool, and suggestion request identities around
 asynchronous work; sign-out, replacement login, unmount, cancellation, or
 a newer snapshot discards late events and results.
 
-## 7. Verification performed
+## 8. Verification performed
 
 The following checks were run on 2026-09-10 (America/Los_Angeles) at the
 Task 6 HEAD. The API suite ran against the isolated PostgreSQL
@@ -205,7 +249,7 @@ npx --prefix apps/mobile expo export --platform ios --output-dir dist-ios-verify
 
 The PostgreSQL-backed API suite passed **497/497** tests and the mobile
 suite passed **506/506** tests across 17 suites. Typecheck, Ruff,
-`git diff --check`, Markdown lint (0 issues across 46 files), and
+`git diff --check`, Markdown lint (0 issues across 47 files), and
 local-link checks were clean. Web and iOS bundle exports completed
 successfully; a successful export is not evidence of interactive behavior
 (see the acceptance record). The agent/provider suites (114 tests) were
@@ -215,7 +259,17 @@ provider/event fixtures and make no paid or network calls. Test output
 carries only pre-existing dependency deprecation warnings (Alembic,
 Starlette/httpx, AnyIO); they are not failures.
 
-## 8. Acceptance record
+The full `pnpm quality` gate does **not** pass on this branch: root
+Markdown/link checks and root tests pass, but it stops at mobile lint
+(`expo lint`) with 15 errors in Phase 11 files — `AgentRuntimeProvider.tsx`
+(ref access during render in the state gate), `AuthProvider.tsx` (ref value
+read during render), `compatibility.test.tsx` (immutability), one conditional
+`useAgentSession` call in `AuthProvider.test.tsx`, and one synchronous
+`setState`-in-effect in `AgentRuntimeProvider.test.tsx` — plus 45 warnings.
+The same gate passes on the base commit, so these are new findings for a
+code fix round, not docs work. `README.md` states exactly this boundary.
+
+## 9. Acceptance record
 
 Automated tests use deterministic provider/event fixtures and deferred
 promises. They prove decision validation, owner hiding, authorization,
@@ -228,12 +282,12 @@ manually observing the platform UIs or the live model.
 
 | Target | Date/runtime | Question selection and form response | Editable/removable suggestions | Interruption/replay | Malformed/unknown fallback | Sign-out isolation, accessibility, explicit confirm |
 | --- | --- | --- | --- | --- | --- | --- |
-| Backend/API tests | 2026-09-10, PostgreSQL `todo_test`, Python 3.14 | ☑ catalog-only choice, fixed local copy, 1–200 answer bounds, fingerprint behavior | ☑ edited titles through `submit_tasks`; edited-title ack emits no-write finish without regeneration | ☑ cancellation closes provider work; interrupted clarification restarts explicitly; `Retry saved request` reuses the stored ID | ☑ unknown names/versions/extra keys, mismatched IDs, stale revisions fail closed with safe errors | ☑ owner-hidden lookup, session teardown, parser-level a11y attributes, zero todos before `confirm` |
+| Automated API and mobile tests | 2026-09-10, PostgreSQL `todo_test` with Python 3.14 (497 API tests) and Jest with `jest-expo` (506 mobile tests, 17 suites) | ☑ catalog-only choice, fixed local copy, 1–200 answer bounds, fingerprint behavior | ☑ edited titles through `submit_tasks`; edited-title ack emits no-write finish without regeneration | ☑ cancellation closes provider work; interrupted clarification restarts explicitly; `Retry saved request` reuses the stored ID | ☑ unknown names/versions/extra keys, mismatched IDs, stale revisions fail closed with safe errors | ☑ owner-hidden lookup, session teardown, parser-level a11y attributes, zero todos before `confirm` |
 | Live model | — | ☐ pending: two decision requests plus suggestion requests require separate user authorization with a stated bounded budget; not run in this pass | ☐ pending | ☐ pending | — | — |
 | Web UI | 2026-09-10, production bundle export only | ☐ unobserved; export completed but no interactive browser session drove the agent flow | ☐ unobserved | ☐ unobserved | ☐ unobserved | ☐ unobserved |
 | iOS Simulator UI | 2026-09-10, production bundle export only | ☐ unobserved; export completed and a booted iPhone 17 Pro simulator existed, but no interactive Expo Go session drove the agent flow | ☐ unobserved | ☐ unobserved | ☐ unobserved | ☐ unobserved |
 
-## 9. Honest limits
+## 10. Honest limits
 
 There is deliberately no durable agent-run journal. Run and tool IDs
 correlate one request and reject duplicates within it; they are not
