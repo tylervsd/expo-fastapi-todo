@@ -106,7 +106,7 @@ Phases 7-9 build one guided-todo creation feature to teach backend-owned state t
 
 ## 11. Interactive AI workflows with assistant-ui and AG-UI
 
-- Planning status: [Draft spec](superpowers/specs/2026-09-10-agentic-ui-design.md) and [implementation plan](superpowers/plans/2026-09-10-agentic-ui.md) are available on `codex/phase-11-agentic-ui`; an isolated [compatibility spike](../spikes/assistant-ui-ag-ui/README.md) passed web/iOS fixture interactions, while application implementation and acceptance remain pending.
+- Planning status: [Draft spec](superpowers/specs/2026-09-10-agentic-ui-design.md) and [implementation plan](superpowers/plans/2026-09-10-agentic-ui.md) are available on `codex/phase-11-agentic-ui`; an isolated [compatibility spike](../spikes/assistant-ui-ag-ui/README.md) passed web/iOS fixture interactions, and application implementation with automated verification (497-test API suite, 506-test mobile suite) is recorded in [Guide 11](guides/11-agentic-ui.md), while live-model and interactive acceptance remain pending.
 
 - Learning goal: Connect a Python agent to interactive frontend components through AG-UI events while preserving backend authority over workflow state and persistence.
 - Visible outcome: The agent requests relevant context through a registered clarification form, presents an editable suggestion checklist, and waits for user confirmation before the existing backend creates todos.
