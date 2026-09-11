@@ -1159,6 +1159,81 @@ def test_valid_review_result_acknowledges_without_write(
     assert count_todos(session_factory, owner_id) == 0
 
 
+def test_edited_review_titles_acknowledge_against_saved_proposal(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    owner_id = setup_owner(session_factory)
+    workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
+    request_id = make_ready(session_factory, owner_id, workflow_id, revision, step_id)
+    edited = ("Alpha one revised", "Beta two")
+    snapshot = make_review(
+        session_factory, owner_id, workflow_id, revision, step_id, edited
+    )
+    review_step = f"{workflow_id}:REVIEW"
+    calls: list[str] = []
+    call_id = "review-run:review_todo_suggestions:0"
+    run = make_run(
+        thread_id=workflow_id,
+        run_id=uuid4(),
+        messages=[
+            review_call_msg(
+                "a1", call_id, workflow_id=workflow_id, revision=revision,
+                step_id=step_id, request_id=request_id, titles=READY_TITLES,
+            ),
+            review_result_msg("t1", call_id, request_id, snapshot.revision),
+        ],
+        state=agent_state(workflow_id, snapshot.revision, review_step),
+    )
+    with session_factory() as session:
+        events = collect(
+            agent_events(run, owner_id, session, choose=fake_choice(calls=calls))
+        )
+
+    assert event_types(events) == ["RUN_STARTED", "RUN_FINISHED"]
+    assert calls == []
+    assert count_todos(session_factory, owner_id) == 0
+
+
+def test_review_ack_after_title_removal_matches_saved_proposal(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    owner_id = setup_owner(session_factory)
+    workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
+    saved = ("Alpha one", "Beta two", "Gamma three")
+    request_id = make_ready(
+        session_factory, owner_id, workflow_id, revision, step_id, titles=saved
+    )
+    kept = ("Alpha one", "Beta two")
+    snapshot = make_review(
+        session_factory, owner_id, workflow_id, revision, step_id, kept
+    )
+    review_step = f"{workflow_id}:REVIEW"
+    calls: list[str] = []
+    call_id = "review-run:review_todo_suggestions:0"
+    run = make_run(
+        thread_id=workflow_id,
+        run_id=uuid4(),
+        messages=[
+            review_call_msg(
+                "a1", call_id, workflow_id=workflow_id, revision=revision,
+                step_id=step_id, request_id=request_id, titles=saved,
+            ),
+            review_result_msg("t1", call_id, request_id, snapshot.revision),
+        ],
+        state=agent_state(workflow_id, snapshot.revision, review_step),
+    )
+    with session_factory() as session:
+        events = collect(
+            agent_events(run, owner_id, session, choose=fake_choice(calls=calls))
+        )
+
+    assert event_types(events) == ["RUN_STARTED", "RUN_FINISHED"]
+    assert calls == []
+    assert count_todos(session_factory, owner_id) == 0
+
+
 def test_review_result_with_stale_revision_fails(
     database_session: Session, session_factory: sessionmaker[Session]
 ) -> None:

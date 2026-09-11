@@ -1,3 +1,4 @@
+import * as mockReact from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import {
   AGENT_TRIGGER_TEXT,
@@ -7,10 +8,48 @@ import {
   parseClarifyArgs,
   parseReviewArgs,
 } from "./AgentWorkflowPanel";
+import { isWorkflowSuggestionClarification } from "../todos/todoApi";
 import type {
   KnownTodoWorkflow,
   WorkflowSuggestion,
 } from "../todos/todoApi";
+
+const mockInputFocus = jest.fn();
+const mockAnnounceForAccessibility = jest.fn();
+const mockSetAccessibilityFocus = jest.fn();
+const mockFindNodeHandle = jest.fn(() => 123);
+
+jest.mock("react-native", () => {
+  const actual = jest.requireActual("react-native");
+  const TestTextInput = mockReact.forwardRef(
+    (
+      props: Record<string, unknown>,
+      ref: mockReact.Ref<{ focus: () => void; blur: () => void }>,
+    ) => {
+      mockReact.useImperativeHandle(
+        ref,
+        () => ({ focus: mockInputFocus, blur: jest.fn() }),
+        [],
+      );
+      return mockReact.createElement(actual.TextInput, props);
+    },
+  );
+  TestTextInput.displayName = "TestTextInput";
+  return new Proxy(actual, {
+    get(target, property, receiver) {
+      if (property === "TextInput") return TestTextInput;
+      if (property === "AccessibilityInfo") {
+        return {
+          ...actual.AccessibilityInfo,
+          announceForAccessibility: mockAnnounceForAccessibility,
+          setAccessibilityFocus: mockSetAccessibilityFocus,
+        };
+      }
+      if (property === "findNodeHandle") return mockFindNodeHandle;
+      return Reflect.get(target, property, receiver);
+    },
+  });
+});
 
 const WORKFLOW_ID = "6fc33b84-16a8-4d8e-ae94-fc50bb457d72";
 const REQUEST_ID = "30bfb542-17f1-48a0-9fd8-3930379d5974";
@@ -124,12 +163,39 @@ describe("agent tool argument parsers", () => {
     ["simple answer", "next Saturday", true],
     ["single character", "a", true],
     ["boundary length", "x".repeat(200), true],
+    ["padded boundary", `  ${"x".repeat(200)}  `, true],
     ["empty", "", false],
     ["blank", "   ", false],
     ["oversize", "x".repeat(201), false],
+    ["embedded NUL", "ab\0cd", false],
+    ["leading NUL", "\0next Saturday", false],
   ])("validates answers (%s)", (_label, value, valid) => {
     expect(isAnswerValid(value)).toBe(valid);
   });
+
+  it.each([
+    "next Saturday",
+    "a",
+    "x".repeat(200),
+    `  ${"x".repeat(200)}  `,
+    "caf\u00e9 \uD83C\uDF82 party",
+    "\u00e9".repeat(200),
+  ])("every UI-valid answer is pending-store-valid (%s)", (value) => {
+    expect(isAnswerValid(value)).toBe(true);
+    expect(
+      isWorkflowSuggestionClarification({ field: "date", value }),
+    ).toBe(true);
+  });
+
+  it.each(["ab\0cd", "", "   ", "x".repeat(201)])(
+    "every UI-invalid answer is pending-store-invalid (%s)",
+    (value) => {
+      expect(isAnswerValid(value)).toBe(false);
+      expect(
+        isWorkflowSuggestionClarification({ field: "date", value }),
+      ).toBe(false);
+    },
+  );
 
   it("exposes a fixed trigger message for new runs", () => {
     expect(typeof AGENT_TRIGGER_TEXT).toBe("string");
@@ -525,6 +591,71 @@ describe("ReviewSuggestionsCardView", () => {
   });
 });
 
+describe("agent card focus movement", () => {
+  beforeEach(() => {
+    mockInputFocus.mockClear();
+    mockAnnounceForAccessibility.mockClear();
+    mockSetAccessibilityFocus.mockClear();
+    mockFindNodeHandle.mockClear();
+  });
+
+  it("focuses the answer input once when the clarify form arrives", async () => {
+    await renderClarifyCard({});
+    await waitFor(() => expect(mockInputFocus).toHaveBeenCalledTimes(1));
+    expect(mockSetAccessibilityFocus).toHaveBeenCalledWith(123);
+    expect(mockAnnounceForAccessibility).toHaveBeenCalledWith(
+      "When does this need to happen?",
+    );
+  });
+
+  it("does not move focus for a stale card", async () => {
+    const movedOn: KnownTodoWorkflow = {
+      ...collectWorkflow,
+      revision: 3,
+      state: "REVIEW",
+      view: {
+        type: "review",
+        step_id: `${WORKFLOW_ID}:REVIEW`,
+        title: "Review your plan",
+        proposed_titles: ["Send invitations", "Buy decorations"],
+      },
+    };
+    await renderClarifyCard({ workflow: movedOn });
+    expect(
+      screen.getByText("This question is for an older plan. Reload to continue."),
+    ).toBeTruthy();
+    expect(mockInputFocus).not.toHaveBeenCalled();
+    expect(mockSetAccessibilityFocus).not.toHaveBeenCalled();
+  });
+
+  it("focuses the first title input once when the review checklist arrives", async () => {
+    await renderReviewCard({});
+    await waitFor(() => expect(mockInputFocus).toHaveBeenCalledTimes(1));
+    expect(mockSetAccessibilityFocus).toHaveBeenCalledWith(123);
+  });
+
+  it("announces completion when the answer is sent", async () => {
+    await renderClarifyCard({});
+    await fireEvent.changeText(screen.getByLabelText("Your answer"), "next Saturday");
+    await fireEvent.press(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() =>
+      expect(mockAnnounceForAccessibility).toHaveBeenCalledWith(
+        "Answer sent. Suggestions are on the way.",
+      ),
+    );
+  });
+
+  it("announces completion when suggestions are submitted", async () => {
+    await renderReviewCard({});
+    await fireEvent.press(screen.getByRole("button", { name: "Use these suggestions" }));
+    await waitFor(() =>
+      expect(mockAnnounceForAccessibility).toHaveBeenCalledWith(
+        "Suggestions submitted. Review your plan to confirm.",
+      ),
+    );
+  });
+});
+
 describe("agent card accessibility contracts", () => {
   it("exposes polite live regions on async card states", async () => {
     const { view } = await renderReviewCard({
@@ -552,6 +683,28 @@ describe("agent card accessibility contracts", () => {
     );
     expect(continueStyle.minHeight).toBeGreaterThanOrEqual(44);
     expect(continueStyle.minWidth).toBeGreaterThanOrEqual(44);
+    const answerStyle = StyleSheet.flatten(screen.getByLabelText("Your answer").props.style);
+    expect(answerStyle.minHeight).toBeGreaterThanOrEqual(44);
+    const { view } = await renderReviewCard({});
+    await view.unmount();
+  });
+
+  it("keeps secondary controls and editable rows at 44 points or larger", async () => {
+    const { StyleSheet } = require("react-native");
+    await renderReviewCard({});
+    const removeStyle = StyleSheet.flatten(
+      screen.getByRole("button", { name: "Remove suggestion 1" }).props.style,
+    );
+    expect(removeStyle.minHeight).toBeGreaterThanOrEqual(44);
+    expect(removeStyle.minWidth).toBeGreaterThanOrEqual(44);
+    const rowStyle = StyleSheet.flatten(
+      screen.getByLabelText("Suggestion 1 of 2").props.style,
+    );
+    expect(rowStyle.minHeight).toBeGreaterThanOrEqual(44);
+    const submitStyle = StyleSheet.flatten(
+      screen.getByRole("button", { name: "Use these suggestions" }).props.style,
+    );
+    expect(submitStyle.minHeight).toBeGreaterThanOrEqual(44);
   });
 });
 
@@ -659,9 +812,9 @@ const reviewEvents = (post: AgentPost, entry: ReadyEntry) => {
  *  against submitted titles, clarify-continuation replay, fresh choice. */
 function makeAgentFetch(options: {
   ready: ReadyEntry[];
-  submittedTitles: Map<string, string[]>;
   bodies: AgentPost[];
   onCall?: (index: number) => unknown[] | null;
+  outcomes?: string[];
 }) {
   return jest.fn(async (_url: unknown, init?: RequestInit) => {
     const post = JSON.parse(String(init?.body)) as AgentPost;
@@ -694,19 +847,26 @@ function makeAgentFetch(options: {
           try {
             const result = JSON.parse(String(lastTool.content));
             const callArgs = JSON.parse(String(call.function?.arguments ?? "{}"));
-            const submitted = options.submittedTitles.get(String(result.request_id));
+            // Fixed server rule: the call replays the saved pre-submit
+            // proposal, not the edited REVIEW snapshot.
+            const saved = options.ready.find(
+              (r) => r.requestId === String(result.request_id),
+            );
             if (
               result.contract_version === 1 &&
               result.accepted_revision === state.expected_revision &&
-              submitted !== undefined &&
-              JSON.stringify(callArgs.titles) === JSON.stringify(submitted)
+              String(callArgs.suggestion_request_id) === String(result.request_id) &&
+              saved !== undefined &&
+              JSON.stringify(callArgs.titles) === JSON.stringify(saved.titles)
             ) {
+              options.outcomes?.push("ack");
               return sseResponse([runStarted(post), runFinished(post)]);
             }
           } catch {
             /* fall through to error */
           }
         }
+        options.outcomes?.push("review-error");
         return sseResponse([runStarted(post), runError()]);
       }
       const entry = matchReady(state.suggestion_request_id);
@@ -752,6 +912,7 @@ async function renderPanelHarness(overrides: {
   isSessionCurrent?: (epoch: number) => boolean;
   dataReady?: boolean;
   onBusyChange?: jest.Mock;
+  onReadyChange?: jest.Mock;
   initialState?: AgentState;
 }) {
   const getSuggestion = overrides.getSuggestion ?? jest.fn(() => notFound());
@@ -765,6 +926,7 @@ async function renderPanelHarness(overrides: {
     overrides.submitAgentTasks ?? jest.fn(async () => reviewWorkflow);
   const generateRequestId = overrides.generateRequestId ?? jest.fn(() => REQUEST_ID);
   const onBusyChange = overrides.onBusyChange ?? jest.fn();
+  const onReadyChange = overrides.onReadyChange;
   const workflow = overrides.workflow ?? collectWorkflow;
   const view = await render(
     <AgentSessionProvider token="tok" sessionEpoch={overrides.sessionEpoch ?? 1}>
@@ -790,6 +952,7 @@ async function renderPanelHarness(overrides: {
           submitAgentTasks={submitAgentTasks}
           dataReady={overrides.dataReady ?? true}
           onBusyChange={onBusyChange}
+          onReadyChange={onReadyChange}
         />
       </AgentRuntimeProvider>
     </AgentSessionProvider>,
@@ -801,6 +964,7 @@ async function renderPanelHarness(overrides: {
     submitAgentTasks,
     generateRequestId,
     onBusyChange,
+    onReadyChange,
   };
 }
 
@@ -828,7 +992,6 @@ describe("AgentWorkflowPanel integration", () => {
           titles: ["Choose a date", "Invite guests"],
         },
       ],
-      submittedTitles: new Map(),
       bodies,
     }) as unknown as typeof fetch;
     const harness = await renderPanelHarness({});
@@ -872,7 +1035,7 @@ describe("AgentWorkflowPanel integration", () => {
 
   it("retains the saved request with no result and no new id on failure", async () => {
     const bodies: AgentPost[] = [];
-    globalThis.fetch = makeAgentFetch({ ready: [], submittedTitles: new Map(), bodies }) as unknown as typeof fetch;
+    globalThis.fetch = makeAgentFetch({ ready: [], bodies }) as unknown as typeof fetch;
     const submitAgentSuggestion = jest.fn(async () => {
       throw new Error("Could not suggest todos.");
     });
@@ -898,7 +1061,6 @@ describe("AgentWorkflowPanel integration", () => {
 
   it("accepts unedited suggestions with a no-write REVIEW acknowledgement", async () => {
     const bodies: AgentPost[] = [];
-    const submittedTitles = new Map<string, string[]>();
     globalThis.fetch = makeAgentFetch({
       ready: [
         {
@@ -908,13 +1070,9 @@ describe("AgentWorkflowPanel integration", () => {
           titles: ["Choose a date", "Invite guests"],
         },
       ],
-      submittedTitles,
       bodies,
     }) as unknown as typeof fetch;
-    const submitAgentTasks = jest.fn(async (titles: string[]) => {
-      submittedTitles.set(REQUEST_ID, titles);
-      return reviewWorkflow;
-    });
+    const submitAgentTasks = jest.fn(async () => reviewWorkflow);
     const harness = await renderPanelHarness({ submitAgentTasks });
 
     await fireEvent.press(screen.getByRole("button", { name: "Ask agent for help" }));
@@ -960,6 +1118,70 @@ describe("AgentWorkflowPanel integration", () => {
     expect(harness.submitAgentSuggestion).toHaveBeenCalledTimes(1);
   }, 45000);
 
+  it("accepts edited suggestions with a RUN_FINISHED ack against the saved proposal", async () => {
+    const bodies: AgentPost[] = [];
+    const outcomes: string[] = [];
+    globalThis.fetch = makeAgentFetch({
+      ready: [
+        {
+          requestId: REQUEST_ID,
+          base_revision: 2,
+          step_id: `${WORKFLOW_ID}:COLLECT_TASKS`,
+          titles: ["Choose a date", "Invite guests"],
+        },
+      ],
+      bodies,
+      outcomes,
+    }) as unknown as typeof fetch;
+    const editedReview = {
+      ...reviewWorkflow,
+      context: {
+        involves_multiple_steps: true,
+        proposed_todo_titles: ["Pick a date", "Invite guests"],
+      },
+      view: {
+        type: "review" as const,
+        step_id: `${WORKFLOW_ID}:REVIEW`,
+        title: "Review your plan",
+        proposed_titles: ["Pick a date", "Invite guests"],
+      },
+    };
+    const submitAgentTasks = jest.fn(async () => editedReview);
+    const harness = await renderPanelHarness({ submitAgentTasks });
+
+    await fireEvent.press(screen.getByRole("button", { name: "Ask agent for help" }));
+    await waitFor(() => expect(screen.getByLabelText("Your answer")).toBeTruthy(), {
+      timeout: 10000,
+    });
+    await fireEvent.changeText(screen.getByLabelText("Your answer"), "next Saturday");
+    await fireEvent.press(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(
+      () => expect(screen.getByLabelText("Suggestion 1 of 2")).toBeTruthy(),
+      { timeout: 10000 },
+    );
+    await fireEvent.changeText(screen.getByLabelText("Suggestion 1 of 2"), "Pick a date");
+    await fireEvent.press(screen.getByRole("button", { name: "Use these suggestions" }));
+    await waitFor(
+      () =>
+        expect(
+          screen.getByText("Suggestions submitted. Review your plan to confirm."),
+        ).toBeTruthy(),
+      { timeout: 10000 },
+    );
+    expect(submitAgentTasks).toHaveBeenCalledTimes(1);
+    expect(submitAgentTasks).toHaveBeenCalledWith(
+      ["Pick a date", "Invite guests"],
+      REQUEST_ID,
+    );
+    // The ack compares the original call titles against the saved proposal,
+    // not the edited snapshot: RUN_FINISHED with no write and no regen.
+    await waitFor(() => expect(bodies).toHaveLength(3), { timeout: 10000 });
+    expect(outcomes).toEqual(["ack"]);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(bodies).toHaveLength(3);
+    expect(harness.submitAgentSuggestion).toHaveBeenCalledTimes(1);
+  }, 45000);
+
   it("recovers a ready proposal with no model call after reload", async () => {
     const bodies: AgentPost[] = [];
     globalThis.fetch = makeAgentFetch({
@@ -971,7 +1193,6 @@ describe("AgentWorkflowPanel integration", () => {
           titles: ["Choose a date", "Invite guests"],
         },
       ],
-      submittedTitles: new Map(),
       bodies,
     }) as unknown as typeof fetch;
     const getSuggestion = jest.fn(async () => readySuggestion);
@@ -991,7 +1212,7 @@ describe("AgentWorkflowPanel integration", () => {
 
   it("omits the late continuation when unmounted mid-submit", async () => {
     const bodies: AgentPost[] = [];
-    globalThis.fetch = makeAgentFetch({ ready: [], submittedTitles: new Map(), bodies }) as unknown as typeof fetch;
+    globalThis.fetch = makeAgentFetch({ ready: [], bodies }) as unknown as typeof fetch;
     const gate = deferred<WorkflowSuggestion>();
     const harness = await renderPanelHarness({
       submitAgentSuggestion: jest.fn(() => gate.promise),
@@ -1012,7 +1233,7 @@ describe("AgentWorkflowPanel integration", () => {
 
   it("omits the late continuation after sign-out", async () => {
     const bodies: AgentPost[] = [];
-    globalThis.fetch = makeAgentFetch({ ready: [], submittedTitles: new Map(), bodies }) as unknown as typeof fetch;
+    globalThis.fetch = makeAgentFetch({ ready: [], bodies }) as unknown as typeof fetch;
     let current = true;
     const gate = deferred<WorkflowSuggestion>();
     const harness = await renderPanelHarness({
@@ -1035,7 +1256,7 @@ describe("AgentWorkflowPanel integration", () => {
 
   it("restarts cleanly after remount with a new session epoch", async () => {
     const bodies: AgentPost[] = [];
-    globalThis.fetch = makeAgentFetch({ ready: [], submittedTitles: new Map(), bodies }) as unknown as typeof fetch;
+    globalThis.fetch = makeAgentFetch({ ready: [], bodies }) as unknown as typeof fetch;
     const first = await renderPanelHarness({ sessionEpoch: 1 });
     await first.view.unmount();
     await renderPanelHarness({ sessionEpoch: 2 });
@@ -1086,6 +1307,11 @@ describe("AgentWorkflowPanel integration", () => {
 
     await fireEvent.press(screen.getByRole("button", { name: "Ask agent for help" }));
     await waitFor(() => expect(calls).toBe(1), { timeout: 10000 });
+    // The cancel control itself guarantees a 44-point target while running.
+    const { StyleSheet } = require("react-native");
+    const cancelStyle = StyleSheet.flatten(screen.getByText("Cancel agent run").props.style);
+    expect(cancelStyle.minHeight).toBeGreaterThanOrEqual(44);
+    expect(cancelStyle.minWidth).toBeGreaterThanOrEqual(44);
     await fireEvent.press(screen.getByRole("button", { name: "Cancel agent run" }));
     releaseFirst();
     await waitFor(
@@ -1203,7 +1429,7 @@ describe("AgentWorkflowPanel integration", () => {
 
   it("keeps the ask action disabled until plan data is ready", async () => {
     const bodies: AgentPost[] = [];
-    globalThis.fetch = makeAgentFetch({ ready: [], submittedTitles: new Map(), bodies }) as unknown as typeof fetch;
+    globalThis.fetch = makeAgentFetch({ ready: [], bodies }) as unknown as typeof fetch;
     await renderPanelHarness({ dataReady: false });
     expect(
       screen.getByRole("button", { name: "Ask agent for help" }).props.accessibilityState
@@ -1214,9 +1440,20 @@ describe("AgentWorkflowPanel integration", () => {
 
   it("renders nothing once the workflow leaves the breakdown step", async () => {
     const bodies: AgentPost[] = [];
-    globalThis.fetch = makeAgentFetch({ ready: [], submittedTitles: new Map(), bodies }) as unknown as typeof fetch;
+    globalThis.fetch = makeAgentFetch({ ready: [], bodies }) as unknown as typeof fetch;
     await renderPanelHarness({ workflow: reviewWorkflow });
     expect(screen.queryByRole("button", { name: "Ask agent for help" })).toBeNull();
+    expect(bodies).toHaveLength(0);
+  });
+
+  it("signals thread-UI readiness on mount and release on unmount", async () => {
+    const bodies: AgentPost[] = [];
+    globalThis.fetch = makeAgentFetch({ ready: [], bodies }) as unknown as typeof fetch;
+    const onReadyChange = jest.fn();
+    const harness = await renderPanelHarness({ onReadyChange });
+    await waitFor(() => expect(onReadyChange).toHaveBeenCalledWith(true));
+    await harness.view.unmount();
+    await waitFor(() => expect(onReadyChange).toHaveBeenCalledWith(false));
     expect(bodies).toHaveLength(0);
   });
 
@@ -1231,7 +1468,6 @@ describe("AgentWorkflowPanel integration", () => {
           titles: ["Choose a date", "Invite guests"],
         },
       ],
-      submittedTitles: new Map(),
       bodies,
     }) as unknown as typeof fetch;
     const harness = await renderPanelHarness({});

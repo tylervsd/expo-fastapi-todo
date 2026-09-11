@@ -1,5 +1,5 @@
 import * as mockReact from "react";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react-native";
 import { QueryClientProvider, timeoutManager, type QueryClient } from "@tanstack/react-query";
 import { StyleSheet } from "react-native";
 import { createAppQueryClient } from "../../App";
@@ -2509,7 +2509,16 @@ describe("agent clarification and review flow", () => {
     await waitFor(() =>
       expect(screen.getByRole("header", { name: "Break it into smaller todos" })).toBeTruthy(),
     );
-    expect(screen.getByTestId("agent-runtime-mount")).toBeTruthy();
+    // Ancestry, not just sibling presence: the active step template renders
+    // inside the workflow-scoped provider subtree (the runtime mounts once
+    // the suggestion probe settles, then installs its initial state).
+    await waitFor(() =>
+      expect(
+        within(screen.getByTestId("agent-runtime-mount")).getByRole("header", {
+          name: "Break it into smaller todos",
+        }),
+      ).toBeTruthy(),
+    );
     expect(screen.getByRole("button", { name: "Ask agent for help" })).toBeTruthy();
   });
 
@@ -2570,6 +2579,10 @@ describe("agent clarification and review flow", () => {
       step_id: `${WORKFLOW_ID}:COLLECT_TASKS`,
     });
 
+    // The runtime mounts after the suggestion probe settles, then installs state.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Ask agent for help" })).toBeTruthy(),
+    );
     await fireEvent.press(screen.getByRole("button", { name: "Ask agent for help" }));
     await waitFor(() => expect(screen.getByLabelText("Your answer")).toBeTruthy(), {
       timeout: 10000,
@@ -2638,6 +2651,10 @@ describe("agent clarification and review flow", () => {
       step_id: `${WORKFLOW_ID}:COLLECT_TASKS`,
     });
 
+    // The runtime mounts after the suggestion probe settles, then installs state.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Ask agent for help" })).toBeTruthy(),
+    );
     await fireEvent.press(screen.getByRole("button", { name: "Ask agent for help" }));
     await waitFor(() => expect(screen.getByLabelText("Your answer")).toBeTruthy(), {
       timeout: 10000,
@@ -2701,6 +2718,10 @@ describe("agent clarification and review flow", () => {
       step_id: `${WORKFLOW_ID}:COLLECT_TASKS`,
     });
 
+    // The runtime mounts after the suggestion probe settles, then installs state.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Ask agent for help" })).toBeTruthy(),
+    );
     await fireEvent.press(screen.getByRole("button", { name: "Ask agent for help" }));
     await waitFor(() => expect(screen.getByLabelText("Your answer")).toBeTruthy(), {
       timeout: 10000,

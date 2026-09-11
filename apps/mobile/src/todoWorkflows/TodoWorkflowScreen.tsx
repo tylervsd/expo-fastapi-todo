@@ -112,6 +112,9 @@ export function TodoWorkflowScreen({
   const [pendingRecord, setPendingRecord] = useState<PendingWorkflowWrite | null>(null);
   const [persisting, setPersisting] = useState(false);
   const [agentBusy, setAgentBusy] = useState(false);
+  // Flips when the agent thread UI mounts inside the runtime provider,
+  // i.e. after the state gate releases gated step templates on first mount.
+  const [agentTreeReady, setAgentTreeReady] = useState(false);
   const [suggestionProbe, setSuggestionProbe] = useState<{
     revision: number;
     step_id: string;
@@ -147,6 +150,11 @@ export function TodoWorkflowScreen({
   const reconcileAbortRef = useRef<AbortController | null>(null);
   const suggestionAbortRef = useRef<AbortController | null>(null);
   const focusedSignal = useRef(-1);
+  // Whether the last served focus ran with the agent thread UI mounted.
+  // The runtime gate withholds step templates on first mount, so a focus
+  // served before the gate releases misses its control; the arrival signal
+  // below re-serves the current view exactly once per mount.
+  const focusTreeReady = useRef(false);
   const tasksDraftRef = useRef(tasksDraft);
   const tasksDraftEditCounterRef = useRef(tasksDraftEditCounter);
   const suggestionFetchSequence = useRef(0);
@@ -1110,8 +1118,11 @@ export function TodoWorkflowScreen({
   }, [workflowQuery.data, queryClient, userId]);
 
   useEffect(() => {
-    if (focusSignal === focusedSignal.current) return;
+    const signalNew = focusSignal !== focusedSignal.current;
+    const treeNewlyReady = agentTreeReady && !focusTreeReady.current;
+    if (!signalNew && !treeNewlyReady) return;
     focusedSignal.current = focusSignal;
+    focusTreeReady.current = agentTreeReady;
     if (view === undefined) {
       titleInput.current?.focus();
       return;
@@ -1145,7 +1156,7 @@ export function TodoWorkflowScreen({
         focusButton(backButton);
         break;
     }
-  }, [focusSignal, view]);
+  }, [focusSignal, view, agentTreeReady]);
 
   const submitStart = () => {
     if (busy.current || startPending || persisting || livePending !== null) return;
@@ -1463,6 +1474,10 @@ export function TodoWorkflowScreen({
     setAgentBusy((current) => (current === busy ? current : busy));
   };
 
+  const handleAgentReady = (ready: boolean): void => {
+    setAgentTreeReady((current) => (current === ready ? current : ready));
+  };
+
   const showWriteError =
     writeError !== null &&
     (writeError.sticky === true ||
@@ -1481,6 +1496,45 @@ export function TodoWorkflowScreen({
     (reconcileFailed ||
       (hasData && isStale && !isFetching) ||
       (workflowId !== null && !hasData && getAlert !== null));
+
+  // The workflow-scoped runtime wraps the active step template together
+  // with the agent panel so both share one runtime identity across
+  // COLLECT_TASKS → REVIEW. On the breakdown step the runtime is created
+  // only after the suggestion probe settles, so its mount-time initial
+  // state carries the probed ready request ID exactly once; other steps
+  // mount immediately since no probe runs there and recovery reads history.
+  const agentWorkflow =
+    workflowId !== null && snapshot !== undefined && "state" in snapshot
+      ? snapshot
+      : null;
+  const agentProbeReady =
+    agentWorkflow === null ||
+    agentWorkflow.view.type !== "task_breakdown" ||
+    (suggestionProbe !== null &&
+      suggestionProbe.revision === agentWorkflow.revision &&
+      suggestionProbe.step_id === agentWorkflow.view.step_id);
+  const agentRuntimeReady = agentWorkflow !== null && agentProbeReady;
+  const agentInitialState =
+    agentWorkflow === null
+      ? null
+      : {
+          contract_version: 1 as const,
+          expected_revision: agentWorkflow.revision,
+          step_id: agentWorkflow.view.step_id,
+          suggestion_request_id:
+            suggestionRecord !== null &&
+            suggestionRecord.status === "ready" &&
+            suggestionRecord.base_revision === agentWorkflow.revision &&
+            suggestionRecord.step_id === agentWorkflow.view.step_id
+              ? suggestionRecord.request_id
+              : null,
+        };
+  const agentDataReady =
+    agentWorkflow !== null &&
+    fresh &&
+    suggestionProbe !== null &&
+    suggestionProbe.revision === agentWorkflow.revision &&
+    suggestionProbe.step_id === agentWorkflow.view.step_id;
 
   const renderView = () => {
     if (definitionUnsupported) {
@@ -1605,43 +1659,33 @@ export function TodoWorkflowScreen({
         keyboardShouldPersistTaps="handled"
         contentContainerStyle={styles.content}
       >
-        {renderView()}
-        {workflowId !== null && snapshot !== undefined && "state" in snapshot && (
+        {agentRuntimeReady &&
+        agentWorkflow !== null &&
+        agentInitialState !== null &&
+        workflowId !== null ? (
           <View testID="agent-runtime-mount">
             <AgentRuntimeProvider
               workflowId={workflowId}
-              initialState={{
-                contract_version: 1,
-                expected_revision: snapshot.revision,
-                step_id: snapshot.view.step_id,
-                suggestion_request_id:
-                  suggestionRecord !== null &&
-                  suggestionRecord.status === "ready" &&
-                  suggestionRecord.base_revision === snapshot.revision &&
-                  suggestionRecord.step_id === snapshot.view.step_id
-                    ? suggestionRecord.request_id
-                    : null,
-              }}
+              initialState={agentInitialState}
             >
+              {renderView()}
               <AgentWorkflowPanel
                 userId={userId}
-                workflow={snapshot}
+                workflow={agentWorkflow}
                 api={api}
                 generateRequestId={generateRequestId}
                 sessionEpoch={sessionEpoch}
                 isSessionCurrent={isSessionCurrent}
                 submitAgentSuggestion={submitAgentSuggestion}
                 submitAgentTasks={submitAgentTasks}
-                dataReady={
-                  fresh &&
-                  suggestionProbe !== null &&
-                  suggestionProbe.revision === snapshot.revision &&
-                  suggestionProbe.step_id === snapshot.view.step_id
-                }
+                dataReady={agentDataReady}
                 onBusyChange={handleAgentBusy}
+                onReadyChange={handleAgentReady}
               />
             </AgentRuntimeProvider>
           </View>
+        ) : (
+          renderView()
         )}
         {livePending !== null && (
           <View style={styles.screen}>

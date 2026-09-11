@@ -600,7 +600,10 @@ async def agent_events(
                 or current.step_id != collect_step
             ):
                 raise AgentValidationError("agent review is stale")
-            if tuple(continuation.titles) != tuple(snapshot.proposed_todo_titles):
+            # The call titles must replay the saved pre-submit proposal, not
+            # the edited REVIEW snapshot: submit_tasks legitimately rewrites
+            # the snapshot titles, and the ack only confirms what was shown.
+            if tuple(continuation.titles) != tuple(current.proposed_titles):
                 raise AgentValidationError("agent review is stale")
             yield RunFinishedEvent(threadId=str(raw_thread), runId=str(raw_run))
             return

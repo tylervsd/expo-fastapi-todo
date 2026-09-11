@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AccessibilityInfo,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
   TextInput,
   View,
+  findNodeHandle,
 } from "react-native";
 import {
   ComposerPrimitive,
@@ -198,9 +200,11 @@ export function parseReviewArgs(argsText: string): ReviewArgs | null {
 }
 
 /** The shared 1–200-code-point answer bound (measured after trimming, in code
- *  points so emoji and astral text count like the server does). */
+ *  points so emoji and astral text count like the server does). Mirrors the
+ *  pending-store validator exactly, including NUL rejection, so every
+ *  UI-valid answer is durable-store-valid. */
 export function isAnswerValid(value: string): boolean {
-  if (typeof value !== "string") return false;
+  if (typeof value !== "string" || value.includes("\0")) return false;
   const trimmed = value.trim();
   if (trimmed.length === 0) return false;
   return [...trimmed].length <= 200;
@@ -230,14 +234,51 @@ function useBlockingReport(
   }, [toolCallId, blocking, onBlockingChange]);
 }
 
+function announce(message: string): void {
+  try {
+    AccessibilityInfo.announceForAccessibility(message);
+  } catch {
+    // Announcements are enhancement-only; live regions carry the semantics.
+  }
+}
+
 function useAnnounceOnMount(message: string): void {
   useEffect(() => {
-    try {
-      AccessibilityInfo.announceForAccessibility(message);
-    } catch {
-      // Announcements are enhancement-only; live regions carry the semantics.
-    }
+    announce(message);
   }, [message]);
+}
+
+/** Move screen-reader and keyboard focus when a card arrives in an
+ *  actionable or settled phase. Fires once per tool call and phase so
+ *  replays and rerenders never yank focus twice. */
+function useCardFocus(
+  toolCallId: string,
+  phase: "interactive" | "resolved" | "idle",
+  target: { readonly current: unknown },
+): void {
+  const firedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (phase === "idle") return;
+    const key = `${toolCallId}:${phase}`;
+    if (firedRef.current === key) return;
+    firedRef.current = key;
+    const control = target.current as { focus?: () => void } | null;
+    try {
+      control?.focus?.();
+    } catch {
+      // Best effort: focus is enhancement over live-region announcements.
+    }
+    try {
+      const node = findNodeHandle(
+        target.current as React.Component | null,
+      );
+      if (node !== null && Platform.OS !== "web") {
+        AccessibilityInfo.setAccessibilityFocus(node);
+      }
+    } catch {
+      // Best effort: see above.
+    }
+  }, [toolCallId, phase, target]);
 }
 
 type CardChrome = {
@@ -298,6 +339,8 @@ export function ClarifyPlanCardView(
   const [completed, setCompleted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
+  const answerRef = useRef<TextInput>(null);
+  const clarifyStatusRef = useRef<Text>(null);
   useEffect(
     () => () => {
       mountedRef.current = false;
@@ -312,12 +355,28 @@ export function ClarifyPlanCardView(
   // Streaming and interrupted parts never block a fresh run.
   const blocking = !resolved && !completed && !loading && !interrupted;
   useBlockingReport(toolCallId, blocking, onBlockingChange);
+  const clarifyInteractive =
+    args !== null &&
+    !resolved &&
+    !completed &&
+    !loading &&
+    !interrupted &&
+    !stale;
+  useCardFocus(toolCallId, clarifyInteractive ? "interactive" : "idle", answerRef);
+  useCardFocus(
+    toolCallId,
+    resolved || completed ? "resolved" : "idle",
+    clarifyStatusRef,
+  );
+  useEffect(() => {
+    if (completed) announce("Answer sent. Suggestions are on the way.");
+  }, [completed]);
 
   if (resolved || completed) {
     return (
       <View style={styles.card}>
         <Text style={styles.cardTitle}>{copy === null ? "Agent question" : copy.question}</Text>
-        <Text accessibilityLiveRegion="polite" style={styles.status}>
+        <Text ref={clarifyStatusRef} accessibilityLiveRegion="polite" style={styles.status}>
           Answer sent. Suggestions are on the way.
         </Text>
       </View>
@@ -412,6 +471,7 @@ export function ClarifyPlanCardView(
       <Text style={styles.fieldLabel}>{formCopy.label}</Text>
       <TextInput
         accessibilityLabel="Your answer"
+        ref={answerRef}
         value={answer}
         onChangeText={setAnswer}
         editable={!submitting}
@@ -483,6 +543,8 @@ export function ReviewSuggestionsCardView(
   const [completed, setCompleted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
+  const firstTitleRef = useRef<TextInput>(null);
+  const reviewStatusRef = useRef<Text>(null);
   useEffect(
     () => () => {
       mountedRef.current = false;
@@ -494,12 +556,28 @@ export function ReviewSuggestionsCardView(
   const stale = args === null ? false : !argsMatchSnapshot(args, workflow);
   const blocking = !resolved && !completed && !loading && !interrupted;
   useBlockingReport(toolCallId, blocking, onBlockingChange);
+  const reviewInteractive =
+    args !== null &&
+    !resolved &&
+    !completed &&
+    !loading &&
+    !interrupted &&
+    !stale;
+  useCardFocus(toolCallId, reviewInteractive ? "interactive" : "idle", firstTitleRef);
+  useCardFocus(
+    toolCallId,
+    resolved || completed ? "resolved" : "idle",
+    reviewStatusRef,
+  );
+  useEffect(() => {
+    if (completed) announce("Suggestions submitted. Review your plan to confirm.");
+  }, [completed]);
 
   if (resolved || completed) {
     return (
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Review suggested todos</Text>
-        <Text accessibilityLiveRegion="polite" style={styles.status}>
+        <Text ref={reviewStatusRef} accessibilityLiveRegion="polite" style={styles.status}>
           Suggestions submitted. Review your plan to confirm.
         </Text>
       </View>
@@ -615,6 +693,7 @@ export function ReviewSuggestionsCardView(
         <View key={`${index}`} style={styles.titleRow}>
           <TextInput
             accessibilityLabel={`Suggestion ${index + 1} of ${lines.length}`}
+            ref={index === 0 ? firstTitleRef : undefined}
             value={line}
             onChangeText={(value) => changeLine(index, value)}
             editable={!submitting}
@@ -685,6 +764,10 @@ export function AgentWorkflowPanel(props: {
   ) => Promise<KnownTodoWorkflow>;
   dataReady: boolean;
   onBusyChange?: (busy: boolean) => void;
+  /** Fires on mount/unmount inside the runtime provider, i.e. after the
+   *  state gate releases the thread UI. The screen refires step focus on
+   *  this signal so gated templates still receive focus on first mount. */
+  onReadyChange?: (ready: boolean) => void;
 }): React.JSX.Element | null {
   const {
     workflow,
@@ -696,6 +779,7 @@ export function AgentWorkflowPanel(props: {
     submitAgentTasks,
     dataReady,
     onBusyChange,
+    onReadyChange,
   } = props;
   const setAgentState = useAgUiSetState<AgentState>();
   const steerAway = useAgUiSteerAway();
@@ -718,6 +802,12 @@ export function AgentWorkflowPanel(props: {
     },
     [],
   );
+  useEffect(() => {
+    onReadyChange?.(true);
+    return () => {
+      onReadyChange?.(false);
+    };
+  }, [onReadyChange]);
 
   const reportCardBusy = useCallback((busy: boolean) => {
     setCardBusy(busy);
@@ -977,7 +1067,7 @@ export function AgentWorkflowPanel(props: {
       )}
       {isRunning && onBreakdownStep && (
         <ComposerPrimitive.Cancel accessibilityLabel="Cancel agent run">
-          <Text style={styles.secondaryButtonText}>Cancel agent run</Text>
+          <Text style={styles.cancelText}>Cancel agent run</Text>
         </ComposerPrimitive.Cancel>
       )}
       <Text style={styles.status}>
@@ -1069,6 +1159,17 @@ const styles = StyleSheet.create({
     color: "#173da0",
     fontSize: 16,
     fontWeight: "700",
+  },
+  // The Cancel primitive owns its pressable, so the text child itself
+  // guarantees the 44-point target every other control gets from its button.
+  cancelText: {
+    color: "#173da0",
+    fontSize: 16,
+    fontWeight: "700",
+    minHeight: 44,
+    minWidth: 44,
+    textAlign: "center",
+    textAlignVertical: "center",
   },
   status: {
     color: "#42526b",
