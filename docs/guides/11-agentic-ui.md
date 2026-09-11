@@ -10,11 +10,11 @@ AG-UI run renders the saved titles as an editable checklist. Accepting the
 edits uses the existing `submit_tasks` transition; only the existing explicit
 `confirm` transition creates todos.
 
-This guide describes the implementation on
-`codex/phase-11-agentic-ui`. It is not a checkpoint claim: the automated
-suites and bundle exports below were observed on 2026-09-10, while the
-live-model decision requests and the interactive web and iOS acceptance rows
-remain incomplete for this pass.
+This guide describes Phase 11 and the acceptance fix on
+`codex/phase-11-acceptance`. Interactive web and iOS checks and live model
+calls were observed on 2026-09-10. The record below separates live results,
+controlled interruption checks, and automated coverage; it is not a claim
+of production reliability or a completed accessibility audit.
 
 ## 1. Topology: one direct agent connection, no second service
 
@@ -28,7 +28,8 @@ The same direct path is available in development and production builds.
 
 FastAPI exposes authenticated `POST /agent`. It accepts standard AG-UI
 `RunAgentInput`, requires `threadId` to equal the workflow UUID and `runId`
-to be a UUID, loads that owner-scoped workflow, and validates the current
+to be a 1–128 character ASCII URL-safe identifier (`A-Z`, `a-z`, `0-9`,
+`_`, `-`), loads that owner-scoped workflow, and validates the current
 definition, revision, step, and expected `COLLECT_TASKS` or
 review-acknowledgement state before emitting events. Client tool schemas and
 arbitrary message instructions are never authority. The server owns exactly
@@ -288,9 +289,33 @@ manually observing the platform UIs or the live model.
 | Target | Date/runtime | Question selection and form response | Editable/removable suggestions | Interruption/replay | Malformed/unknown fallback | Sign-out isolation, accessibility, explicit confirm |
 | --- | --- | --- | --- | --- | --- | --- |
 | Automated API and mobile tests | 2026-09-10, PostgreSQL `todo_test` with Python 3.14 (498 API tests) and Jest with `jest-expo` (522 mobile tests, 17 suites) | ☑ catalog-only choice, fixed local copy, 1–200 answer bounds, fingerprint behavior | ☑ edited titles through `submit_tasks`; edited-title ack emits no-write finish without regeneration | ☑ cancellation closes provider work; interrupted clarification restarts explicitly; `Retry saved request` reuses the stored ID | ☑ unknown names/versions/extra keys, mismatched IDs, stale revisions fail closed with safe errors | ☑ owner-hidden lookup, session teardown, parser-level a11y attributes, zero todos before `confirm` |
-| Live model | — | ☐ pending: two decision requests plus suggestion requests require separate user authorization with a stated bounded budget; not run in this pass | ☐ pending | ☐ pending | — | — |
-| Web UI | 2026-09-10, production bundle export only | ☐ unobserved; export completed but no interactive browser session drove the agent flow | ☐ unobserved | ☐ unobserved | ☐ unobserved | ☐ unobserved |
-| iOS Simulator UI | 2026-09-10, production bundle export only | ☐ unobserved; export completed and a booted iPhone 17 Pro simulator existed, but no interactive Expo Go session drove the agent flow | ☐ unobserved | ☐ unobserved | ☐ unobserved | ☐ unobserved |
+| Live model | 2026-09-10, `openrouter/free`, 14 calls of 500 authorized | ☑ five valid choices: four date, one location; three choice failures | ☑ three valid proposals (5, 5, 8 titles); three suggestion failures; explicit retry recovered the hiking flow | No automatic retries; recovery was user-driven | Invalid outputs failed safely; not all failure causes were captured | Web birthday/hiking and native birthday flows completed |
+| Web UI | 2026-09-10, Expo 57, in-app browser | ☑ live date/location forms submitted | ☑ live titles edited/removed, then reviewed and confirmed | ☑ reload restored saved proposal without another provider call; controlled delayed run cancelled and unlocked manual controls | Automated coverage only | ☑ double-click confirmation created one set; sign-out during delayed run stayed signed out; labels/focus observed, full screen-reader audit pending |
+| iOS Simulator UI | 2026-09-10, iPhone 17 Pro, iOS 26.5, Expo Go 57 | ☑ live date form submitted | ☑ live proposal edited from 8 to 7 titles; separate fixture proposal reduced from 3 to 2 | ☑ controlled delayed run cancelled and unlocked manual controls | Automated coverage only | ☑ explicit confirmation created seven live todos; sign-out during delayed run stayed signed out; accessible labels observed, full VoiceOver audit pending |
+
+Acceptance exposed a real SDK integration mismatch: assistant-ui generates
+opaque run IDs, not necessarily UUIDs. The API now accepts bounded URL-safe
+run IDs while retaining UUID workflow ownership checks and unambiguous tool
+correlation. The fix has regression coverage for an actual SDK-style ID,
+continuation, and invalid IDs. The full API suite passed **501 tests** and
+the mobile suite passed **522 tests across 17 suites** after the fix.
+
+Live requests used the existing ignored API environment file, without
+copying or logging the key. Eight clarification calls yielded five valid
+choices; six suggestion calls yielded three valid proposals. Two earlier
+acceptance-wrapper configuration failures made no external calls and are
+excluded from those totals. At least two suggestion failures and one
+choice failure were classified as invalid output; other failures are not
+assigned an unobserved cause. These small-sample results demonstrate
+successful integration and safe failure, not dependable model availability.
+
+The synthetic local acceptance account ended with exactly 17 todos:
+15 from three live-model plans and two from a fixture plan. Read-only API
+checks confirmed the native live proposal added nothing before confirmation
+and exactly seven afterward. Cancellation/sign-out added nothing. Controlled
+20-second fixture delays made interruption checks repeatable on both UIs;
+they are not counted as live provider checks. No malformed/unknown tool was
+manually injected into a platform UI; that remains automated coverage.
 
 ## 10. Honest limits
 
@@ -311,6 +336,6 @@ through the existing screen.
 No production quota, pruning, telemetry, or exactly-once provider billing
 is claimed; Phase 13 owns that measured hardening. Android, physical
 devices, production deployment, token refresh during a run, reconnection,
-and live-model behavior remain unobserved until their acceptance rows are
-run; package support claims are not evidence for them. Phase 12 owns
+and a full assistive-technology audit remain unobserved; package support
+claims are not evidence for them. Phase 12 owns
 full cross-platform E2E.

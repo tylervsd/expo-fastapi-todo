@@ -64,8 +64,11 @@ URL, hosted assistant-ui dependency, or frontend model call. The same direct
 path is available in development and production builds.
 
 FastAPI exposes authenticated `POST /agent`. It accepts standard AG-UI
-`RunAgentInput`, requires `threadId` to equal the workflow UUID and `runId` to
-be a UUID, loads that owner-scoped workflow, and validates the current
+`RunAgentInput`, requires `threadId` to equal the workflow UUID, and accepts
+the opaque safe `runId` emitted by assistant-ui (1–128 ASCII letters, digits,
+underscores, or hyphens). The run ID only correlates this request's events and
+tool calls; it is not a workflow identity. The server loads that owner-scoped
+workflow and validates the current
 definition, revision, step, and expected `COLLECT_TASKS` or
 review-acknowledgement state before emitting events. Client tool schemas and
 arbitrary message instructions are never authority.
