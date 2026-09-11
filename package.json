@@ -33,6 +33,7 @@
     "test:doctor": "bats tests/doctor"
   },
   "devDependencies": {
+    "@playwright/test": "1.63.0",
     "markdown-link-check": "3.15.0",
     "markdownlint-cli2": "0.23.2"
   }

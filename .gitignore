@@ -16,6 +16,14 @@ __pycache__/
 .ruff_cache/
 *.pyc
 
+# Phase 12 cross-platform E2E generated output.
+apps/mobile/ios/
+apps/mobile/dist-e2e/
+artifacts/e2e/
+playwright-report/
+test-results/
+e2e/web/test-results/
+
 # Local credentials; only placeholder examples belong in Git.
 .env
 .env.*
