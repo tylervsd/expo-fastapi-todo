@@ -637,22 +637,30 @@ describe("agent card focus movement", () => {
   it("announces completion when the answer is sent", async () => {
     await renderClarifyCard({});
     await fireEvent.changeText(screen.getByLabelText("Your answer"), "next Saturday");
+    mockSetAccessibilityFocus.mockClear();
+    mockInputFocus.mockClear();
     await fireEvent.press(screen.getByRole("button", { name: "Continue" }));
     await waitFor(() =>
       expect(mockAnnounceForAccessibility).toHaveBeenCalledWith(
         "Answer sent. Suggestions are on the way.",
       ),
     );
+    // The actionable form is removed: focus moves to the resolved status.
+    await waitFor(() => expect(mockSetAccessibilityFocus).toHaveBeenCalledWith(123));
   });
 
   it("announces completion when suggestions are submitted", async () => {
     await renderReviewCard({});
+    mockSetAccessibilityFocus.mockClear();
+    mockInputFocus.mockClear();
     await fireEvent.press(screen.getByRole("button", { name: "Use these suggestions" }));
     await waitFor(() =>
       expect(mockAnnounceForAccessibility).toHaveBeenCalledWith(
         "Suggestions submitted. Review your plan to confirm.",
       ),
     );
+    // The editable checklist is removed: focus moves to the resolved status.
+    await waitFor(() => expect(mockSetAccessibilityFocus).toHaveBeenCalledWith(123));
   });
 });
 
