@@ -4,7 +4,7 @@
 
 This is a planned curriculum extension after Phase 6, not an implementation guide or a claim that these features already exist. Each phase still needs its own approved spec before implementation. Keep the existing quick-add experience, authentication boundary, and `/todos` contract working throughout.
 
-The [curriculum roadmap](curriculum-roadmap.md) adds Phase 7 for backend workflow modeling, Phase 8 for server-directed screens, and Phase 9 for workflow reliability. Phase 10 adds Python/OpenRouter suggestions, and Phase 11 adds assistant-ui/AG-UI interactions. Cross-platform E2E and production hardening follow in Phases 12 and 13. Existing guide numbers and checkpoint tags remain unchanged.
+The [curriculum roadmap](curriculum-roadmap.md) adds Phase 7 for backend workflow modeling, Phase 8 for server-directed screens, and Phase 9 for workflow reliability. Phase 10 adds Python/OpenRouter suggestions, and Phase 11 adds assistant-ui/AG-UI interactions. A CI security baseline and cross-platform E2E follow before the provisional cloud curriculum in Phases 13–27. Existing guide numbers and checkpoint tags remain unchanged.
 
 ## Design principle
 
@@ -192,13 +192,19 @@ A2UI describes declarative UI; AG-UI carries agent/application interactions. The
 - [assistant-ui AG-UI quickstart](https://www.assistant-ui.com/docs/runtimes/ag-ui/quickstart)
 - [AG-UI and generative UI specifications](https://docs.ag-ui.com/concepts/generative-ui-specs)
 
-## Phase 12 and Phase 13 follow-through
+## Phase 12 and cloud-curriculum follow-through
 
 Phase 12 retains the core todo E2E journey and adds a small guided-creation set: the simple path, the breakdown path, and one resume/recovery journey on the supported platforms. Add a thin AI-assisted clarification/review/confirmation journey using deterministic provider and AG-UI event fixtures. Keep exhaustive branches and races in lower layers. Retain the planned scheduling boundary: web E2E on pull requests and iOS Simulator E2E on `main` once those suites exist.
 
-Phase 13 adds workflow diagnostics and deployment compatibility to the existing hardening topics. Prefer correlation identifiers, state/transition names, durations, and error categories over logging answers, todo titles, session tokens, or entire request bodies. Specify treatment of in-flight definitions, unsupported clients, cancelled/abandoned drafts, and rollback before deployment. Extend the Phase 10 request bounds with per-user usage limits, provider cost/latency/error diagnostics, and explicit retention/redaction policies for AI context and event data.
+The pre-Phase 12 security baseline scans Git history with Gitleaks, blocks high/critical dependency vulnerabilities with Trivy, and runs CodeQL over Python and JavaScript/TypeScript. It must not send real provider credentials to pull-request code or turn paid model calls into CI dependencies. After the workflow has run on GitHub, protect `main` with required `Secrets` and `Dependencies` checks plus a CodeQL code-scanning rule set to **High or higher**.
 
-A later optional lesson can add a persisted processing state and a worker that eventually records success or failure. Queues, external side effects, and background orchestration are outside Phases 7-9.
+Phases 13–19 establish the deployed environment and delivery path without changing workflow authority: Cloud Run hosts the API, Cloud SQL stores workflow state, Cloudflare Pages hosts the static web application, Terraform owns Google infrastructure, and the delivery pipeline retains the existing test and acceptance gates.
+
+Phase 20 moves suggestion generation to Cloud Tasks. Reuse the existing persisted request identity and processing state: the API reserves and enqueues work, an authenticated Cloud Run handler eventually records success or failure, and the client continues polling the authoritative saved result. Test duplicate delivery, stale/cancelled work, retry exhaustion, and the gap between database idempotency and provider billing. Queues, external side effects, and background orchestration remain outside Phases 7–9.
+
+Phase 21 owns measured workflow and provider hardening. Prefer correlation identifiers, state/transition names, durations, and error categories over logging answers, todo titles, session tokens, or entire request bodies. Add per-user usage limits, provider cost/latency/error diagnostics, and explicit retention/redaction policies for AI context and event data.
+
+Phase 23 specifies treatment of in-flight definitions, unsupported clients, cancelled/abandoned drafts, migrations, rollback, and recovery drills before making production-readiness claims. Later Cloud Storage, Pub/Sub/Eventarc, BigQuery, and notification phases must preserve the same owner scope, minimal-data policy, idempotent consumption, and authoritative database boundaries.
 
 ## Documentation and checkpoint acceptance
 

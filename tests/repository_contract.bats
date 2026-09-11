@@ -64,7 +64,35 @@
       }
     }
     END { exit invalid }
-  ' .github/workflows/quality.yml
+  ' .github/workflows/*.yml
+  [ "$status" -eq 0 ]
+}
+
+@test "security workflow blocks secrets and high or critical findings" {
+  workflow=.github/workflows/security.yml
+  [ -f "$workflow" ] || return 1
+
+  grep -F 'pull_request:' "$workflow" || return 1
+  grep -F 'push:' "$workflow" || return 1
+  grep -F 'schedule:' "$workflow" || return 1
+  grep -F 'workflow_dispatch:' "$workflow" || return 1
+  ! grep -F 'pull_request_target:' "$workflow" || return 1
+
+  grep -F 'gitleaks/gitleaks-action@' "$workflow" || return 1
+  grep -F 'aquasecurity/trivy-action@' "$workflow" || return 1
+  grep -F 'exit-code: 1' "$workflow" || return 1
+  grep -F 'severity: HIGH,CRITICAL' "$workflow" || return 1
+  grep -F 'github/codeql-action/init@' "$workflow" || return 1
+  grep -F 'github/codeql-action/analyze@' "$workflow" || return 1
+  grep -F 'javascript-typescript' "$workflow" || return 1
+  grep -F 'python' "$workflow" || return 1
+
+  run awk '
+    /^permissions:/ { in_permissions = 1; next }
+    in_permissions && /^[^[:space:]]/ { exit }
+    in_permissions && /contents:[[:space:]]*read/ { found = 1 }
+    END { exit(found ? 0 : 1) }
+  ' "$workflow"
   [ "$status" -eq 0 ]
 }
 
@@ -173,7 +201,7 @@
   done
 }
 
-@test "roadmap names all nine phase themes" {
+@test "roadmap names every planned phase theme and security baseline" {
   for heading in \
     'Mac developer environment' \
     'Project foundation' \
@@ -182,8 +210,28 @@
     'Persistence' \
     'Complete CRUD and resilient server state' \
     'Authentication and authorization' \
+    'Backend workflow modeling' \
+    'Server-directed screens and reusable templates' \
+    'Reliable, resumable workflows' \
+    'LLM-assisted planning with Python and OpenRouter' \
+    'Interactive AI workflows with assistant-ui and AG-UI' \
+    'Cross-phase security baseline before Phase 12' \
     'Cross-platform E2E' \
-    'Production hardening'; do
+    'Google Cloud foundations and cost safety' \
+    'Containers, Artifact Registry, and Cloud Run' \
+    'Service identities and Secret Manager' \
+    'Cloud SQL for PostgreSQL and migrations' \
+    'Cloudflare Pages and the hosted web application' \
+    'Terraform and reproducible Google infrastructure' \
+    'Continuous delivery, revisions, and rollback' \
+    'Cloud Tasks and Cloud Scheduler' \
+    'Observability, alerts, and cost control' \
+    'Cloud KMS and encryption lifecycle' \
+    'Resilience and production operations' \
+    'Cloud Storage and direct uploads' \
+    'Pub/Sub and Eventarc' \
+    'BigQuery product analytics' \
+    'Firebase Cloud Messaging'; do
     grep -F "$heading" docs/curriculum-roadmap.md
   done
 }
