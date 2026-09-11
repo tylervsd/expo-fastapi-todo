@@ -10,8 +10,8 @@ AG-UI run renders the saved titles as an editable checklist. Accepting the
 edits uses the existing `submit_tasks` transition; only the existing explicit
 `confirm` transition creates todos.
 
-Phase 11 was merged in PR #8 (`e99eca0`). The acceptance fix (`61fb30c`)
-is pushed on `codex/phase-11-acceptance` and is not yet merged into `main`. Interactive web and iOS checks and live model
+Phase 11 was merged in PR #8 (`e99eca0`). This revision includes the acceptance fix (`61fb30c`), developed on
+`codex/phase-11-acceptance`. Interactive web and iOS checks and live model
 calls were observed on 2026-09-10. The record below separates live results,
 controlled interruption checks, and automated coverage; it is not a claim
 of production reliability or a completed accessibility audit.
