@@ -1,6 +1,11 @@
 appId: ${APP_ID}
 ---
 - launchApp
+# Load gate (see guided-review.yaml): fresh AI accounts are empty, so the
+# empty-state text proves the launch fetches resolved before the first tap.
+- extendedWaitUntil:
+    visible: "No todos yet. Add one above."
+    timeout: 15000
 - tapOn:
     id: "e2e-help-plan"
 - tapOn:

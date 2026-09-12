@@ -3,6 +3,11 @@ appId: ${APP_ID}
 # Every Maestro invocation restarts the app, so re-enter the saved plan and
 # replay the saved agent suggestion (no re-answer needed), then edit it.
 - launchApp
+# Load gate (see guided-resume-confirm.yaml): the step resume entry
+# renders only after the saved workflows fetch resolves.
+- extendedWaitUntil:
+    visible: "Organize supplies, Break it into smaller todos"
+    timeout: 15000
 - tapOn: "Organize supplies, Break it into smaller todos"
 - extendedWaitUntil:
     visible:

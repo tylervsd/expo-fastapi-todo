@@ -1,6 +1,11 @@
 appId: ${APP_ID}
 ---
 - launchApp
+# Load gate (see guided-resume-confirm.yaml): the step resume entry
+# renders only after the saved workflows fetch resolves.
+- extendedWaitUntil:
+    visible: "Organize supplies, Break it into smaller todos"
+    timeout: 15000
 - tapOn: "Organize supplies, Break it into smaller todos"
 - extendedWaitUntil:
     visible:

@@ -1,6 +1,14 @@
 appId: ${APP_ID}
 ---
 - launchApp
+# Gate the first tap on the loaded empty list: the launch-time parallel
+# fetches re-render the screen, and an ungated tap can land mid-mount or
+# mid-render and be swallowed (CI run 34706772463). Fresh guided accounts
+# are always empty, so this text deterministically proves GET /todos
+# resolved before we act.
+- extendedWaitUntil:
+    visible: "No todos yet. Add one above."
+    timeout: 15000
 - tapOn:
     id: "e2e-help-plan"
 - tapOn:
