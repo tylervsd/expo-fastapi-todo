@@ -1,0 +1,40 @@
+appId: ${APP_ID}
+---
+# Every Maestro invocation restarts the app, so re-enter the saved plan and
+# replay the saved agent suggestion (no re-answer needed), then edit it.
+- launchApp
+# Load gate (see guided-resume-confirm.yaml): the step resume entry
+# renders only after the saved workflows fetch resolves.
+- extendedWaitUntil:
+    visible: "Organize supplies, Break it into smaller todos"
+    timeout: 15000
+- tapOn: "Organize supplies, Break it into smaller todos"
+- extendedWaitUntil:
+    visible:
+      id: "e2e-collect-titles"
+    timeout: 15000
+- scroll
+- tapOn:
+    id: "e2e-ask-agent"
+- extendedWaitUntil:
+    visible: "Suggestion 1 of 3"
+    timeout: 30000
+- tapOn: "Suggestion 1 of 3"
+- longPressOn: "Suggestion 1 of 3"
+- extendedWaitUntil:
+    visible: "Select All"
+    timeout: 10000
+- tapOn: "Select All"
+- inputText: "Gather reusable supplies"
+- scroll
+- tapOn: "Remove suggestion 3"
+- extendedWaitUntil:
+    notVisible: "Suggestion 3 of 3"
+    timeout: 15000
+- scroll
+- tapOn:
+    id: "e2e-use-suggestions"
+- extendedWaitUntil:
+    visible:
+      id: "e2e-confirm-plan"
+    timeout: 15000

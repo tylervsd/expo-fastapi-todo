@@ -739,6 +739,50 @@ describe("agent card accessibility contracts", () => {
     );
     expect(submitStyle.minHeight).toBeGreaterThanOrEqual(44);
   });
+
+  it("keeps agent thread taps live while the keyboard is up", async () => {
+    // The Continue button renders inside the agent thread list: without
+    // keyboardShouldPersistTaps="handled" on an ancestor list, taps while
+    // the keyboard is up are swallowed as dismiss gestures and onContinue
+    // never runs (native E2E stuck at the answer form with no error).
+    const realFetch = globalThis.fetch;
+    const savedApiUrl = process.env.EXPO_PUBLIC_API_URL;
+    process.env.EXPO_PUBLIC_API_URL = "https://api.example.test";
+    try {
+      globalThis.fetch = makeAgentFetch({ ready: [], bodies: [] }) as unknown as typeof fetch;
+      const { view } = await renderPanelHarness({});
+      await fireEvent.press(screen.getByRole("button", { name: "Ask agent for help" }));
+      await waitFor(
+        () => expect(screen.getByRole("button", { name: "Continue" })).toBeTruthy(),
+        { timeout: 10000 },
+      );
+      const buttons = view.container.queryAll(
+        (node) => node.props.accessibilityLabel === "Continue",
+      );
+      expect(buttons.length).toBeGreaterThan(0);
+      for (const button of buttons) {
+        let ancestor = button.parent;
+        let checked = false;
+        while (ancestor !== null) {
+          if (
+            "keyboardShouldPersistTaps" in ancestor.props &&
+            ancestor.props.keyboardShouldPersistTaps !== undefined
+          ) {
+            expect(ancestor.props.keyboardShouldPersistTaps).toBe("handled");
+            checked = true;
+            break;
+          }
+          ancestor = ancestor.parent;
+        }
+        expect(checked).toBe(true);
+      }
+      await view.unmount();
+    } finally {
+      globalThis.fetch = realFetch;
+      if (savedApiUrl === undefined) delete process.env.EXPO_PUBLIC_API_URL;
+      else process.env.EXPO_PUBLIC_API_URL = savedApiUrl;
+    }
+  });
 });
 
 /* ---- Full-panel integration: real runtime against a server-emulating fixture ---- */

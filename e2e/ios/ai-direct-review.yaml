@@ -1,0 +1,35 @@
+appId: ${APP_ID}
+---
+- launchApp
+# Load gate (see guided-review.yaml): fresh AI accounts are empty, so the
+# empty-state text proves the launch fetches resolved before the first tap.
+- extendedWaitUntil:
+    visible: "No todos yet. Add one above."
+    timeout: 15000
+- tapOn:
+    id: "e2e-help-plan"
+- tapOn:
+    id: "e2e-task-title"
+- inputText: "Organize supplies"
+- hideKeyboard
+- tapOn:
+    id: "e2e-start-planning"
+- extendedWaitUntil:
+    visible: "Does this task involve multiple steps?"
+    timeout: 15000
+- tapOn:
+    id: "e2e-workflow-action-Yes"
+- extendedWaitUntil:
+    visible: "Would you like to split it into smaller todos?"
+    timeout: 15000
+- tapOn:
+    id: "e2e-workflow-action-Yes"
+- extendedWaitUntil:
+    visible:
+      id: "e2e-collect-titles"
+    timeout: 15000
+- tapOn:
+    id: "e2e-suggest-todos"
+- extendedWaitUntil:
+    visible: "Saved suggestions are ready to review."
+    timeout: 20000

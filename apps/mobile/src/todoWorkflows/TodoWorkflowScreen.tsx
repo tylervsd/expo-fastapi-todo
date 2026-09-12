@@ -1836,6 +1836,7 @@ function WorkflowStartScreen({
       <Text style={styles.fieldLabel}>Task title</Text>
       <TextInput
         ref={inputRef}
+        testID="e2e-task-title"
         accessibilityLabel="Task title"
         editable={!submitDisabled}
         value={draft}
@@ -1848,6 +1849,7 @@ function WorkflowStartScreen({
       />
       <Pressable
         accessibilityRole="button"
+        testID="e2e-start-planning"
         accessibilityLabel="Start planning"
         disabled={submitDisabled}
         style={styles.addButton}
@@ -1859,6 +1861,7 @@ function WorkflowStartScreen({
       <Pressable
         ref={backRef}
         accessibilityRole="button"
+        testID="e2e-back-to-todos"
         accessibilityLabel="Back to todos"
         disabled={exitDisabled}
         style={styles.refreshButton}
@@ -1896,6 +1899,7 @@ function YesNoTemplate({
           key={action.id}
           ref={index === 0 ? yesRef : undefined}
           accessibilityRole="button"
+          testID={`e2e-workflow-action-${action.label}`}
           accessibilityLabel={action.label}
           disabled={disabled}
           style={index === 0 ? styles.addButton : styles.refreshButton}
@@ -1979,6 +1983,7 @@ function TaskBreakdownTemplate({
       <Text style={styles.fieldLabel}>Todo titles (one per line)</Text>
       <TextInput
         ref={inputRef}
+        testID="e2e-collect-titles"
         accessibilityLabel="Todo titles (one per line)"
         editable={!disabled || suggesting || suggestion?.status === "pending"}
         value={draft}
@@ -1992,6 +1997,7 @@ function TaskBreakdownTemplate({
       />
       <Pressable
         accessibilityRole="button"
+        testID="e2e-save-tasks"
         accessibilityLabel="Save tasks"
         disabled={disabled}
         style={styles.addButton}
@@ -2003,6 +2009,7 @@ function TaskBreakdownTemplate({
       </Pressable>
       <Pressable
         accessibilityRole="button"
+        testID="e2e-suggest-todos"
         accessibilityLabel="Suggest todos"
         disabled={suggestionControlsDisabled || suggesting}
         style={styles.refreshButton}
@@ -2174,6 +2181,7 @@ function ReviewTemplate({
       <Pressable
         ref={confirmRef}
         accessibilityRole="button"
+        testID="e2e-confirm-plan"
         accessibilityLabel="Confirm plan"
         disabled={disabled}
         style={styles.addButton}
@@ -2221,6 +2229,7 @@ function CompletionTemplate({
       <Pressable
         ref={backRef}
         accessibilityRole="button"
+        testID="e2e-back-to-todos"
         accessibilityLabel="Back to todos"
         style={styles.refreshButton}
         onPress={onExit}
@@ -2249,6 +2258,7 @@ function UnsupportedTemplate({
       <Pressable
         ref={backRef}
         accessibilityRole="button"
+        testID="e2e-back-to-todos"
         accessibilityLabel="Back to todos"
         style={styles.refreshButton}
         onPress={onExit}

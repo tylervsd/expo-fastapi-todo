@@ -350,6 +350,7 @@ export function TodoScreen({
           <Text style={styles.fieldLabel}>Todo title</Text>
           <TextInput
             ref={input}
+            testID="e2e-todo-title"
             accessibilityLabel="Todo title"
             editable={!writesDisabled}
             value={draft}
@@ -362,6 +363,7 @@ export function TodoScreen({
           />
           <Pressable
             accessibilityRole="button"
+            testID="e2e-todo-add"
             accessibilityLabel="Add todo"
             disabled={writesDisabled}
             style={styles.addButton}
@@ -382,6 +384,7 @@ export function TodoScreen({
             <Pressable
               key={value}
               accessibilityRole="button"
+              testID={`e2e-filter-${value}`}
               accessibilityState={{ selected: filter === value }}
               aria-pressed={filter === value}
               style={[styles.filterButton, filter === value && styles.selectedFilter]}
@@ -420,6 +423,7 @@ export function TodoScreen({
         {onPlanTask !== undefined && (
           <Pressable
             accessibilityRole="button"
+            testID="e2e-help-plan"
             accessibilityLabel="Help me plan a task"
             style={styles.refreshButton}
             onPress={onPlanTask}
@@ -434,6 +438,7 @@ export function TodoScreen({
               <View style={styles.todoSummary}>
                 <PressableWithKeyDown
                   accessibilityRole="checkbox"
+                  testID={`e2e-todo-toggle-${item.title}`}
                   accessibilityLabel={item.title}
                   accessibilityState={{ checked: item.completed }}
                   aria-checked={item.completed}
@@ -461,6 +466,7 @@ export function TodoScreen({
               </View>
               <Pressable
                 accessibilityRole="button"
+                testID={`e2e-todo-edit-${item.title}`}
                 accessibilityLabel={`Edit ${item.title}`}
                 disabled={writesDisabled}
                 style={({ pressed }) => [
@@ -475,6 +481,7 @@ export function TodoScreen({
               </Pressable>
               <Pressable
                 accessibilityRole="button"
+                testID={`e2e-todo-delete-${item.title}`}
                 accessibilityLabel={`Delete ${item.title}`}
                 disabled={writesDisabled}
                 style={({ pressed }) => [
@@ -491,6 +498,7 @@ export function TodoScreen({
             {editingId === item.id && (
               <View style={styles.inlineEditor}>
                 <TextInput
+                  testID="e2e-edit-title"
                   accessibilityLabel="Edit todo title"
                   editable={!writesDisabled}
                   value={editDraft}
@@ -499,6 +507,7 @@ export function TodoScreen({
                 />
                 <Pressable
                   accessibilityRole="button"
+                  testID="e2e-save-changes"
                   accessibilityLabel="Save changes"
                   disabled={writesDisabled}
                   style={styles.addButton}
@@ -522,6 +531,7 @@ export function TodoScreen({
                 <Text style={styles.confirmText}>Delete &#8220;{item.title}&#8221;?</Text>
                 <Pressable
                   accessibilityRole="button"
+                  testID="e2e-confirm-delete"
                   accessibilityLabel="Confirm delete"
                   disabled={writesDisabled}
                   style={styles.addButton}

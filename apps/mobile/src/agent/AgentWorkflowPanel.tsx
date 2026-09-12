@@ -494,6 +494,7 @@ export function ClarifyPlanCardView(
       )}
       <Pressable
         accessibilityRole="button"
+        testID="e2e-agent-continue"
         accessibilityLabel="Continue"
         accessibilityState={{ disabled }}
         disabled={disabled}
@@ -725,6 +726,7 @@ export function ReviewSuggestionsCardView(
       )}
       <Pressable
         accessibilityRole="button"
+        testID="e2e-use-suggestions"
         accessibilityLabel="Use these suggestions"
         accessibilityState={{ disabled }}
         disabled={disabled}
@@ -1026,6 +1028,7 @@ export function AgentWorkflowPanel(props: {
         <ThreadPrimitive.MessagesFlatList
           scrollEnabled={false}
           autoScroll={false}
+          keyboardShouldPersistTaps="handled"
           ListEmptyComponent={
             <Text style={styles.status}>
               Ask the agent for help breaking this into smaller todos.
@@ -1056,6 +1059,7 @@ export function AgentWorkflowPanel(props: {
       {onBreakdownStep && (
         <Pressable
           accessibilityRole="button"
+          testID="e2e-ask-agent"
           accessibilityLabel={askedOnce ? "Try agent again" : "Ask agent for help"}
           accessibilityState={{ disabled: askDisabled }}
           disabled={askDisabled}

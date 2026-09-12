@@ -2,7 +2,7 @@
 
 This roadmap is provisional. Every phase receives its own approved spec before implementation; the spec defines goals, non-goals, user-visible behavior, contracts, error cases, accessibility considerations, and the intended testing-pyramid layer. The repository evolves on `main` with numbered guides and annotated checkpoint tags rather than permanent phase branches or duplicate repositories.
 
-Phase numbers start at 0 to match the README, existing guides, and checkpoint convention. This revision expands the curriculum to 28 phases (0–27); it does not renumber existing guides or tags. The implementation on `main` includes Phase 11 and its acceptance follow-up. Merge status does not complete outstanding manual acceptance: see the numbered guides, especially Guide 09's partial iOS record. Phase 12 is the next planned implementation phase; Phases 13–27 are provisional cloud curriculum.
+Phase numbers start at 0 to match the README, existing guides, and checkpoint convention. This revision expands the curriculum to 28 phases (0–27); it does not renumber existing guides or tags. The implementation on `main` includes Phase 11 and its acceptance follow-up. Merge status does not complete outstanding manual acceptance: see the numbered guides, especially Guide 09's partial iOS record. Phase 12 is implemented with local-runs + web-CI acceptance ([guide](guides/12-cross-platform-e2e.md)); native CI is manual-only after environment-attributed failures on free-tier runners. Phases 13–27 are provisional cloud curriculum.
 
 Phases 7-9 build one guided-todo creation feature to teach backend-owned state transitions, server-directed screen templates, and reliable resumption. Phases 10 and 11 extend that feature with validated LLM suggestions and interactive agent-selected components, respectively. This keeps model integration separate from the agent/UI protocol lesson. The existing quick-add and `/todos` contract remain available. See the [workflow learning plan](workflow-learning-plan.md) for the proposed scenario, API examples, state ownership, failure cases, and phase exercises. That plan informs each future approved phase spec; it is not a substitute for the spec gate or an implementation guide.
 
@@ -132,6 +132,7 @@ Phases 7-9 build one guided-todo creation feature to teach backend-owned state t
 - **New technology/pattern:** Browser E2E and iOS Simulator E2E with stable fixtures and environment-aware diagnostics.
 - **Testing-pyramid layer introduced:** Thin end-to-end coverage at the top of the pyramid; web E2E runs on pull requests and iOS E2E runs on `main` once those suites exist.
 - **Spec gate:** Before implementation, this phase gets its own approved spec for journeys, fixtures, platform differences, and CI scheduling.
+- **Status:** In progress on `codex/phase-12-cross-platform-e2e` ([guide](guides/12-cross-platform-e2e.md)). Toolchain, isolated harness, four browser and four native journeys, and platform CI are implemented; local double-runs pass on both platforms. Remote acceptance (browser PR job, native CI run) is pending. No checkpoint until that CI evidence exists.
 
 ## 13. Google Cloud foundations and cost safety
 

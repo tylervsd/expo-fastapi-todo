@@ -1,0 +1,24 @@
+appId: ${APP_ID}
+---
+- launchApp
+# Load gate: the resume entry renders only after the saved workflows
+# fetch resolves, so its visibility proves the loaded state (mirrors the
+# web suite, which expects the resume control visible after reload).
+- extendedWaitUntil:
+    visible: "Prepare weekend, Review your plan"
+    timeout: 15000
+- tapOn: "Prepare weekend, Review your plan"
+- extendedWaitUntil:
+    visible:
+      id: "e2e-confirm-plan"
+    timeout: 15000
+- tapOn:
+    id: "e2e-confirm-plan"
+- extendedWaitUntil:
+    visible:
+      id: "e2e-back-to-todos"
+    timeout: 15000
+- tapOn:
+    id: "e2e-back-to-todos"
+- assertVisible: "Pack bag"
+- assertVisible: "Check weather"

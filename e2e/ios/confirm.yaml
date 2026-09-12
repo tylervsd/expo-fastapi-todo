@@ -1,0 +1,25 @@
+appId: ${APP_ID}
+---
+# Every Maestro invocation restarts the app at the todos list, so re-enter
+# the saved plan at its review step before confirming.
+- launchApp
+# Load gate (see guided-resume-confirm.yaml): the resume entry renders
+# only after the saved workflows fetch resolves.
+- extendedWaitUntil:
+    visible: "Organize supplies, Review your plan"
+    timeout: 15000
+- tapOn: "Organize supplies, Review your plan"
+- extendedWaitUntil:
+    visible:
+      id: "e2e-confirm-plan"
+    timeout: 15000
+- tapOn:
+    id: "e2e-confirm-plan"
+- extendedWaitUntil:
+    visible:
+      id: "e2e-back-to-todos"
+    timeout: 15000
+- tapOn:
+    id: "e2e-back-to-todos"
+- assertVisible: "Gather reusable supplies"
+- assertVisible: "Prepare workspace"

@@ -1,0 +1,16 @@
+appId: ${APP_ID}
+---
+- launchApp
+# Load gate: the expected row renders only after the todos fetch
+# resolves, so its visibility proves the loaded state before the delete.
+- extendedWaitUntil:
+    visible: "Buy oat milk"
+    timeout: 15000
+- tapOn:
+    id: "e2e-todo-delete-Buy oat milk"
+- tapOn:
+    id: "e2e-confirm-delete"
+- extendedWaitUntil:
+    notVisible: "Buy oat milk"
+    timeout: 15000
+- assertVisible: "No todos yet. Add one above."

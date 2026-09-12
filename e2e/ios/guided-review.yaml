@@ -1,0 +1,42 @@
+appId: ${APP_ID}
+---
+- launchApp
+# Gate the first tap on the loaded empty list: the launch-time parallel
+# fetches re-render the screen, and an ungated tap can land mid-mount or
+# mid-render and be swallowed (CI run 34706772463). Fresh guided accounts
+# are always empty, so this text deterministically proves GET /todos
+# resolved before we act.
+- extendedWaitUntil:
+    visible: "No todos yet. Add one above."
+    timeout: 15000
+- tapOn:
+    id: "e2e-help-plan"
+- tapOn:
+    id: "e2e-task-title"
+- inputText: "Prepare weekend"
+- hideKeyboard
+- tapOn:
+    id: "e2e-start-planning"
+- extendedWaitUntil:
+    visible: "Does this task involve multiple steps?"
+    timeout: 15000
+- tapOn:
+    id: "e2e-workflow-action-Yes"
+- extendedWaitUntil:
+    visible: "Would you like to split it into smaller todos?"
+    timeout: 15000
+- tapOn:
+    id: "e2e-workflow-action-Yes"
+- extendedWaitUntil:
+    visible:
+      id: "e2e-collect-titles"
+    timeout: 15000
+- tapOn:
+    id: "e2e-collect-titles"
+- inputText: "Pack bag\nCheck weather"
+- tapOn:
+    id: "e2e-save-tasks"
+- extendedWaitUntil:
+    visible:
+      id: "e2e-confirm-plan"
+    timeout: 15000
