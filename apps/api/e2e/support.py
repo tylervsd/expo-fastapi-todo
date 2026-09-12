@@ -152,10 +152,11 @@ def cmd_seed(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    # codeql[py/clear-text-logging-sensitive-data]: synthetic disposable E2E
-    # credentials by design (spec: fresh account per case, never real
-    # credentials); this exact JSON line is the CLI contract consumed via
-    # pipe by scripts/e2e-ios and the web spec, never written to logs.
+    # Synthetic disposable E2E credentials by design (spec: fresh account
+    # per case, never real credentials); this exact JSON line is the CLI
+    # contract consumed via pipe by scripts/e2e-ios and the web spec,
+    # never written to logs.
+    # codeql[py/clear-text-logging-sensitive-data]: reviewed, by design.
     print(json.dumps({"username": username, "password": password}))
     return 0
 
