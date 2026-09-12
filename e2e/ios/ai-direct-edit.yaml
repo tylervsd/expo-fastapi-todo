@@ -1,0 +1,20 @@
+appId: ${APP_ID}
+---
+- launchApp
+- tapOn: "Organize supplies, Break it into smaller todos"
+- extendedWaitUntil:
+    visible:
+      id: "e2e-collect-titles"
+    timeout: 15000
+- tapOn:
+    id: "e2e-collect-titles"
+- eraseText: 100
+- tapOn:
+    id: "e2e-collect-titles"
+- inputText: "Gather reusable supplies\nPrepare workspace"
+- tapOn:
+    id: "e2e-save-tasks"
+- extendedWaitUntil:
+    visible:
+      id: "e2e-confirm-plan"
+    timeout: 15000

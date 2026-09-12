@@ -1,0 +1,15 @@
+appId: ${APP_ID}
+---
+- launchApp
+- extendedWaitUntil:
+    visible: "Todos"
+    timeout: 15000
+- assertVisible: "${EXPECT_VISIBLE}"
+- tapOn:
+    id: "e2e-sign-out"
+- extendedWaitUntil:
+    visible:
+      id: "e2e-auth-username"
+    timeout: 15000
+- assertNotVisible: "Todos"
+- assertNotVisible: "${EXPECT_VISIBLE}"

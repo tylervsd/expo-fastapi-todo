@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, SafeAreaView, StyleSheet, Text, View } from "react-native";
 import { useQueryClient } from "@tanstack/react-query";
 import { TodoExperience } from "../TodoExperience";
 import {
@@ -246,17 +246,20 @@ export function AuthProvider({
       >
         {children}
         <View style={styles.signedIn}>
-          <View style={styles.header}>
-            <Text style={styles.username}>Signed in as {user.username}</Text>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Sign out"
-              style={styles.signOutButton}
-              onPress={signOut}
-            >
-              <Text style={styles.signOutButtonText}>Sign out</Text>
-            </Pressable>
-          </View>
+          <SafeAreaView style={styles.headerSafe}>
+            <View style={styles.header}>
+              <Text style={styles.username}>Signed in as {user.username}</Text>
+              <Pressable
+                accessibilityRole="button"
+                testID="e2e-sign-out"
+                accessibilityLabel="Sign out"
+                style={styles.signOutButton}
+                onPress={signOut}
+              >
+                <Text style={styles.signOutButtonText}>Sign out</Text>
+              </Pressable>
+            </View>
+          </SafeAreaView>
           <TodoExperience userId={user.id} api={todoApi} sessionEpoch={sessionEpoch} isSessionCurrent={isSessionCurrent} />
         </View>
       </AgentSessionProvider>
@@ -276,6 +279,9 @@ const styles = StyleSheet.create({
   },
   signedIn: {
     flex: 1,
+  },
+  headerSafe: {
+    paddingBottom: 0,
   },
   header: {
     alignItems: "center",

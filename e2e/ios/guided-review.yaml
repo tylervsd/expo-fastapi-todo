@@ -1,0 +1,34 @@
+appId: ${APP_ID}
+---
+- launchApp
+- tapOn:
+    id: "e2e-help-plan"
+- tapOn:
+    id: "e2e-task-title"
+- inputText: "Prepare weekend"
+- hideKeyboard
+- tapOn:
+    id: "e2e-start-planning"
+- extendedWaitUntil:
+    visible: "Does this task involve multiple steps?"
+    timeout: 15000
+- tapOn:
+    id: "e2e-workflow-action-Yes"
+- extendedWaitUntil:
+    visible: "Would you like to split it into smaller todos?"
+    timeout: 15000
+- tapOn:
+    id: "e2e-workflow-action-Yes"
+- extendedWaitUntil:
+    visible:
+      id: "e2e-collect-titles"
+    timeout: 15000
+- tapOn:
+    id: "e2e-collect-titles"
+- inputText: "Pack bag\nCheck weather"
+- tapOn:
+    id: "e2e-save-tasks"
+- extendedWaitUntil:
+    visible:
+      id: "e2e-confirm-plan"
+    timeout: 15000

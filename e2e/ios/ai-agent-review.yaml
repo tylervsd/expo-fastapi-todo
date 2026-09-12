@@ -1,0 +1,39 @@
+appId: ${APP_ID}
+---
+- launchApp
+- tapOn:
+    id: "e2e-help-plan"
+- tapOn:
+    id: "e2e-task-title"
+- inputText: "Organize supplies"
+- hideKeyboard
+- tapOn:
+    id: "e2e-start-planning"
+- extendedWaitUntil:
+    visible: "Does this task involve multiple steps?"
+    timeout: 15000
+- tapOn:
+    id: "e2e-workflow-action-Yes"
+- extendedWaitUntil:
+    visible: "Would you like to split it into smaller todos?"
+    timeout: 15000
+- tapOn:
+    id: "e2e-workflow-action-Yes"
+- extendedWaitUntil:
+    visible:
+      id: "e2e-collect-titles"
+    timeout: 15000
+- scroll
+- tapOn:
+    id: "e2e-ask-agent"
+- extendedWaitUntil:
+    visible: "Your answer"
+    timeout: 15000
+- tapOn: "Your answer"
+- inputText: "Use supplies already available"
+- scroll
+- tapOn:
+    id: "e2e-agent-continue"
+- extendedWaitUntil:
+    visible: "Suggestion 1 of 3"
+    timeout: 20000

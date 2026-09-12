@@ -1,0 +1,18 @@
+appId: ${APP_ID}
+---
+- launchApp
+- tapOn: "Prepare weekend, Review your plan"
+- extendedWaitUntil:
+    visible:
+      id: "e2e-confirm-plan"
+    timeout: 15000
+- tapOn:
+    id: "e2e-confirm-plan"
+- extendedWaitUntil:
+    visible:
+      id: "e2e-back-to-todos"
+    timeout: 15000
+- tapOn:
+    id: "e2e-back-to-todos"
+- assertVisible: "Pack bag"
+- assertVisible: "Check weather"

@@ -1,0 +1,210 @@
+#!/bin/sh
+# Phase 12 iOS Simulator E2E lifecycle wrapper.
+#
+# Builds the unsigned standalone Release app, owns the fixture API server on
+# port 8001, seeds a fresh account per case, runs each Maestro segment with a
+# host-side API checkpoint between segments, and retains all diagnostics.
+#
+# Requirements (never substituted silently):
+#   E2E_DATABASE_URL  postgresql+psycopg todo_e2e URL from the Task 2 harness
+#                     (e.g. postgresql+psycopg://todo_e2e:todo_e2e@127.0.0.1:5434/todo_e2e)
+#   E2E_SIMULATOR_UDID  explicit available Simulator UDID (Task 1 record)
+# Optional:
+#   CASES  blank-separated subset of "core guided direct agent" (default: all)
+#   E2E_API_URL  fixture API base URL (default http://127.0.0.1:8001)
+#
+# Exits nonzero on the first failure and keeps every artifact. Only stops
+# processes it started itself (the fixture API); never touches unrelated
+# simulators, services, or jobs. Never runs at the same time as
+# `pnpm test:e2e:web`: both suites own port 8001.
+set -eu
+
+APP_ID="dev.codex.fullstack.todo"
+API_PORT="8001"
+E2E_API_URL="${E2E_API_URL:-http://127.0.0.1:8001}"
+CASES="${CASES:-core guided direct agent}"
+
+cd "$(dirname "$0")/.."
+REPO_ROOT="$(pwd)"
+
+if [ -z "${E2E_DATABASE_URL:-}" ]; then
+  echo "scripts/e2e-ios: E2E_DATABASE_URL is required" >&2
+  exit 2
+fi
+if [ -z "${E2E_SIMULATOR_UDID:-}" ]; then
+  echo "scripts/e2e-ios: E2E_SIMULATOR_UDID is required" >&2
+  exit 2
+fi
+for tool in maestro java xcrun uv python3 curl pnpm; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "scripts/e2e-ios: required tool missing: $tool" >&2
+    exit 2
+  fi
+done
+if ! printf '%s' "$E2E_DATABASE_URL" | grep -q "todo_e2e"; then
+  echo "scripts/e2e-ios: refusing unexpected E2E_DATABASE_URL (must target todo_e2e)" >&2
+  exit 2
+fi
+
+ART_DIR="$(mktemp -d "$REPO_ROOT/artifacts/e2e/ios/$(date +%Y-%m-%d)_XXXXXX")"
+MAESTRO_DIR="$ART_DIR/maestro"
+mkdir -p "$MAESTRO_DIR"
+TMP_DIR="$(mktemp -d)"
+SEED_FILE="$TMP_DIR/seed.json"
+API_PID=""
+
+cleanup() {
+  if [ -n "$API_PID" ] && kill -0 "$API_PID" 2>/dev/null; then
+    kill "$API_PID" 2>/dev/null || true
+  fi
+  rm -rf "$TMP_DIR"
+}
+trap cleanup EXIT INT TERM
+
+port_open() {
+  python3 -c "import socket,sys; s=socket.socket(); s.settimeout(2); sys.exit(0 if s.connect_ex(('127.0.0.1', $API_PORT)) == 0 else 1)"
+}
+
+if port_open; then
+  echo "scripts/e2e-ios: port $API_PORT is occupied; refusing to share or kill (stop the other owner first)" >&2
+  exit 1
+fi
+
+echo "scripts/e2e-ios: artifacts at $ART_DIR"
+
+echo "scripts/e2e-ios: booting simulator $E2E_SIMULATOR_UDID"
+xcrun simctl boot "$E2E_SIMULATOR_UDID" >/dev/null 2>&1 || true
+xcrun simctl bootstatus "$E2E_SIMULATOR_UDID"
+
+echo "scripts/e2e-ios: building and installing Release app (see $ART_DIR/build.log)"
+EXPO_NO_DOTENV=1 EXPO_PUBLIC_API_URL=http://127.0.0.1:8001 \
+  pnpm --dir apps/mobile exec expo run:ios --configuration Release \
+  --device "$E2E_SIMULATOR_UDID" --no-bundler >"$ART_DIR/build.log" 2>&1
+APP_PATH="$(grep -a "Installing " "$ART_DIR/build.log" | head -1 | sed 's/.*Installing //')"
+if [ -z "$APP_PATH" ]; then
+  echo "scripts/e2e-ios: build output has no app install path; see $ART_DIR/build.log" >&2
+  exit 1
+fi
+echo "scripts/e2e-ios: installed $APP_PATH"
+
+echo "scripts/e2e-ios: preparing database"
+uv run --directory apps/api python -m e2e.support prepare >"$ART_DIR/prepare.log" 2>&1
+
+echo "scripts/e2e-ios: starting fixture API on 127.0.0.1:$API_PORT"
+uv run --directory apps/api uvicorn e2e.app:app --host 127.0.0.1 --port "$API_PORT" >"$ART_DIR/api.log" 2>&1 &
+API_PID="$!"
+
+echo "scripts/e2e-ios: waiting for API readiness"
+READY=""
+i=0
+while [ "$i" -lt 60 ]; do
+  if curl -fsS -m 3 "$E2E_API_URL/health" >/dev/null 2>&1; then
+    READY="1"
+    break
+  fi
+  i=$((i + 1))
+  sleep 1
+done
+if [ -z "$READY" ]; then
+  echo "scripts/e2e-ios: API did not become ready within 60s; see $ART_DIR/api.log" >&2
+  exit 1
+fi
+
+seed_case() {
+  prefix="$1"
+  uv run --directory apps/api python -m e2e.support seed --prefix "$prefix" >"$SEED_FILE" 2>"$ART_DIR/seed-$prefix.log"
+  USERNAME="$(python3 -c "import json; print(json.load(open('$SEED_FILE'))['username'])")"
+  PASSWORD="$(python3 -c "import json, os; print(json.load(open('$SEED_FILE'))['password'])")"
+  export USERNAME PASSWORD
+  export E2E_USERNAME="$USERNAME" E2E_PASSWORD="$PASSWORD"
+}
+
+run_flow() {
+  name="$1"
+  flow="$2"
+  shift 2
+  echo "scripts/e2e-ios: maestro $name ($flow)"
+  # Credentials travel as Maestro -e arguments (disposable synthetic
+  # accounts only); command tracing stays off so they never hit logs.
+  maestro --device "$E2E_SIMULATOR_UDID" test \
+    --test-output-dir "$MAESTRO_DIR/$name" \
+    -e APP_ID="$APP_ID" \
+    -e USERNAME="$USERNAME" -e PASSWORD="$PASSWORD" \
+    "$@" \
+    "$REPO_ROOT/$flow"
+}
+
+api_assert() {
+  expected="$1"
+  uv run --directory apps/api python -m e2e.support assert-todos --expected "$expected"
+}
+
+case_core() {
+  seed_case core
+  run_flow core-sign-in e2e/ios/sign-in.yaml
+  api_assert '[]'
+  run_flow core-edit e2e/ios/core-edit.yaml
+  api_assert '[{"title":"Buy oat milk","completed":true}]'
+  run_flow core-delete e2e/ios/core-delete.yaml
+  api_assert '[]'
+  run_flow core-sign-out-1 e2e/ios/sign-out.yaml -e EXPECT_VISIBLE="Todos"
+  seed_case core
+  run_flow core-sign-in-2 e2e/ios/sign-in.yaml
+  api_assert '[]'
+  run_flow core-sign-out-2 e2e/ios/sign-out.yaml -e EXPECT_VISIBLE="Todos"
+}
+
+case_guided() {
+  seed_case guided
+  run_flow guided-sign-in e2e/ios/sign-in.yaml
+  run_flow guided-review e2e/ios/guided-review.yaml
+  api_assert '[]'
+  xcrun simctl terminate "$E2E_SIMULATOR_UDID" "$APP_ID"
+  xcrun simctl launch "$E2E_SIMULATOR_UDID" "$APP_ID"
+  run_flow guided-resume-confirm e2e/ios/guided-resume-confirm.yaml
+  api_assert '[{"title":"Check weather","completed":false},{"title":"Pack bag","completed":false}]'
+  xcrun simctl terminate "$E2E_SIMULATOR_UDID" "$APP_ID"
+  xcrun simctl launch "$E2E_SIMULATOR_UDID" "$APP_ID"
+  run_flow guided-sign-out e2e/ios/sign-out.yaml -e EXPECT_VISIBLE="Pack bag"
+  api_assert '[{"title":"Check weather","completed":false},{"title":"Pack bag","completed":false}]'
+}
+
+case_direct() {
+  seed_case direct
+  run_flow direct-sign-in e2e/ios/sign-in.yaml
+  run_flow direct-review e2e/ios/ai-direct-review.yaml
+  api_assert '[]'
+  run_flow direct-edit e2e/ios/ai-direct-edit.yaml
+  api_assert '[]'
+  run_flow direct-confirm e2e/ios/confirm.yaml
+  api_assert '[{"title":"Gather reusable supplies","completed":false},{"title":"Prepare workspace","completed":false}]'
+  run_flow direct-sign-out e2e/ios/sign-out.yaml -e EXPECT_VISIBLE="Gather reusable supplies"
+}
+
+case_agent() {
+  seed_case agent
+  run_flow agent-sign-in e2e/ios/sign-in.yaml
+  run_flow agent-review e2e/ios/ai-agent-review.yaml
+  api_assert '[]'
+  run_flow agent-edit e2e/ios/ai-agent-edit.yaml
+  api_assert '[]'
+  run_flow agent-confirm e2e/ios/confirm.yaml
+  api_assert '[{"title":"Gather reusable supplies","completed":false},{"title":"Prepare workspace","completed":false}]'
+  run_flow agent-sign-out e2e/ios/sign-out.yaml -e EXPECT_VISIBLE="Gather reusable supplies"
+}
+
+for selected in $CASES; do
+  case "$selected" in
+    core) case_core ;;
+    guided) case_guided ;;
+    direct) case_direct ;;
+    agent) case_agent ;;
+    *)
+      echo "scripts/e2e-ios: unknown case '$selected' (expected core/guided/direct/agent)" >&2
+      exit 2
+      ;;
+  esac
+  echo "scripts/e2e-ios: case $selected passed"
+done
+
+echo "scripts/e2e-ios: all requested cases passed (cases: $CASES)"

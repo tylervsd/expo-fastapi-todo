@@ -1,0 +1,41 @@
+appId: ${APP_ID}
+---
+- launchApp
+- tapOn:
+    id: "e2e-todo-title"
+- inputText: "Buy milk"
+- tapOn:
+    id: "e2e-todo-add"
+- tapOn: "Todos"
+- extendedWaitUntil:
+    visible: "Buy milk"
+    timeout: 15000
+- extendedWaitUntil:
+    notVisible: "Refreshing todos…"
+    timeout: 15000
+- tapOn:
+    id: "e2e-todo-edit-Buy milk"
+- tapOn:
+    id: "e2e-edit-title"
+- eraseText: 100
+- tapOn:
+    id: "e2e-edit-title"
+- inputText: "Buy oat milk"
+- hideKeyboard
+- tapOn:
+    id: "e2e-save-changes"
+- extendedWaitUntil:
+    visible:
+      id: "e2e-todo-toggle-Buy oat milk"
+    timeout: 15000
+- extendedWaitUntil:
+    notVisible: "Refreshing todos…"
+    timeout: 15000
+- tapOn:
+    id: "e2e-todo-toggle-Buy oat milk"
+- tapOn: "Completed"
+- assertVisible: "Buy oat milk"
+- tapOn: "Active"
+- assertVisible: "No active todos."
+- tapOn: "All"
+- assertVisible: "Buy oat milk"

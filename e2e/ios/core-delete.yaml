@@ -1,0 +1,11 @@
+appId: ${APP_ID}
+---
+- launchApp
+- tapOn:
+    id: "e2e-todo-delete-Buy oat milk"
+- tapOn:
+    id: "e2e-confirm-delete"
+- extendedWaitUntil:
+    notVisible: "Buy oat milk"
+    timeout: 15000
+- assertVisible: "No todos yet. Add one above."

@@ -32,7 +32,8 @@
     "test:contracts": "bats tests/repository_contract.bats",
     "test:doctor": "bats tests/doctor",
     "test:e2e:web": "uv run --directory apps/api python -m e2e.support prepare && EXPO_NO_DOTENV=1 EXPO_PUBLIC_API_URL=http://127.0.0.1:8001 pnpm --dir apps/mobile exec expo export --platform web --output-dir dist-e2e && pnpm exec playwright test -c e2e/web/playwright.config.ts",
-    "typecheck:e2e": "pnpm exec tsc --noEmit -p e2e/web/tsconfig.json"
+    "typecheck:e2e": "pnpm exec tsc --noEmit -p e2e/web/tsconfig.json",
+    "test:e2e:ios": "sh scripts/e2e-ios"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",

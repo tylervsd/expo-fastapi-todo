@@ -101,6 +101,7 @@ export function AuthScreen({
           <Text style={styles.fieldLabel}>Username</Text>
           <TextInput
             accessibilityLabel="Username"
+            testID="e2e-auth-username"
             editable={!pending}
             value={username}
             autoCapitalize="none"
@@ -112,6 +113,7 @@ export function AuthScreen({
           <Text style={styles.fieldLabel}>Password</Text>
           <TextInput
             accessibilityLabel="Password"
+            testID="e2e-auth-password"
             editable={!pending}
             value={password}
             secureTextEntry
@@ -124,6 +126,7 @@ export function AuthScreen({
           />
           <Pressable
             accessibilityRole="button"
+            testID="e2e-auth-submit"
             accessibilityLabel={mode === "signin" ? "Sign in" : "Create account"}
             disabled={pending}
             style={styles.submitButton}
