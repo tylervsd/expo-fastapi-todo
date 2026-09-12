@@ -68,7 +68,7 @@ describe("AgentSessionProvider", () => {
     const agent = seen[seen.length - 1].createAgent(WORKFLOW_A);
 
     expect(agent.url).not.toBe("/agent");
-    expect(agent.url.startsWith(API_URL)).toBe(true);
+    expect(agent.url.startsWith(`${API_URL}/`)).toBe(true);
     expect("Cookie" in agent.headers).toBe(false);
     expect("cookie" in agent.headers).toBe(false);
     expect(agent.threadId).not.toBe("main");
