@@ -95,7 +95,8 @@ jobs:
           "$PGBIN/postgres" --version
           "$PGBIN/postgres" --version | grep -q "18\.6" || { echo "e2e ios setup: PostgreSQL 18.6 required, refusing substitute" >&2; exit 1; }
           "$PGBIN/initdb" -D "$RUNNER_TEMP/pg-e2e" -U postgres --auth=trust
-          "$PGBIN/pg_ctl" -D "$RUNNER_TEMP/pg-e2e" -o "-c listen_addresses=127.0.0.1 -p 5434" -l "$GITHUB_WORKSPACE/artifacts/e2e/ios/postgres.log" start
+          # Ephemeral E2E cluster only: speed over durability. Production, dev, and pytest databases are untouched.
+          "$PGBIN/pg_ctl" -D "$RUNNER_TEMP/pg-e2e" -o "-c listen_addresses=127.0.0.1 -p 5434 -c fsync=off -c synchronous_commit=off -c full_page_writes=off" -l "$GITHUB_WORKSPACE/artifacts/e2e/ios/postgres.log" start
           "$PGBIN/psql" -h 127.0.0.1 -p 5434 -U postgres -d postgres -c "CREATE ROLE todo_e2e LOGIN PASSWORD 'todo_e2e';" -c "CREATE DATABASE todo_e2e OWNER todo_e2e;"
           "$PGBIN/psql" -h 127.0.0.1 -p 5434 -U todo_e2e -d todo_e2e -tAc 'SELECT version();'
       - name: Install Maestro 2.10.0 (requires java on PATH first)
