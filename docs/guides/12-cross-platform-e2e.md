@@ -275,7 +275,9 @@ networking or keyboard behavior.
 
 ### Java 17.0.20 provenance for CI
 
-The native job asserts `java -version` reports exactly `17.0.20` and
+The native job asserts `java -version` reports `17.0.20` with an optional
+dot-suffix rebuild (shell `case 17.0.20|17.0.20.*`, so Temurin `17.0.20.1`
+is accepted but `17.0.200` and other minors/majors are rejected) and
 `pod --version` reports exactly `1.17.0`, failing loudly otherwise. The
 `17.0.20` pin is sourced, not invented:
 

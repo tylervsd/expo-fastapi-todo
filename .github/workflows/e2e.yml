@@ -106,7 +106,7 @@ jobs:
           export PATH="$JAVA_HOME/bin:$PATH"
           java -version
           JAVA_VERSION="$(java -version 2>&1 | sed -n 's/.*version "\([^"]*\)".*/\1/p' | head -1)"
-          [ "$JAVA_VERSION" = "17.0.20" ] || { echo "e2e ios setup: pinned Java 17.0.20 required (found $JAVA_VERSION), refusing substitute" >&2; exit 1; }
+          case "$JAVA_VERSION" in 17.0.20|17.0.20.*) ;; *) echo "e2e ios setup: pinned Java 17.0.20 required (found $JAVA_VERSION), refusing substitute" >&2; exit 1; esac
           curl -Ls "https://get.maestro.mobile.dev" | MAESTRO_VERSION=2.10.0 bash
           echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.maestro/bin:$PATH"
