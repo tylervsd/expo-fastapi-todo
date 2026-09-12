@@ -16,15 +16,40 @@ appId: ${APP_ID}
 - tapOn:
     id: "e2e-auth-submit"
 # iOS may present a system "Save Password?" sheet on top of the app after
-# sign-in. Dismiss it only when present; the runFlow condition skips
-# otherwise. Checked twice to cover sheets that surface a beat late.
+# sign-in, surfacing anywhere from immediately to ~15s later on CI. While
+# the sheet (a separate system window) is up, no app-content wait can pass,
+# so a single wait-then-dismiss sequence still loses when the sheet lands
+# mid-wait (observed CI run 34709173546). Interleave up to three bounded
+# rounds of [optional Todos wait + conditional dismiss]: a lapsed round
+# never aborts (verified Maestro 2.10.0 logs WARNED + exit 0), the dismiss
+# clears a sheet whenever it appears, and the mandatory assert below still
+# fails loudly when the app itself is broken. Only the repeated tap targets
+# the SYSTEM sheet; no app action is retried.
+- extendedWaitUntil:
+    visible: "Todos"
+    timeout: 10000
+    optional: true
 - runFlow:
     file: ./dismiss-save-password.yaml
     when:
       visible: "Not Now"
 - extendedWaitUntil:
     visible: "Todos"
-    timeout: 15000
+    timeout: 10000
+    optional: true
+- runFlow:
+    file: ./dismiss-save-password.yaml
+    when:
+      visible: "Not Now"
+- extendedWaitUntil:
+    visible: "Todos"
+    timeout: 10000
+    optional: true
+- runFlow:
+    file: ./dismiss-save-password.yaml
+    when:
+      visible: "Not Now"
+- assertVisible: "Todos"
 - runFlow:
     file: ./dismiss-save-password.yaml
     when:
