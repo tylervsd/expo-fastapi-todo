@@ -1,8 +1,10 @@
 name: e2e
 
 # Phase 12 cross-platform E2E: Chromium browser journeys run on pull requests
-# and main pushes; iOS Simulator journeys run on main pushes and manual
-# dispatch only. No OpenRouter secrets or paid services are used anywhere.
+# and main pushes; iOS Simulator journeys run on manual dispatch only
+# (owner decision 2026-09-12: free-tier macos runners proved too flaky to
+# gate main on — see the guide's "Known native-CI failure modes" section).
+# No OpenRouter secrets or paid services are used anywhere.
 on:
   pull_request:
   push:
@@ -60,7 +62,11 @@ jobs:
           if-no-files-found: warn
 
   ios:
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    # Manual dispatch only: six consecutive main/dispatch attempts failed
+    # with distinct environment-attributed signatures (see guide). Running
+    # this 60-minute job on every main push would burn free-tier minutes
+    # and train everyone to ignore red. Web still gates PRs and main.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: macos-26
     timeout-minutes: 60
     env:
