@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from contextlib import asynccontextmanager
 
 import pytest
@@ -232,3 +233,98 @@ def test_lifespan_disposes_engine_on_error(monkeypatch):
 
     asyncio.run(_run())
     assert engine.disposed is True
+
+
+def _ingress_http_scope():
+    return {
+        "type": "http",
+        "method": "POST",
+        "path": "/auth/login",
+        "headers": [
+            (b"authorization", b"Bearer secret-token"),
+            (b"content-type", b"application/json"),
+        ],
+    }
+
+
+async def _run_ingress_middleware(middleware, scope):
+    sent = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"{}", "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    await middleware(scope, receive, send)
+    return sent
+
+
+def test_ingress_middleware_emits_start_and_end(monkeypatch, caplog):
+    """A trivial inner app yields matching start/end lines with valid timing."""
+    monkeypatch.setenv("E2E_DATABASE_URL", E2E_URL)
+    import e2e.app as e2e_app
+
+    async def inner(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    with caplog.at_level(logging.INFO, logger="e2e.ingress"):
+        sent = asyncio.run(
+            _run_ingress_middleware(
+                e2e_app._IngressTimingMiddleware(inner), _ingress_http_scope()
+            )
+        )
+
+    assert [message["type"] for message in sent] == [
+        "http.response.start",
+        "http.response.body",
+    ]
+    lines = [record.getMessage() for record in caplog.records]
+    assert len(lines) == 2
+    assert lines[0].startswith("e2e-ingress start method=POST path=/auth/login t=")
+    assert "status=200" in lines[1]
+    assert lines[1].startswith("e2e-ingress end method=POST path=/auth/login ")
+    elapsed = float(lines[1].rsplit("dt=", 1)[1])
+    assert elapsed >= 0.0
+    assert "secret-token" not in "\n".join(lines)
+
+
+def test_slow_inner_app_still_emits_start(monkeypatch, caplog):
+    """START is logged on receipt even when the handler stalls before responding."""
+    monkeypatch.setenv("E2E_DATABASE_URL", E2E_URL)
+    import e2e.app as e2e_app
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_inner(scope, receive, send):
+        entered.set()
+        await release.wait()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    async def scenario():
+        sent = []
+
+        async def receive():
+            return {"type": "http.request", "body": b"{}", "more_body": False}
+
+        async def send(message):
+            sent.append(message)
+
+        middleware = e2e_app._IngressTimingMiddleware(slow_inner)
+        task = asyncio.create_task(middleware(_ingress_http_scope(), receive, send))
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        await asyncio.sleep(0)
+        stalled_lines = [record.getMessage() for record in caplog.records]
+        assert any(line.startswith("e2e-ingress start ") for line in stalled_lines)
+        assert not any(line.startswith("e2e-ingress end ") for line in stalled_lines)
+        release.set()
+        await asyncio.wait_for(task, timeout=5)
+
+    with caplog.at_level(logging.INFO, logger="e2e.ingress"):
+        asyncio.run(scenario())
+
+    lines = [record.getMessage() for record in caplog.records]
+    assert any(line.startswith("e2e-ingress end ") for line in lines)
