@@ -132,6 +132,7 @@ Phases 7-9 build one guided-todo creation feature to teach backend-owned state t
 - **New technology/pattern:** Browser E2E and iOS Simulator E2E with stable fixtures and environment-aware diagnostics.
 - **Testing-pyramid layer introduced:** Thin end-to-end coverage at the top of the pyramid; web E2E runs on pull requests and iOS E2E runs on `main` once those suites exist.
 - **Spec gate:** Before implementation, this phase gets its own approved spec for journeys, fixtures, platform differences, and CI scheduling.
+- **Status:** In progress on `codex/phase-12-cross-platform-e2e` ([guide](guides/12-cross-platform-e2e.md)). Toolchain, isolated harness, four browser and four native journeys, and platform CI are implemented; local double-runs pass on both platforms. Remote acceptance (browser PR job, native CI run) is pending. No checkpoint until that CI evidence exists.
 
 ## 13. Google Cloud foundations and cost safety
 
