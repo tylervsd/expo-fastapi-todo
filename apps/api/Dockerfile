@@ -17,6 +17,8 @@ RUN uv sync --locked --no-dev --no-install-project \
     && rm -rf /root/.cache/uv
 
 COPY app ./app
+COPY alembic.ini ./
+COPY alembic ./alembic
 
 RUN groupadd --gid 10001 app \
     && useradd --uid 10001 --gid app --no-create-home app
