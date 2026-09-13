@@ -4,7 +4,7 @@
 
 This is a planned curriculum extension after Phase 6, not an implementation guide or a claim that these features already exist. Each phase still needs its own approved spec before implementation. Keep the existing quick-add experience, authentication boundary, and `/todos` contract working throughout.
 
-The [curriculum roadmap](curriculum-roadmap.md) adds Phase 7 for backend workflow modeling, Phase 8 for server-directed screens, and Phase 9 for workflow reliability. Phase 10 adds Python/OpenRouter suggestions, and Phase 11 adds assistant-ui/AG-UI interactions. A CI security baseline and cross-platform E2E follow before the provisional cloud curriculum in Phases 13–27. Existing guide numbers and checkpoint tags remain unchanged.
+The [curriculum roadmap](curriculum-roadmap.md) adds Phase 7 for backend workflow modeling, Phase 8 for server-directed screens, and Phase 9 for workflow reliability. Phase 10 adds Python/OpenRouter suggestions, and Phase 11 adds assistant-ui/AG-UI interactions. A CI security baseline and cross-platform E2E follow before the provisional cloud curriculum in Phases 13–29. Phase 28 adds Hex dashboards over Phase 26 BigQuery analytics; Phase 29 adds Datadog RUM for web and iOS, building on Phase 21 observability. Existing guide numbers and checkpoint tags remain unchanged.
 
 ## Design principle
 
