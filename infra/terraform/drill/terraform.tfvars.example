@@ -1,0 +1,4 @@
+# Sanitized example only. Choose a globally unique name before real use.
+project_id  = "example-phase18-project"
+region      = "us-west1"
+bucket_name = "example-phase18-drill-12345"

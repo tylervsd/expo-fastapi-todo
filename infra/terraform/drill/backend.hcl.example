@@ -1,0 +1,3 @@
+# Example only. This state bucket is never the drill resource target.
+bucket = "example-phase18-state"
+prefix = "phase18/drill"

@@ -1,3 +1,6 @@
+# Adoption exception: preserve the observed sandbox TLS and public-IP settings.
+# Review condition: remove after a reviewed private-only, TLS-enforced cutover.
+#trivy:ignore:AVD-GCP-0015 trivy:ignore:AVD-GCP-0017
 resource "google_sql_database_instance" "primary" {
   project                              = var.project_id
   name                                 = var.database.instance_name
