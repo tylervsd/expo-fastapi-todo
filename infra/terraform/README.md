@@ -52,7 +52,10 @@ required nonempty plain API variable. The API runtime also records the
 container command, arguments, port, probes, and CPU-startup setting. Cloud SQL
 records both Terraform lifecycle protection and the provider/API-level
 `settings.deletion_protection_enabled`, connector enforcement, and database
-flags.
+flags. Imported protection values must match observation, including `false`;
+enabling either is a separate reviewed change. `prevent_destroy` blocks
+configured destruction, but removing a resource block bypasses it, so it is
+neither a backup nor a substitute for tested Cloud SQL backups/PITR.
 
 Before adoption, inventory every setting and stop if a material setting cannot
 be represented. Do not introduce guessed SQL costs, instance sizes, image tags,
@@ -81,3 +84,25 @@ workspace instead; it performs no Google authentication:
 terraform -chdir=infra/terraform/.local/schema init -backend=false
 terraform -chdir=infra/terraform/.local/schema providers schema -json
 ```
+
+## Ownership and imports
+
+Use one Terraform address per remote object. IAM member resources are additive;
+do not manage the same grant with a policy or binding. Conditional IAM imports
+append the observed condition title as a fourth space-delimited field. Do not
+guess a title or import a conditional grant before inventory confirms it.
+
+| Resource address | Ownership | Accepted import ID formats |
+| --- | --- | --- |
+| `google_project_service.required["service"]` | Explicit required APIs; `disable_on_destroy = false` | `project/service` |
+| `google_artifact_registry_repository.api` | Existing repository metadata, cleanup policy, tag mutability, and encryption | `projects/project/locations/location/repositories/repository`, `project/location/repository`, or `location/repository` |
+| `google_service_account.dedicated["key"]` | Existing runtime/migration identities | `projects/project/serviceAccounts/email` |
+| `google_project_iam_member.owned["key"]` | Inventoried additive project grants | `project role member` (append observed `condition-title` when conditional) |
+| `google_secret_manager_secret.containers["key"]` | Existing metadata and immutable replication; never versions or payloads | `projects/project/secrets/secret`, `project/secret`, or `secret` |
+| `google_secret_manager_secret_iam_member.access["key"]` | Inventoried secret-scoped accessor grants | `projects/project/secrets/secret role member` (append observed `condition-title` when conditional) |
+| `google_sql_database_instance.primary` | Existing SQL settings and observed deletion protections | `projects/project/instances/name`, `project/name`, or `name` |
+| `google_sql_database.app` | Existing application database only; no users or credentials | `projects/project/instances/instance/databases/name`, `instances/instance/databases/name`, `project/instance/name`, `instance/name`, or `name` |
+
+`data.google_project.current` is read-only and supplies the numeric project ID
+for a future imported budget filter. Mock it in Terraform tests; it never
+adopts the project or billing link.

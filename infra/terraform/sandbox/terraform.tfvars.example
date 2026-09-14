@@ -11,11 +11,12 @@ registry = {
 }
 
 database = {
-  instance_name         = "example-phase18-db"
-  database_name         = "todo"
-  database_version      = "POSTGRES_16"
-  region                = "us-west1"
-  deletion_protection   = true
+  instance_name               = "example-phase18-db"
+  database_name               = "todo"
+  database_deletion_policy    = "ABANDON"
+  database_version            = "POSTGRES_16"
+  region                      = "us-west1"
+  deletion_protection         = true
   deletion_protection_enabled = true
   edition               = "ENTERPRISE"
   tier                  = "db-custom-1-3840"
@@ -88,13 +89,13 @@ secrets = {
   openrouter_api_key = {
     secret_id = "example-openrouter-api-key"
     replication = {
-      auto = true
+      auto = {}
     }
   }
   database_url = {
     secret_id = "example-database-url"
     replication = {
-      auto = true
+      auto = {}
     }
   }
 }

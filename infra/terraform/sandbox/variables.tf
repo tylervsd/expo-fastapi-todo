@@ -29,7 +29,24 @@ variable "registry" {
     description            = optional(string)
     labels                 = optional(map(string), {})
     kms_key_name           = optional(string)
+    mode                   = optional(string)
     cleanup_policy_dry_run = optional(bool)
+    docker_immutable_tags  = optional(bool)
+    cleanup_policies = optional(map(object({
+      action = optional(string)
+      condition = optional(object({
+        newer_than            = optional(string)
+        older_than            = optional(string)
+        package_name_prefixes = optional(list(string))
+        tag_prefixes          = optional(list(string))
+        tag_state             = optional(string)
+        version_name_prefixes = optional(list(string))
+      }))
+      most_recent_versions = optional(object({
+        keep_count            = number
+        package_name_prefixes = optional(list(string))
+      }))
+    })), {})
   })
   nullable = false
 }
@@ -37,22 +54,29 @@ variable "registry" {
 variable "database" {
   description = "Observed Cloud SQL instance and application database settings; never includes credentials."
   type = object({
-    instance_name               = string
-    database_name               = string
-    database_version            = string
-    region                      = string
-    deletion_protection         = bool
-    deletion_protection_enabled = bool
-    edition                     = string
-    tier                        = string
-    availability_type           = string
-    disk_type                   = string
-    disk_size                   = number
-    disk_autoresize             = bool
-    disk_autoresize_limit       = number
-    activation_policy           = string
-    connector_enforcement       = string
-    database_flags              = map(string)
+    instance_name                        = string
+    database_name                        = string
+    database_deletion_policy             = string
+    database_charset                     = optional(string)
+    database_collation                   = optional(string)
+    database_version                     = string
+    region                               = string
+    deletion_protection                  = bool
+    deletion_protection_enabled          = bool
+    deletion_policy                      = optional(string)
+    maintenance_version                  = optional(string)
+    encryption_key_name                  = optional(string)
+    enforce_new_sql_network_architecture = optional(bool)
+    edition                              = string
+    tier                                 = string
+    availability_type                    = string
+    disk_type                            = string
+    disk_size                            = number
+    disk_autoresize                      = bool
+    disk_autoresize_limit                = number
+    activation_policy                    = string
+    connector_enforcement                = string
+    database_flags                       = map(string)
     backup = object({
       enabled                        = bool
       point_in_time_recovery_enabled = bool
@@ -132,11 +156,17 @@ variable "secret_iam_members" {
 variable "secrets" {
   description = "Secret container metadata only. Secret payloads and versions are external."
   type = map(object({
-    secret_id = string
-    labels    = optional(map(string), {})
+    secret_id   = string
+    labels      = optional(map(string), {})
+    annotations = optional(map(string), {})
     replication = object({
-      auto                   = optional(bool)
-      user_managed_locations = optional(set(string))
+      auto = optional(object({
+        kms_key_name = optional(string)
+      }))
+      user_managed_replicas = optional(map(object({
+        location     = string
+        kms_key_name = optional(string)
+      })))
     })
   }))
   nullable = false
@@ -144,9 +174,9 @@ variable "secrets" {
   validation {
     condition = alltrue([
       for secret in values(var.secrets) :
-      (try(secret.replication.auto == true, false) ? 1 : 0) + (try(length(secret.replication.user_managed_locations), 0) > 0 ? 1 : 0) == 1
+      (secret.replication.auto == null ? 0 : 1) + (secret.replication.user_managed_replicas == null ? 0 : 1) == 1
     ])
-    error_message = "Each secret replication setting must select exactly one of auto or user_managed_locations."
+    error_message = "Each secret replication setting must select exactly one of auto or user_managed_replicas."
   }
 }
 
