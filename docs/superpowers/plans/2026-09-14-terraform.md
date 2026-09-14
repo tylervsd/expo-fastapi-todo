@@ -17,8 +17,8 @@ Terraform tests with mocked providers, existing Trivy action, gcloud CLI.
 
 ## Global constraints
 
-- Planning only is authorized now. Repository implementation and manual cloud
-  execution are separate follow-up stages; no cloud mutation during preparation.
+- Repository implementation is authorized and complete. Manual cloud execution
+  remains a separate learner stage; no cloud mutation occurs during preparation.
 - Use `codex/phase-18-terraform` in `.worktrees/phase-18-terraform`, based on
   `d845c58`. Keep the existing app working and preserve Phase 17 sign-off.
 - Pin CLI 1.14.7 and stable google provider 8.2.0; no beta provider or new modules.
@@ -43,11 +43,11 @@ the discrepancy to the controller/spec rather than redesigning infrastructure.
 
 | Task | Deliverable |
 | --- | --- |
-| 1 | Terraform entry points, version pins, ignored local artifacts, input contract and tool instructions. |
-| 2 | Importable APIs, registry, IAM, secret containers, SQL instance/database configuration. |
-| 3 | Importable API/job, budget, monitoring, outputs and safety tests. |
-| 4 | Isolated drill root and credential-free CI checks. |
-| 5 | Complete manual adoption/verification guide and README links. |
+| 1 | Complete: Terraform entry points, pins, ignored local artifacts, input contract and tool instructions. |
+| 2 | Complete: importable APIs, registry, IAM, secret containers, SQL instance/database configuration. |
+| 3 | Complete: importable API/job, budget, monitoring, outputs and safety tests. |
+| 4 | Complete: isolated drill root and credential-free CI checks. |
+| 5 | Complete repository guide/links; all manual cloud acceptance remains pending. |
 
 Use Luna for mechanical implementation, Terra for provider/import integration,
 and Sol medium for task/whole-branch review per project instructions. Do not

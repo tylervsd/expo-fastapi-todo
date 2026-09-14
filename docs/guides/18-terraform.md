@@ -58,13 +58,14 @@ gcloud services list --enabled --project="$PROJECT_ID" --format=json > "$INVENTO
 gcloud artifacts repositories list --project="$PROJECT_ID" --location="$REGION" --format=json > "$INVENTORY/repositories.json"
 gcloud iam service-accounts list --project="$PROJECT_ID" --format=json > "$INVENTORY/service-accounts.json"
 gcloud projects get-iam-policy "$PROJECT_ID" --format=json > "$INVENTORY/project-iam.json"
+gcloud run services get-iam-policy "$API_SERVICE" --project="$PROJECT_ID" --region="$REGION" --format=json > "$INVENTORY/api-service-iam.json"
 gcloud secrets list --project="$PROJECT_ID" --format=json > "$INVENTORY/secrets.json"
 gcloud sql instances list --project="$PROJECT_ID" --format=json > "$INVENTORY/sql-instances.json"
 gcloud run services describe "$API_SERVICE" --project="$PROJECT_ID" --region="$REGION" --format=json > "$INVENTORY/api-service.json"
 gcloud run revisions list --service="$API_SERVICE" --project="$PROJECT_ID" --region="$REGION" --format=json > "$INVENTORY/api-revisions.json"
 gcloud run jobs list --project="$PROJECT_ID" --region="$REGION" --format=json > "$INVENTORY/jobs.json"
 gcloud monitoring uptime list-configs --project="$PROJECT_ID" --format=json > "$INVENTORY/uptime.json"
-gcloud alpha monitoring policies list --project="$PROJECT_ID" --format=json > "$INVENTORY/alert-policies.json"
+gcloud monitoring policies list --project="$PROJECT_ID" --format=json > "$INVENTORY/alert-policies.json"
 gcloud billing budgets list --billing-account="$BILLING_ACCOUNT" --format=json > "$INVENTORY/budgets.json"
 ```
 
@@ -127,6 +128,11 @@ identities get no state access.
 ```sh
 mkdir -p infra/terraform/.local/bin
 export PATH="$PWD/infra/terraform/.local/bin:$PATH"
+command -v terraform gcloud jq curl shasum unzip
+curl --fail --location --proto '=https' --tlsv1.2 -o infra/terraform/.local/terraform_1.14.7_darwin_arm64.zip https://releases.hashicorp.com/terraform/1.14.7/terraform_1.14.7_darwin_arm64.zip
+curl --fail --location --proto '=https' --tlsv1.2 -o infra/terraform/.local/terraform_1.14.7_SHA256SUMS https://releases.hashicorp.com/terraform/1.14.7/terraform_1.14.7_SHA256SUMS
+(cd infra/terraform/.local && grep ' terraform_1.14.7_darwin_arm64.zip$' terraform_1.14.7_SHA256SUMS | shasum -a 256 -c -)
+unzip -o infra/terraform/.local/terraform_1.14.7_darwin_arm64.zip -d infra/terraform/.local/bin
 terraform version
 test "$(terraform version -json | jq -r .terraform_version)" = 1.14.7
 gcloud auth application-default login
@@ -191,32 +197,51 @@ planning.
 ```sh
 export IMPORTS=infra/terraform/sandbox/imports.tf
 cat > "$IMPORTS" <<EOF
-import { to = google_artifact_registry_repository.api; id = "projects/$PROJECT_ID/locations/$REGION/repositories/$REGISTRY_ID" }
-import { to = google_service_account.dedicated["runtime"]; id = "projects/$PROJECT_ID/serviceAccounts/$RUNTIME_SA" }
-import { to = google_service_account.dedicated["migration"]; id = "projects/$PROJECT_ID/serviceAccounts/$MIGRATION_SA" }
-import { to = google_secret_manager_secret.containers["openrouter_api_key"]; id = "projects/$PROJECT_ID/secrets/openrouter-api-key" }
-import { to = google_secret_manager_secret.containers["database_url"]; id = "projects/$PROJECT_ID/secrets/fullstack-database-url" }
-import { to = google_sql_database_instance.primary; id = "projects/$PROJECT_ID/instances/$SQL_INSTANCE" }
-import { to = google_sql_database.app; id = "projects/$PROJECT_ID/instances/$SQL_INSTANCE/databases/$SQL_DATABASE" }
-import { to = google_cloud_run_v2_service.api; id = "projects/$PROJECT_ID/locations/$REGION/services/$API_SERVICE" }
-import { to = google_cloud_run_v2_job.migrate; id = "projects/$PROJECT_ID/locations/$REGION/jobs/$MIGRATION_JOB" }
+import {
+  to = google_artifact_registry_repository.api
+  id = "projects/$PROJECT_ID/locations/$REGION/repositories/$REGISTRY_ID"
+}
+import {
+  to = google_service_account.dedicated["runtime"]
+  id = "projects/$PROJECT_ID/serviceAccounts/$RUNTIME_SA"
+}
+import {
+  to = google_service_account.dedicated["migration"]
+  id = "projects/$PROJECT_ID/serviceAccounts/$MIGRATION_SA"
+}
+import {
+  to = google_secret_manager_secret.containers["openrouter_api_key"]
+  id = "projects/$PROJECT_ID/secrets/openrouter-api-key"
+}
+import {
+  to = google_secret_manager_secret.containers["database_url"]
+  id = "projects/$PROJECT_ID/secrets/fullstack-database-url"
+}
+import { to = google_sql_database_instance.primary
+  id = "projects/$PROJECT_ID/instances/$SQL_INSTANCE" }
+import { to = google_sql_database.app
+  id = "projects/$PROJECT_ID/instances/$SQL_INSTANCE/databases/$SQL_DATABASE" }
+import { to = google_cloud_run_v2_service.api
+  id = "projects/$PROJECT_ID/locations/$REGION/services/$API_SERVICE" }
+import { to = google_cloud_run_v2_job.migrate
+  id = "projects/$PROJECT_ID/locations/$REGION/jobs/$MIGRATION_JOB" }
 EOF
 while IFS= read -r service; do
-  printf 'import { to = google_project_service.required["%s"]; id = "%s/%s" }\n' "$service" "$PROJECT_ID" "$service" >> "$IMPORTS"
+  printf 'import {\n  to = google_project_service.required["%s"]\n  id = "%s/%s"\n}\n' "$service" "$PROJECT_ID" "$service" >> "$IMPORTS"
 done <<'EOF'
 <verified-required-api-name>
 EOF
 while IFS='|' read -r key role member condition; do
   [ -n "$key" ] || continue; id="$PROJECT_ID $role $member"
   [ -z "$condition" ] || id="$id $condition"
-  printf 'import { to = google_project_iam_member.owned["%s"]; id = "%s" }\n' "$key" "$id" >> "$IMPORTS"
+  printf 'import {\n  to = google_project_iam_member.owned["%s"]\n  id = "%s"\n}\n' "$key" "$id" >> "$IMPORTS"
 done <<'EOF'
 <key>|<role>|<member>|<observed-condition-title-or-empty>
 EOF
 while IFS='|' read -r key secret role member condition; do
   [ -n "$key" ] || continue; id="projects/$PROJECT_ID/secrets/$secret $role $member"
   [ -z "$condition" ] || id="$id $condition"
-  printf 'import { to = google_secret_manager_secret_iam_member.access["%s"]; id = "%s" }\n' "$key" "$id" >> "$IMPORTS"
+  printf 'import {\n  to = google_secret_manager_secret_iam_member.access["%s"]\n  id = "%s"\n}\n' "$key" "$id" >> "$IMPORTS"
 done <<'EOF'
 <key>|<secret-id>|<role>|<member>|<observed-condition-title-or-empty>
 EOF
@@ -226,9 +251,12 @@ vi "$IMPORTS"
 Append only confirmed existing operation objects:
 
 ```hcl
-import { to = google_billing_budget.sandbox[0]; id = "billingAccounts/BILLING_ACCOUNT/budgets/BUDGET_ID" }
-import { to = google_monitoring_uptime_check_config.api[0]; id = "projects/PROJECT_ID/uptimeCheckConfigs/CHECK_ID" }
-import { to = google_monitoring_alert_policy.api[0]; id = "projects/PROJECT_ID/alertPolicies/POLICY_ID" }
+import { to = google_billing_budget.sandbox[0]
+  id = "billingAccounts/BILLING_ACCOUNT/budgets/BUDGET_ID" }
+import { to = google_monitoring_uptime_check_config.api[0]
+  id = "projects/PROJECT_ID/uptimeCheckConfigs/CHECK_ID" }
+import { to = google_monitoring_alert_policy.api[0]
+  id = "projects/PROJECT_ID/alertPolicies/POLICY_ID" }
 ```
 
 Before every import/apply, the plan must say imports only: zero add/change/
@@ -239,6 +267,8 @@ umask 077
 terraform -chdir=infra/terraform/sandbox init -backend-config=backend.hcl
 terraform -chdir=infra/terraform/sandbox plan -out=adoption.tfplan
 terraform -chdir=infra/terraform/sandbox show adoption.tfplan
+terraform -chdir=infra/terraform/sandbox show -json adoption.tfplan > "$INVENTORY/adoption-plan.json"
+jq -e '([.resource_changes[]? | select(.change.importing == null and .change.actions != ["no-op"])] | length) == 0 and ([.resource_changes[]? | select(.change.importing != null)] | length) > 0' "$INVENTORY/adoption-plan.json"
 ```
 
 Inspect all addresses and IDs. `apply adoption.tfplan` has no another prompt,
@@ -329,12 +359,16 @@ export DRILL_BUCKET='<globally-unique-name-containing-phase18-drill>'
 cp infra/terraform/drill/terraform.tfvars.example infra/terraform/drill/terraform.tfvars
 vi infra/terraform/drill/terraform.tfvars
 terraform -chdir=infra/terraform/drill init -backend-config=backend.hcl
+test "$(terraform -chdir=infra/terraform/drill workspace show)" = default
+terraform -chdir=infra/terraform/drill providers >/dev/null
+gcloud storage buckets describe "gs://$STATE_BUCKET" --format='value(name)' | grep -Fx "gs://$STATE_BUCKET"
+export DRILL_STATE_OBJECT='phase18/drill/default.tfstate'
+gcloud storage ls "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT" >/dev/null 2>&1 || true
 terraform -chdir=infra/terraform/drill plan -out=drill-create.tfplan
 terraform -chdir=infra/terraform/drill show drill-create.tfplan
 terraform -chdir=infra/terraform/drill apply drill-create.tfplan
 rm infra/terraform/drill/drill-create.tfplan
-gcloud storage ls -L "gs://$STATE_BUCKET/phase18/drill/**" | tee "$INVENTORY/drill-object.txt"
-export DRILL_STATE_OBJECT='<actual-object-name-reported-above>'
+gcloud storage ls -L "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT" | tee "$INVENTORY/drill-object.txt"
 gcloud storage cp "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT" "$INVENTORY/drill-current.tfstate"
 terraform -chdir=infra/terraform/drill state pull > "$INVENTORY/drill-before.json"
 terraform -chdir=infra/terraform/drill state rm google_storage_bucket.disposable
@@ -348,6 +382,9 @@ generation, inspect lineage/serial, and restore only drill state.
 ```sh
 export GOOD_GENERATION='<known-good-generation>'
 export CURRENT_GENERATION='<current-live-generation-from-generation-list>'
+gcloud storage cp "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT#$GOOD_GENERATION" "$INVENTORY/drill-good.tfstate"
+gcloud storage cp "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT#$CURRENT_GENERATION" "$INVENTORY/drill-damaged.tfstate"
+grep -E '"(lineage|serial)"' "$INVENTORY/drill-good.tfstate" "$INVENTORY/drill-damaged.tfstate"
 grep -E '"(lineage|serial)"' "$INVENTORY/drill-before.json" "$INVENTORY/drill-current.tfstate"
 gcloud storage ls -a "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT"
 gcloud storage cp "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT#$GOOD_GENERATION" "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT" --if-generation-match="$CURRENT_GENERATION"
@@ -370,12 +407,12 @@ single-resource destroy, destroy only its empty bucket, and restore the guard.
 terraform -chdir=infra/terraform/drill destroy
 # Expect lifecycle protection refusal. Never use -force or -lock=false.
 vi infra/terraform/drill/main.tf
-terraform -chdir=infra/terraform/drill destroy -out=drill-destroy.tfplan
+terraform -chdir=infra/terraform/drill plan -destroy -out=drill-destroy.tfplan
 terraform -chdir=infra/terraform/drill show drill-destroy.tfplan
 terraform -chdir=infra/terraform/drill apply drill-destroy.tfplan
 rm infra/terraform/drill/drill-destroy.tfplan
 git checkout -- infra/terraform/drill/main.tf
-terraform -chdir=infra/terraform/drill plan -detailed-exitcode; test $? = 0
+terraform -chdir=infra/terraform/drill plan -detailed-exitcode; test $? = 2
 ```
 
 Never run sandbox destroy, delete the state bucket, or issue a broad bucket
