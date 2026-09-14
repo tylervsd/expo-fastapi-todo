@@ -91,15 +91,15 @@ A10 only; they do not provide cloud-browser evidence for any pending row.
 
    | Baseline field | Observed value |
    | --- | --- |
-   | Git revision | Passed — learner-reported |
-   | Stable API origin | Passed — learner-reported |
-   | Ready revision and image digest | Passed — learner-reported |
-   | Traffic allocation | Passed — learner-reported |
-   | Cloud SQL attachment | Passed — learner-reported |
-   | All non-secret names and values | Passed — learner-reported |
-   | Secret variable, resource, and version reference | Passed — learner-reported |
-   | Intended Pages project | Passed — learner-reported |
-   | Assigned production `pages.dev` origin | Passed — learner-reported |
+   | Git revision | Not recorded |
+   | Stable API origin | Not recorded |
+   | Ready revision and image digest | Not recorded |
+   | Traffic allocation | Not recorded |
+   | Cloud SQL attachment | Not recorded |
+   | All non-secret names and values | Not recorded |
+   | Secret variable, resource, and version reference | Not recorded |
+   | Intended Pages project | Not recorded |
+   | Assigned production `pages.dev` origin | Not recorded |
 
 ## Local repository verification and Pages setup
 
