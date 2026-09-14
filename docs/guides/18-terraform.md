@@ -375,20 +375,20 @@ export DRILL_BUCKET='<globally-unique-name-containing-phase18-drill>'
 cp infra/terraform/drill/terraform.tfvars.example infra/terraform/drill/terraform.tfvars
 vi infra/terraform/drill/terraform.tfvars
 terraform -chdir=infra/terraform/drill init -backend-config=backend.hcl
-test "$(terraform -chdir=infra/terraform/drill workspace show)" = default
-jq -e --arg bucket "$STATE_BUCKET" '.backend.type == "gcs" and .backend.config.bucket == $bucket and .backend.config.prefix == "phase18/drill"' infra/terraform/drill/.terraform/terraform.tfstate
+test "$(terraform -chdir=infra/terraform/drill workspace show)" = default || { echo 'STOP: drill workspace is not default'; exit 1; }
+jq -e --arg bucket "$STATE_BUCKET" '.backend.type == "gcs" and .backend.config.bucket == $bucket and .backend.config.prefix == "phase18/drill"' infra/terraform/drill/.terraform/terraform.tfstate || { echo 'STOP: drill backend is not the expected bucket/prefix'; exit 1; }
 export DRILL_STATE_OBJECT='phase18/drill/default.tfstate'
 terraform -chdir=infra/terraform/drill plan -out=drill-create.tfplan
 terraform -chdir=infra/terraform/drill show drill-create.tfplan
 terraform -chdir=infra/terraform/drill apply drill-create.tfplan
 rm infra/terraform/drill/drill-create.tfplan
-gcloud storage ls -L "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT" | tee "$INVENTORY/drill-object.txt"
-test "$DRILL_STATE_OBJECT" = phase18/drill/default.tfstate
-gcloud storage ls "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT" | grep -F "/$DRILL_STATE_OBJECT"
-gcloud storage cp "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT" "$INVENTORY/drill-current.tfstate"
-terraform -chdir=infra/terraform/drill state pull > "$INVENTORY/drill-before.json"
+gcloud storage ls -L "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT" > "$INVENTORY/drill-object.txt" || { echo 'STOP: drill state object is unavailable'; exit 1; }
+test "$DRILL_STATE_OBJECT" = phase18/drill/default.tfstate || { echo 'STOP: unexpected drill state path'; exit 1; }
+grep -F "/$DRILL_STATE_OBJECT" "$INVENTORY/drill-object.txt" || { echo 'STOP: observed state path differs'; exit 1; }
+gcloud storage cp "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT" "$INVENTORY/drill-current.tfstate" || { echo 'STOP: cannot back up drill state'; exit 1; }
+terraform -chdir=infra/terraform/drill state pull > "$INVENTORY/drill-before.json" || { echo 'STOP: cannot read drill state'; exit 1; }
 terraform -chdir=infra/terraform/drill state rm google_storage_bucket.disposable
-terraform -chdir=infra/terraform/drill state pull > "$INVENTORY/drill-damaged-pulled.json"
+terraform -chdir=infra/terraform/drill state pull > "$INVENTORY/drill-damaged-pulled.json" || { echo 'STOP: cannot read damaged drill state'; exit 1; }
 gcloud storage ls -a "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT" | tee "$INVENTORY/drill-generations.txt"
 ```
 
@@ -399,16 +399,18 @@ generation, inspect lineage/serial, and restore only drill state.
 ```sh
 export GOOD_GENERATION='<known-good-generation>'
 export CURRENT_GENERATION='<current-live-generation-from-generation-list>'
-gcloud storage cp "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT#$GOOD_GENERATION" "$INVENTORY/drill-good.tfstate"
-gcloud storage cp "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT#$CURRENT_GENERATION" "$INVENTORY/drill-damaged.tfstate"
-jq -e '.resources[]? | select(.type == "google_storage_bucket" and .name == "disposable")' "$INVENTORY/drill-good.tfstate" >/dev/null
-jq -e 'all(.resources[]?; (.type != "google_storage_bucket" or .name != "disposable"))' "$INVENTORY/drill-damaged.tfstate"
-jq -e --arg lineage "$(jq -r .lineage "$INVENTORY/drill-good.tfstate")" --argjson serial "$(jq -r .serial "$INVENTORY/drill-good.tfstate")" '.lineage == $lineage and .serial > $serial' "$INVENTORY/drill-damaged.tfstate"
-jq -e --argjson before "$(jq -c . "$INVENTORY/drill-before.json")" '. == $before' "$INVENTORY/drill-good.tfstate" >/dev/null
+gcloud storage cp "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT#$GOOD_GENERATION" "$INVENTORY/drill-good.tfstate" || { echo 'STOP: cannot download selected good generation'; exit 1; }
+gcloud storage cp "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT#$CURRENT_GENERATION" "$INVENTORY/drill-damaged.tfstate" || { echo 'STOP: cannot download damaged generation'; exit 1; }
+{ jq -e '.resources[]? | select(.type == "google_storage_bucket" and .name == "disposable")' "$INVENTORY/drill-good.tfstate" >/dev/null
+  jq -e 'all(.resources[]?; (.type != "google_storage_bucket" or .name != "disposable"))' "$INVENTORY/drill-damaged.tfstate"
+  jq -e --arg lineage "$(jq -r .lineage "$INVENTORY/drill-good.tfstate")" --argjson serial "$(jq -r .serial "$INVENTORY/drill-good.tfstate")" '.lineage == $lineage and .serial > $serial' "$INVENTORY/drill-damaged.tfstate"
+  jq -e --argjson before "$(jq -c . "$INVENTORY/drill-before.json")" '. == $before' "$INVENTORY/drill-good.tfstate" >/dev/null
+} || { echo 'STOP: invalid state generations'; exit 1; }
 gcloud storage ls -a "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT"
-gcloud storage cp "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT#$GOOD_GENERATION" "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT" --if-generation-match="$CURRENT_GENERATION"
-terraform -chdir=infra/terraform/drill state pull > "$INVENTORY/drill-restored.json"
-terraform -chdir=infra/terraform/drill plan -detailed-exitcode; test $? = 0
+gcloud storage cp "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT#$GOOD_GENERATION" "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT" --if-generation-match="$CURRENT_GENERATION" || { echo 'STOP: restore precondition failed'; exit 1; }
+terraform -chdir=infra/terraform/drill state pull > "$INVENTORY/drill-restored.json" || { echo 'STOP: cannot read restored drill state'; exit 1; }
+terraform -chdir=infra/terraform/drill plan -detailed-exitcode; plan_status=$?
+test "$plan_status" = 0 || { echo 'STOP: restored drill state differs'; exit 1; }
 ```
 
 The current-generation precondition prevents overwriting a concurrent writer.
@@ -429,13 +431,13 @@ vi infra/terraform/drill/main.tf
 terraform -chdir=infra/terraform/drill plan -destroy -out=drill-destroy.tfplan
 terraform -chdir=infra/terraform/drill show drill-destroy.tfplan
 terraform -chdir=infra/terraform/drill show -json drill-destroy.tfplan > "$INVENTORY/drill-destroy-plan.json"
-jq -e '([.resource_changes[]? | select(.mode == "managed")] | length) == 1 and .[0].address == "google_storage_bucket.disposable" and .[0].change.actions == ["delete"]' "$INVENTORY/drill-destroy-plan.json"
+jq -e '[.resource_changes[]? | select(.mode == "managed")] as $changes | ($changes | length) == 1 and $changes[0].address == "google_storage_bucket.disposable" and $changes[0].change.actions == ["delete"]' "$INVENTORY/drill-destroy-plan.json" || { echo 'STOP: destroy plan is not the single drill bucket'; exit 1; }
 terraform -chdir=infra/terraform/drill apply drill-destroy.tfplan
 rm infra/terraform/drill/drill-destroy.tfplan
 git checkout -- infra/terraform/drill/main.tf
 terraform -chdir=infra/terraform/drill plan -out=drill-recreate.tfplan
 terraform -chdir=infra/terraform/drill show -json drill-recreate.tfplan > "$INVENTORY/drill-recreate-plan.json"
-jq -e '([.resource_changes[]? | select(.mode == "managed")] | length) == 1 and .[0].address == "google_storage_bucket.disposable" and .[0].change.actions == ["create"]' "$INVENTORY/drill-recreate-plan.json"
+jq -e '[.resource_changes[]? | select(.mode == "managed")] as $changes | ($changes | length) == 1 and $changes[0].address == "google_storage_bucket.disposable" and $changes[0].change.actions == ["create"]' "$INVENTORY/drill-recreate-plan.json" || { echo 'STOP: recreate plan is not the single drill bucket'; exit 1; }
 rm infra/terraform/drill/drill-recreate.tfplan
 ```
 
