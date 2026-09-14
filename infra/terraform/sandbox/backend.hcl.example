@@ -1,0 +1,3 @@
+# Example only. Create a local backend.hcl with the learner's bootstrapped bucket.
+bucket = "example-phase18-state"
+prefix = "phase18/sandbox"
