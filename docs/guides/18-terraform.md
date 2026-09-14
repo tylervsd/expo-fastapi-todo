@@ -401,9 +401,9 @@ export GOOD_GENERATION='<known-good-generation>'
 export CURRENT_GENERATION='<current-live-generation-from-generation-list>'
 gcloud storage cp "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT#$GOOD_GENERATION" "$INVENTORY/drill-good.tfstate" || { echo 'STOP: cannot download selected good generation'; exit 1; }
 gcloud storage cp "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT#$CURRENT_GENERATION" "$INVENTORY/drill-damaged.tfstate" || { echo 'STOP: cannot download damaged generation'; exit 1; }
-{ jq -e '.resources[]? | select(.type == "google_storage_bucket" and .name == "disposable")' "$INVENTORY/drill-good.tfstate" >/dev/null
-  jq -e 'all(.resources[]?; (.type != "google_storage_bucket" or .name != "disposable"))' "$INVENTORY/drill-damaged.tfstate"
-  jq -e --arg lineage "$(jq -r .lineage "$INVENTORY/drill-good.tfstate")" --argjson serial "$(jq -r .serial "$INVENTORY/drill-good.tfstate")" '.lineage == $lineage and .serial > $serial' "$INVENTORY/drill-damaged.tfstate"
+{ jq -e '.resources[]? | select(.type == "google_storage_bucket" and .name == "disposable")' "$INVENTORY/drill-good.tfstate" >/dev/null &&
+  jq -e 'all(.resources[]?; (.type != "google_storage_bucket" or .name != "disposable"))' "$INVENTORY/drill-damaged.tfstate" &&
+  jq -e --arg lineage "$(jq -r .lineage "$INVENTORY/drill-good.tfstate")" --argjson serial "$(jq -r .serial "$INVENTORY/drill-good.tfstate")" '.lineage == $lineage and .serial > $serial' "$INVENTORY/drill-damaged.tfstate" &&
   jq -e --argjson before "$(jq -c . "$INVENTORY/drill-before.json")" '. == $before' "$INVENTORY/drill-good.tfstate" >/dev/null
 } || { echo 'STOP: invalid state generations'; exit 1; }
 gcloud storage ls -a "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT"
