@@ -2,7 +2,7 @@
 
 ## Status and outcome
 
-Prepared for review; implementation and cloud acceptance have not started. Phase 16 is merged at `eb7cf84`. This phase serves the existing Expo web app from Cloudflare Pages and connects browser requests directly to the Cloud Run API backed by Cloud SQL. The learner performs cloud configuration, deployment, DNS, and acceptance manually after repository preparation.
+Prepared for review; implementation and cloud acceptance have not started. Phase 16 is merged at `eb7cf84`. This phase serves the existing Expo web app from Cloudflare Pages and connects browser requests directly to the Cloud Run API backed by Cloud SQL. The learner performs cloud configuration, deployment, and acceptance manually after repository preparation.
 
 ## Decisions and alternatives
 
@@ -48,7 +48,7 @@ Introduce `CORS_ALLOWED_ORIGINS`, a JSON array of exact origins. Read it at app 
 
 Accept HTTPS origins and the exact local development origin. Reject wildcards, regexes, credentials, paths including trailing slash, query, fragment, whitespace, invalid ports, and non-string list entries. Do not infer trust from `Origin`, a hostname suffix, or all `pages.dev` sites. Keep the existing methods, headers, and `allow_credentials=False`.
 
-Allow the exact Pages production origin and the selected custom HTTPS origin. The preview exercise begins with its exact origin absent. Confirm browser rejection, then add only the selected trusted branch alias copied from the Pages deployment UI. Hash preview URLs remain disallowed unless explicitly listed. Removing that alias must revoke browser access again.
+Allow the exact assigned Pages production origin (`https://<project>.pages.dev`). The preview exercise begins with its exact origin absent. Confirm browser rejection, then add only the selected trusted branch alias copied from the Pages deployment UI. Hash preview URLs remain disallowed unless explicitly listed. Removing that alias must revoke browser access again.
 
 CORS governs browser access to responses; it is not authentication or protection against non-browser clients. Existing API auth and owner isolation continue to enforce access. Negative checks must inspect preflight and response headers; a denied simple GET can still return HTTP 200 without an allow-origin header.
 
@@ -69,20 +69,20 @@ This is a deliberately limited CSP, not a comprehensive script-source policy. Av
 
 Retain native Pages caching and SPA fallback. No top-level `404.html`, service worker, catch-all `_redirects`, or custom cache rules are required. Verify real asset requests return their correct MIME types, the root shell reloads, and `/phase17-refresh-check` loads the shell rather than a server 404. A refresh restores the existing app/auth behavior, not an invented URL route.
 
-## Custom domain and TLS
+## Pages hostname and TLS
 
-The domain/subdomain and DNS provider are learner-supplied deployment inputs, not hard-coded defaults. Begin on the assigned `pages.dev` origin; custom-domain acceptance remains pending until a domain is supplied. Prefer a subdomain to avoid affecting an existing apex site. Attach it in Pages before changing the requested DNS record. Record prior DNS values and avoid changes to mail or unrelated records. Verify certificate issuance and HTTP-to-HTTPS behavior.
+The learner chose the assigned Cloudflare `pages.dev` hostname for Phase 17. Copy the exact production hostname from the created Pages project; the project name is a deployment-time input. Verify HTTPS, certificate validity, and HTTP-to-HTTPS behavior on that hostname. Keep production and preview aliases distinct in configuration and evidence.
 
-If DNS already belongs to Cloudflare, use the Pages domain flow. An externally managed subdomain may use the documented CNAME procedure; do not require an apex nameserver transfer just for this exercise. Keep the assigned production `pages.dev` origin functional and explicitly allowed rather than adding canonical-domain redirects in this phase.
+This explicitly narrows the provisional roadmap's custom-origin requirement: domain purchase, custom DNS records, nameserver changes, and custom-domain acceptance are out of scope. They are optional later exercises, not outstanding Phase 17 acceptance gaps. Exact production and preview CORS policies still apply.
 
 ## Deployment sequence and rollback
 
 1. Implement and locally verify the repository changes; produce `docs/guides/17-cloudflare-pages.md` before the learner starts.
 2. Build/push a Phase 17 API image containing configurable CORS. Capture the current image, revision, traffic, and non-secret configuration. Preserve Cloud SQL attachment and both existing secret references.
-3. Deploy a tagged Cloud Run candidate with exact production/custom origins. Validate it and promote it before testing against the stable service URL. A tagged revision alone does not change which revision the stable service URL reaches.
+3. Deploy a tagged Cloud Run candidate with the exact production Pages origin. Validate it and promote it before testing against the stable service URL. A tagged revision alone does not change which revision the stable service URL reaches.
 4. Connect Pages to Git, build a trusted branch preview, inspect the embedded API destination, and perform the denied-origin exercise. Add the specific preview origin through a new API revision and promote after checking it.
 5. Verify the preview end-to-end before authorizing the implementation PR merge. Pages may have created an initial production deployment from the older `main`; do not count it as acceptance of this phase.
-6. After merge, verify the production Pages deployment and custom domain independently. Git-driven deployment does not itself enforce GitHub check success; protected-main PR checks remain the merge gate.
+6. After merge, verify the production Pages deployment on its assigned `pages.dev` hostname. Git-driven deployment does not itself enforce GitHub check success; protected-main PR checks remain the merge gate.
 7. Exercise a frontend rollback between two successful production deployments using Pages' native rollback, record their IDs/commits, then restore the intended release. Do not roll back a database or disable auth.
 8. If API CORS breaks, restore the previously recorded Cloud Run revision/traffic; the previous API may lack hosted-origin support, so this restores prior service behavior rather than guaranteeing hosted frontend availability.
 
@@ -96,7 +96,7 @@ Every row starts unverified. Record observed date, URL/origin, commit/image dige
 | A2 | Pages preview and production builds use pinned tools, frozen lockfile, correct root/output, and separately configured API targets |
 | A3 | Existing local CORS behavior passes; hosted allowlist excludes localhost and rejects unrelated, deceptive-suffix, and unlisted preview origins |
 | A4 | Real browser denied-preview failure, exact-origin grant, success, and removal/rejection are observed |
-| A5 | HTTPS production and custom origins load; TLS and DNS are recorded; preview and production deploys are distinguished |
+| A5 | Assigned production `pages.dev` origin loads over HTTPS; certificate and HTTP redirect behavior are verified; preview and production deployments are distinguished |
 | A6 | Root refresh and unmatched-path shell fallback work; JS/CSS assets have correct content types; no browser console regressions |
 | A7 | Headers are present, preview has noindex, and a fresh deployment/refresh loads the intended asset version without stale-page errors |
 | A8 | Hosted signup, login, todo create/edit/complete/delete, reload persistence, sign-out, and second-user isolation pass |
@@ -107,7 +107,7 @@ Every row starts unverified. Record observed date, URL/origin, commit/image dige
 
 ## Scope boundaries
 
-No Pages Functions, Workers, SSR, Expo Router adoption, auth changes, new production database, frontend secrets, native distribution, Terraform, or new GitHub deployment pipeline. Phase 18 owns infrastructure as code. The manual guide separates code-ready from cloud-accepted status and never claims a domain or deployed test has passed before observation.
+No Pages Functions, Workers, SSR, Expo Router adoption, auth changes, new production database, frontend secrets, native distribution, Terraform, or new GitHub deployment pipeline. Phase 18 owns infrastructure as code. The manual guide separates code-ready from cloud-accepted status and never claims a hosted origin or deployed test has passed before observation.
 
 ## References
 
@@ -117,5 +117,4 @@ No Pages Functions, Workers, SSR, Expo Router adoption, auth changes, new produc
 - [Pages preview aliases](https://developers.cloudflare.com/pages/configuration/preview-deployments/)
 - [Pages SPA fallback and caching](https://developers.cloudflare.com/pages/configuration/serving-pages/)
 - [Pages headers](https://developers.cloudflare.com/pages/configuration/headers/)
-- [Pages custom domains](https://developers.cloudflare.com/pages/configuration/custom-domains/)
 - [Pages rollback](https://developers.cloudflare.com/pages/configuration/rollbacks/)

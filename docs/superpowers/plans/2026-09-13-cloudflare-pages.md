@@ -17,7 +17,7 @@
 - Retain all existing dependency pins and the lockfile; add no dependencies.
 - Preserve local `pnpm build:web`, local CORS defaults, native behavior, auth, and owner isolation.
 - Do not run local E2E fixture/reset machinery against the deployed API or Cloud SQL.
-- Domain/subdomain, Pages project name, actual preview alias, and final API origin are deployment inputs copied from the learner's resources.
+- Pages project name, assigned production `pages.dev` hostname, actual preview alias, and final API origin are deployment inputs copied from the learner's resources.
 - Do not commit tokens, secret URLs, generated exports, environment files with credentials, or unredacted browser traces.
 - No cloud mutations during repository implementation; the learner executes the guide.
 - Route mechanical implementation to Luna; escalate integration issues to Terra; use Sol medium for significant/final review under project instructions. Do not broaden architecture without returning the issue to the controller.
@@ -40,7 +40,7 @@ Tasks 1 and 2 are independent. Task 3 consumes both. No new router, client abstr
 
 ```python
 @pytest.mark.parametrize("origin", [
-    "https://app.example.test",
+    "https://project.pages.dev",
     "https://trusted.example.pages.dev",
 ])
 def test_configured_origin_preflight(monkeypatch, origin):
@@ -176,22 +176,22 @@ for (const value of [undefined, "", "http://api.example.test", "https://localhos
 **Interfaces:** Produce `docs/guides/17-cloudflare-pages.md` for the learner; README links it as code-ready/manual-acceptance-pending, never complete before results arrive.
 
 - [ ] Write numbered steps with commands and console fields for this exact sequence:
-  1. Verify Phase 16 API signup/todos and record current revision, image digest, traffic, Cloud SQL attachment, secret reference versions, and intended Pages project/domain.
+  1. Verify Phase 16 API signup/todos and record current revision, image digest, traffic, Cloud SQL attachment, secret reference versions, and intended Pages project and assigned `pages.dev` hostname.
   2. Run repository verification and local hosted export. Explain build-time public configuration and show the Pages settings table from the spec.
   3. Build/push the API image from `apps/api` for `linux/amd64` and resolve an immutable digest using the Phase 14 pattern.
-  4. Generate a non-secret YAML env file containing a JSON string for `CORS_ALLOWED_ORIGINS`. Read existing non-secret env configuration first: `--env-vars-file` replaces normal variables, so preserve all of them, including any `OPENROUTER_MODEL`; secret references remain separately configured. Prefer a documented alternate-delimiter `--update-env-vars` command to change only CORS. For example, `--update-env-vars='^|^CORS_ALLOWED_ORIGINS=["https://app.example.test","https://project.pages.dev"]'`; clearly label examples and substitute observed origins. Do not dump plaintext secrets while inspecting configuration.
+  4. Generate a non-secret YAML env file containing a JSON string for `CORS_ALLOWED_ORIGINS`. Read existing non-secret env configuration first: `--env-vars-file` replaces normal variables, so preserve all of them, including any `OPENROUTER_MODEL`; secret references remain separately configured. Prefer a documented alternate-delimiter `--update-env-vars` command to change only CORS. For example, `--update-env-vars='^|^CORS_ALLOWED_ORIGINS=["https://project.pages.dev"]'`; clearly label examples and substitute observed origins. Do not dump plaintext secrets while inspecting configuration.
   5. Deploy the API candidate with `--no-traffic --tag=web-v1`, preserve database/secrets, verify preflight against its tag, then explicitly promote it so the stable URL uses the new policy. Record rollback target before promotion.
   6. Create a Pages Git-integrated project scoped to this repository. Configure production/preview environments separately, tool pins, skipped automatic install, root build command, output path, main production branch, and trusted preview branch controls.
   7. Build the implementation branch preview, copy the actual branch-alias URL, and inspect build logs/network calls. Explain that the initial main deployment may still be pre-Phase-17 code.
   8. Run the denied-preview exercise with OPTIONS requesting POST and Authorization/Content-Type. In a browser confirm blocked response access. Update the API allowlist with only that exact preview alias, deploy/promote a fresh revision, and retest in a fresh browser context to avoid preflight-cache confusion.
   9. Execute the preview acceptance journey in A8/A9 with disposable accounts and a bounded live AI request. Reuse normal application operations, not E2E fixtures. Verify AG-UI streaming through the browser boundary.
   10. Ask the learner for implementation PR merge when preview/CI evidence is ready; merge only with authorization. Verify Pages then builds the intended main commit and repeat the journey on production.
-  11. Attach the chosen custom domain using its DNS-provider-specific path; preserve previous records, verify TLS, and add its exact API origin if not already configured. An undecided domain leaves A5 pending, not waived.
+  11. Verify the assigned production `pages.dev` hostname, certificate validity, and HTTP-to-HTTPS behavior. Record its exact origin and confirm it is allowed by API CORS. The learner explicitly chose `pages.dev`; do not require a custom domain or DNS changes for A5.
   12. Inspect HTTPS redirect, headers, real JS MIME types, root refresh, unmatched-path fallback, preview noindex, and fresh deployment cache behavior using browser devtools plus `curl -I` against observed URLs.
   13. Make two successful production deployments identifiable by commit and deployment ID; use a harmless guide-only commit for the second if needed. Roll back to the first in Pages, verify selected production deployment identity, then restore the second. Do not invent visible app version labels just for this exercise.
   14. Remove temporary preview origins in a fresh API revision and promote; verify denied preflight, final production success, and cleanup of disposable todos. Record any account-retention limitation rather than adding an account deletion API.
-  15. Fill A1–A12 evidence rows and note shared sandbox data, cost settings, domain ownership, final image/revision/deployment IDs, rollback observations, and remaining gaps.
-- [ ] Include troubleshooting for wrong build root/output, tool-version mismatch, localhost baked into JS, API target changes requiring rebuild, missing Authorization preflight headers, DNS/certificate delay, API errors versus browser CORS errors, and inactive Cloud Run revisions requiring a tag.
+  15. Fill A1–A12 evidence rows and note shared sandbox data, cost settings, assigned Pages hostname, final image/revision/deployment IDs, rollback observations, and remaining gaps.
+- [ ] Include troubleshooting for wrong build root/output, tool-version mismatch, localhost baked into JS, API target changes requiring rebuild, missing Authorization preflight headers, Pages hostname/certificate availability, API errors versus browser CORS errors, and inactive Cloud Run revisions requiring a tag.
 - [ ] Explain Pages rollback and Cloud Run rollback are independent; neither performs database rollback. Direct hosted browser acceptance is manual, not the local Playwright suite retargeted to the cloud.
 - [ ] Update README with spec/plan/guide links and explicitly pending cloud acceptance. Preserve earlier acceptance caveats. Do not mark Phase 17 complete or Phase 18 next until the learner reports required checks passed.
 - [ ] Run `pnpm lint:markdown`, `pnpm lint:links`, and `git diff --check`. Resolve errors introduced by these files; report environmental failures separately.
