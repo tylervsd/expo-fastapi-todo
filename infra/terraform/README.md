@@ -67,6 +67,15 @@ traffic can differ. Capture and compare both before choosing `api.runtime` and
 traffic change can serve an older revision. Preserve the observed public
 invocation mechanism rather than adding another one.
 
+`api.plain_env`, `api.secret_env`, and the generated `CORS_ALLOWED_ORIGINS`
+entry remain separate. Cloud Run consumes numeric Secret Manager versions only;
+Terraform never sees a secret value. Record an existing budget or monitoring
+configuration exactly, or keep the nullable input `null` for import adoption.
+A missing budget amount or notification channel is a learner prerequisite for
+the separate additive plan, not a default Terraform value. During import
+review, compare provider-normalized duration, traffic, and default labels with
+the inventory before accepting a no-change plan.
+
 ## Offline validation
 
 ```sh
@@ -102,6 +111,11 @@ guess a title or import a conditional grant before inventory confirms it.
 | `google_secret_manager_secret_iam_member.access["key"]` | Inventoried secret-scoped accessor grants | `projects/project/secrets/secret role member` (append observed `condition-title` when conditional) |
 | `google_sql_database_instance.primary` | Existing SQL settings and observed deletion protections | `projects/project/instances/name`, `project/name`, or `name` |
 | `google_sql_database.app` | Existing application database only; no users or credentials | `projects/project/instances/instance/databases/name`, `instances/instance/databases/name`, `project/instance/name`, `instance/name`, or `name` |
+| `google_cloud_run_v2_service.api` | Existing API image digest, runtime, SQL socket, traffic, and observed invocation/protection settings | `projects/project/locations/region/services/name`, `project/region/name`, or `region/name` |
+| `google_cloud_run_v2_job.migrate` | Existing migration job configuration; Terraform never starts an execution | `projects/project/locations/region/jobs/name`, `project/region/name`, or `region/name` |
+| `google_billing_budget.sandbox[0]` | Existing project-filtered budget when `budget` is non-null | `billingAccounts/billing-account/budgets/budget-id` |
+| `google_monitoring_uptime_check_config.api[0]` | Existing HTTPS health check when `monitoring` is non-null | `projects/project/uptimeCheckConfigs/check-id` |
+| `google_monitoring_alert_policy.api[0]` | Existing alert policy when `monitoring` is non-null | `projects/project/alertPolicies/policy-id` |
 
 `data.google_project.current` is read-only and supplies the numeric project ID
 for a future imported budget filter. Mock it in Terraform tests; it never

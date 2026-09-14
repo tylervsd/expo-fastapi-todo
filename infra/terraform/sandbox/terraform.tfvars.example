@@ -184,5 +184,7 @@ migration_job = {
   }
 }
 
+# Keep optional operations absent until inventory records existing IDs/settings or
+# a learner approves the separate additive budget/monitoring plan.
 budget     = null
 monitoring = null

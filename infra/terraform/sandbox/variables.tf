@@ -358,6 +358,7 @@ variable "budget" {
       units         = string
       nanos         = number
     })
+    calendar_period = string
     threshold_rules = set(object({
       percent     = number
       spend_basis = optional(string)
@@ -379,9 +380,12 @@ variable "monitoring" {
       path                      = string
       period                    = string
       timeout                   = string
+      use_ssl                   = bool
+      validate_ssl              = bool
     })
     alert_policy = object({
       display_name          = string
+      combiner              = string
       notification_channels = set(string)
       filter                = string
       comparison            = string
