@@ -12,7 +12,7 @@
 
 ## Global constraints
 
-- Planning documents only are complete; application implementation and manual acceptance remain pending.
+- Implementation authorized on 2026-09-14. Tasks 1 and 2 are implemented and reviewed; guide preparation is in progress. Cloud acceptance remains pending.
 - Work in `codex/phase-17-cloudflare-pages` at `.worktrees/phase-17-cloudflare-pages`, based on `eb7cf84`.
 - Retain all existing dependency pins and the lockfile; add no dependencies.
 - Preserve local `pnpm build:web`, local CORS defaults, native behavior, auth, and owner isolation.
@@ -26,8 +26,8 @@
 
 | Task | Files | Responsibility |
 | --- | --- | --- |
-| 1 | `apps/api/app/cors.py`, `apps/api/app/main.py`, `apps/api/tests/test_cors.py`, `apps/api/tests/test_health.py`, `apps/api/.env.example` | Exact configurable API origin policy |
-| 2 | `scripts/build-pages.mjs`, `tests/build-pages.test.mjs`, `package.json`, `apps/mobile/public/_headers`, `.github/workflows/quality.yml` | Validated hosted export and static headers |
+| 1 | `apps/api/app/cors.py`, `apps/api/app/main.py`, `apps/api/tests/test_cors.py`, `apps/api/tests/test_health.py`, `apps/api/tests/conftest.py`, `apps/api/.env.example` | Exact configurable API origin policy |
+| 2 | `scripts/build-pages.mjs`, `tests/build-pages.test.mjs`, `package.json`, `apps/mobile/package.json`, `apps/mobile/public/_headers`, `.github/workflows/quality.yml` | Validated hosted export and static headers |
 | 3 | `docs/guides/17-cloudflare-pages.md`, `README.md` | Complete manual deployment handoff and honest status |
 
 Tasks 1 and 2 are independent. Task 3 consumes both. No new router, client abstraction, or backend proxy is needed.
@@ -99,7 +99,7 @@ def get_cors_origins() -> list[str]:
 ```
 
 - [ ] Import `get_cors_origins` in `app/main.py`, replace `allow_origins=[EXPO_WEB_ORIGIN]` with `allow_origins=get_cors_origins()`, remove the unused constant, and leave credentials/method/header policy unchanged.
-- [ ] Make the existing health test fixture explicitly unset this variable using monkeypatch, so an operator's shell cannot change test expectations. Add the documented example `CORS_ALLOWED_ORIGINS=["http://localhost:8081"]` to `apps/api/.env.example`, noting that the API process must receive the environment variable; the example file is not automatically loaded by this change.
+- [ ] Clear inherited CORS configuration in `tests/conftest.py` before test modules import `app.main`, and make the existing health test fixture explicitly unset this variable using monkeypatch, so an operator's shell cannot change test expectations. Add the documented example `CORS_ALLOWED_ORIGINS=["http://localhost:8081"]` to `apps/api/.env.example`, noting that the API process must receive the environment variable; the example file is not automatically loaded by this change.
 - [ ] Run focused tests and `pnpm lint:api`. Then run the existing API suite with its dedicated PostgreSQL test database. Distinguish infrastructure errors from assertions.
 - [ ] Commit only Task 1 files: `feat: configure exact browser origins for hosted web`.
 
@@ -164,7 +164,7 @@ for (const value of [undefined, "", "http://api.example.test", "https://localhos
 }
 ```
 
-- [ ] Add root scripts `"build:pages": "node scripts/build-pages.mjs"` and `"test:pages": "node --test tests/build-pages.test.mjs"`.
+- [ ] Add `--clear` to the shared mobile `export:web` and direct root E2E export commands to prevent stale API targets, and add root scripts `"build:pages": "node scripts/build-pages.mjs"` and `"test:pages": "node --test tests/build-pages.test.mjs"`.
 - [ ] Create `apps/mobile/public/_headers` with the exact content in the spec. Do not add `_redirects` or `404.html`; verify exported assets and native Pages fallback instead.
 - [ ] Run `pnpm test:pages`. Confirm `env -u EXPO_PUBLIC_API_URL pnpm build:pages` exits nonzero before Expo runs. Run `EXPO_PUBLIC_API_URL=https://api.example.test pnpm build:pages` and inspect `apps/mobile/dist/index.html`, JS assets, and the copied `_headers` file. The example target is for export verification only, never a deployed acceptance target.
 - [ ] In the quality workflow, add `pnpm test:pages` after dependencies are installed. After the existing web export verification, run the hosted build with `EXPO_PUBLIC_API_URL: https://api.example.test` and verify `test -f apps/mobile/dist/index.html` and `cmp apps/mobile/public/_headers apps/mobile/dist/_headers`. Preserve the existing local web build and E2E checks.
@@ -179,7 +179,7 @@ for (const value of [undefined, "", "http://api.example.test", "https://localhos
   1. Verify Phase 16 API signup/todos and record current revision, image digest, traffic, Cloud SQL attachment, secret reference versions, and intended Pages project and assigned `pages.dev` hostname.
   2. Run repository verification and local hosted export. Explain build-time public configuration and show the Pages settings table from the spec.
   3. Build/push the API image from `apps/api` for `linux/amd64` and resolve an immutable digest using the Phase 14 pattern.
-  4. Generate a non-secret YAML env file containing a JSON string for `CORS_ALLOWED_ORIGINS`. Read existing non-secret env configuration first: `--env-vars-file` replaces normal variables, so preserve all of them, including any `OPENROUTER_MODEL`; secret references remain separately configured. Prefer a documented alternate-delimiter `--update-env-vars` command to change only CORS. For example, `--update-env-vars='^|^CORS_ALLOWED_ORIGINS=["https://project.pages.dev"]'`; clearly label examples and substitute observed origins. Do not dump plaintext secrets while inspecting configuration.
+  4. Record existing non-secret configuration and secret references without printing secret values. Use an alternate-delimiter `--update-env-vars` command to change only CORS, preserving all other variables and secret mappings; do not introduce a replacement YAML env file. For example, `--update-env-vars='^|^CORS_ALLOWED_ORIGINS=["https://project.pages.dev"]'`; clearly label examples and substitute observed origins. Do not dump plaintext secrets while inspecting configuration.
   5. Deploy the API candidate with `--no-traffic --tag=web-v1`, preserve database/secrets, verify preflight against its tag, then explicitly promote it so the stable URL uses the new policy. Record rollback target before promotion.
   6. Create a Pages Git-integrated project scoped to this repository. Configure production/preview environments separately, tool pins, skipped automatic install, root build command, output path, main production branch, and trusted preview branch controls.
   7. Build the implementation branch preview, copy the actual branch-alias URL, and inspect build logs/network calls. Explain that the initial main deployment may still be pre-Phase-17 code.
@@ -204,3 +204,11 @@ for (const value of [undefined, "", "http://api.example.test", "https://localhos
 - [ ] Obtain final whole-branch review under the project model routing. Fix actionable findings and rerun affected checks.
 - [ ] Deliver the numbered guide, branch/worktree, relevant checks, and deployment-time inputs. Stop before cloud mutations: the learner requested a manual walkthrough.
 - [ ] After learner-reported acceptance, update the evidence record and README without inventing observed values. Commit/push/merge only when authorized for that step.
+
+## Execution notes: 2026-09-14
+
+- CORS implementation and test-isolation fix passed task review. Clear inherited CORS configuration in `tests/conftest.py` before test-module imports because `app.main` constructs its module-level app during import; fixture-only cleanup is too late.
+- Hosted build and cache fix passed task review. Add `--clear` to the shared mobile `export:web` command and direct root E2E export; sequential hosted/local exports otherwise reused a stale API target. This adds export time to guarantee the current build configuration is used.
+- URL guard rejects canonical IPv4-mapped IPv6 loopback and trailing-dot localhost in addition to the initial examples. Existing WHATWG URL parsing supplies canonical hostnames; no dependency added.
+- Local browser regression suite: all four journeys passed after the cache fix. Cloudflare and Cloud Run manual acceptance has not been executed by the agent.
+- Manual guide uses alternate-delimiter `--update-env-vars` to preserve existing variables. It does not require a replacement YAML env file. The first Pages main build may fail until the implementation is merged; configure and test the trusted preview first.

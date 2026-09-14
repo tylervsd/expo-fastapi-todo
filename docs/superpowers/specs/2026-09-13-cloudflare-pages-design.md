@@ -2,7 +2,7 @@
 
 ## Status and outcome
 
-Prepared for review; implementation and cloud acceptance have not started. Phase 16 is merged at `eb7cf84`. This phase serves the existing Expo web app from Cloudflare Pages and connects browser requests directly to the Cloud Run API backed by Cloud SQL. The learner performs cloud configuration, deployment, and acceptance manually after repository preparation.
+Implementation authorized by the learner on 2026-09-14; repository preparation is in progress and cloud acceptance remains pending. Phase 16 is merged at `eb7cf84`. This phase serves the existing Expo web app from Cloudflare Pages and connects browser requests directly to the Cloud Run API backed by Cloud SQL. The learner performs cloud configuration, deployment, and acceptance manually after repository preparation.
 
 ## Decisions and alternatives
 
@@ -21,7 +21,7 @@ Keep the current single-page Expo application. It registers `App` directly and h
 
 ## Build and environment contract
 
-Add `pnpm build:pages` as a hosted-build entry point. Validate that `EXPO_PUBLIC_API_URL` is an HTTPS origin without credentials, path (other than `/`), query, or fragment. Reject missing, malformed, and loopback targets. Print a generic error without echoing a supplied value. Run Expo with dotenv loading disabled so local files cannot override Pages configuration. Reuse `pnpm build:web` after validation.
+Add `pnpm build:pages` as a hosted-build entry point. Validate that `EXPO_PUBLIC_API_URL` is an HTTPS origin without credentials, path (other than `/`), query, or fragment. Reject missing, malformed, and loopback targets. Print a generic error without echoing a supplied value. Run Expo with dotenv loading disabled so local files cannot override Pages configuration. Reuse `pnpm build:web` after validation. Clear Metro caches on both the shared web export and direct E2E export so changing the build-time API target cannot reuse a previous target.
 
 Pages settings:
 
