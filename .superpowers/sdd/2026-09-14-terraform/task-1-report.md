@@ -70,3 +70,28 @@ imports, inventory the live resource fields and stop if a material setting is
 not mapped; do not substitute example values. The Cloud Run service template
 must also be compared with the revision receiving traffic before populating
 the API runtime and traffic inputs.
+
+## Review fix round 1
+
+Added the provider-schema fields needed by Task 2 without adding resources:
+
+- `database.deletion_protection` remains the Terraform lifecycle input;
+  `database.deletion_protection_enabled` maps separately to the Cloud SQL
+  `settings.deletion_protection_enabled` API/provider field.
+- `database.connector_enforcement` and `database.database_flags` map to the
+  corresponding Cloud SQL settings fields.
+- `api.runtime.command`, `args`, `container_port`, optional `port_name`,
+  `startup_cpu_boost`, optional `liveness_probe`, and optional `startup_probe`
+  map to the Cloud Run v2 container schema. Each configured probe requires one
+  of `grpc`, `http_get`, or `tcp_socket`.
+
+The fictional example now supplies all added required fields, including
+`/health` HTTP probes on port 8080. Task 2 should use these exact field names;
+it must still populate them only from the adoption inventory.
+
+After this correction, the actual root again passed backend-disabled
+`init -reconfigure`, `fmt -check -recursive`, and `validate`. Copying only its
+variables into the ignored backend-free schema workspace also let
+`terraform plan -input=false -var-file=../../sandbox/terraform.tfvars.example`
+evaluate the sanitized example's new required fields and probe validation; it
+returned `No changes` without provider configuration or cloud access.

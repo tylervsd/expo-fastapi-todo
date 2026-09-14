@@ -37,19 +37,22 @@ variable "registry" {
 variable "database" {
   description = "Observed Cloud SQL instance and application database settings; never includes credentials."
   type = object({
-    instance_name         = string
-    database_name         = string
-    database_version      = string
-    region                = string
-    deletion_protection   = bool
-    edition               = string
-    tier                  = string
-    availability_type     = string
-    disk_type             = string
-    disk_size             = number
-    disk_autoresize       = bool
-    disk_autoresize_limit = number
-    activation_policy     = string
+    instance_name               = string
+    database_name               = string
+    database_version            = string
+    region                      = string
+    deletion_protection         = bool
+    deletion_protection_enabled = bool
+    edition                     = string
+    tier                        = string
+    availability_type           = string
+    disk_type                   = string
+    disk_size                   = number
+    disk_autoresize             = bool
+    disk_autoresize_limit       = number
+    activation_policy           = string
+    connector_enforcement       = string
+    database_flags              = map(string)
     backup = object({
       enabled                        = bool
       point_in_time_recovery_enabled = bool
@@ -169,9 +172,48 @@ variable "api" {
       max_instance_request_concurrency = number
       min_instance_count               = number
       max_instance_count               = number
+      command                          = list(string)
+      args                             = list(string)
+      container_port                   = number
+      port_name                        = optional(string)
       cpu                              = string
       memory                           = string
       cpu_idle                         = bool
+      startup_cpu_boost                = bool
+      liveness_probe = optional(object({
+        failure_threshold     = number
+        initial_delay_seconds = number
+        period_seconds        = number
+        timeout_seconds       = number
+        grpc = optional(object({
+          port    = number
+          service = optional(string)
+        }))
+        http_get = optional(object({
+          path = string
+          port = number
+        }))
+        tcp_socket = optional(object({
+          port = number
+        }))
+      }))
+      startup_probe = optional(object({
+        failure_threshold     = number
+        initial_delay_seconds = number
+        period_seconds        = number
+        timeout_seconds       = number
+        grpc = optional(object({
+          port    = number
+          service = optional(string)
+        }))
+        http_get = optional(object({
+          path = string
+          port = number
+        }))
+        tcp_socket = optional(object({
+          port = number
+        }))
+      }))
     })
     traffic = map(object({
       percent  = number
@@ -218,6 +260,18 @@ variable "api" {
   validation {
     condition     = alltrue([for reference in values(var.api.secret_env) : can(regex("^[1-9][0-9]*$", reference.version))])
     error_message = "api secret versions must be positive numeric Secret Manager versions."
+  }
+
+  validation {
+    condition = alltrue([
+      for probe in [var.api.runtime.liveness_probe, var.api.runtime.startup_probe] :
+      probe == null ? true : (
+        (try(probe.grpc != null, false) ? 1 : 0) +
+        (try(probe.http_get != null, false) ? 1 : 0) +
+        (try(probe.tcp_socket != null, false) ? 1 : 0) == 1
+      )
+    ])
+    error_message = "Each API probe must select exactly one of grpc, http_get, or tcp_socket."
   }
 }
 

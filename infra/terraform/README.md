@@ -48,7 +48,11 @@ the former cannot contain `DATABASE_URL` or `OPENROUTER_API_KEY`; secret maps
 record a secret key and numeric version only. API CORS comes from exact HTTPS
 `cors_origins`; Terraform will generate `CORS_ALLOWED_ORIGINS` with
 `jsonencode`, so callers cannot set that reserved key. `OPENROUTER_MODEL` is a
-required nonempty plain API variable.
+required nonempty plain API variable. The API runtime also records the
+container command, arguments, port, probes, and CPU-startup setting. Cloud SQL
+records both Terraform lifecycle protection and the provider/API-level
+`settings.deletion_protection_enabled`, connector enforcement, and database
+flags.
 
 Before adoption, inventory every setting and stop if a material setting cannot
 be represented. Do not introduce guessed SQL costs, instance sizes, image tags,

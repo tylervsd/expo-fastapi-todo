@@ -16,6 +16,7 @@ database = {
   database_version      = "POSTGRES_16"
   region                = "us-west1"
   deletion_protection   = true
+  deletion_protection_enabled = true
   edition               = "ENTERPRISE"
   tier                  = "db-custom-1-3840"
   availability_type     = "ZONAL"
@@ -24,6 +25,10 @@ database = {
   disk_autoresize       = true
   disk_autoresize_limit = 100
   activation_policy     = "ALWAYS"
+  connector_enforcement = "NOT_REQUIRED"
+  database_flags = {
+    max_connections = "100"
+  }
   backup = {
     enabled                        = true
     point_in_time_recovery_enabled = true
@@ -121,9 +126,34 @@ api = {
     max_instance_request_concurrency = 80
     min_instance_count               = 0
     max_instance_count               = 2
+    command                          = ["sh", "-c"]
+    args                             = ["exec uvicorn app.main:app --host 0.0.0.0 --port $${PORT:-8080}"]
+    container_port                   = 8080
+    port_name                        = "http1"
     cpu                              = "1"
     memory                           = "512Mi"
     cpu_idle                         = true
+    startup_cpu_boost                = true
+    liveness_probe = {
+      failure_threshold     = 3
+      initial_delay_seconds = 0
+      period_seconds        = 10
+      timeout_seconds       = 1
+      http_get = {
+        path = "/health"
+        port = 8080
+      }
+    }
+    startup_probe = {
+      failure_threshold     = 3
+      initial_delay_seconds = 0
+      period_seconds        = 10
+      timeout_seconds       = 1
+      http_get = {
+        path = "/health"
+        port = 8080
+      }
+    }
   }
   traffic = {
     stable = {
