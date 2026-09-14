@@ -1,5 +1,7 @@
 # Phase 18 Terraform
 
+Repository configuration is ready for the pending manual [adoption walkthrough](../../docs/guides/18-terraform.md). Do not infer cloud acceptance from local checks; the learner must inventory, import, verify, drill, and sign off separately.
+
 This root adopts the Google sandbox by import. It owns explicitly declared
 Google resources after handoff; it never manages the project lifecycle,
 billing link, state bucket, Cloudflare Pages, Secret Manager payloads or

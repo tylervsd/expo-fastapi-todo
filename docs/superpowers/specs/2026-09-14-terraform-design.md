@@ -3,9 +3,10 @@
 ## Status and outcome
 
 Planning prepared on 2026-09-14 from `main` at `d845c58`, after the learner
-signed off Phase 17. This document proposes the implementation boundary;
-Terraform code and cloud acceptance are not yet implemented. Work lives on
-`codex/phase-18-terraform` in `.worktrees/phase-18-terraform`.
+signed off Phase 17. Terraform code, credential-free checks, and the manual
+guide are repository-ready. Cloud acceptance is not implemented: inventory,
+bootstrap, imports, applies, drills, and learner sign-off remain manual work.
+Work lives on `codex/phase-18-terraform` in `.worktrees/phase-18-terraform`.
 
 Adopt the working Google sandbox into one Terraform root, preserve the hosted
 app and data, and reach a reviewed plan showing no changes. The learner then
