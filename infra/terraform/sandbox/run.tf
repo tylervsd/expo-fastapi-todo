@@ -7,10 +7,21 @@ resource "google_cloud_run_v2_service" "api" {
   deletion_protection  = var.api.deletion_protection
   labels               = var.api.labels
 
+  dynamic "scaling" {
+    for_each = var.api.service_scaling == null ? [] : [var.api.service_scaling]
+    content {
+      scaling_mode          = scaling.value.scaling_mode
+      min_instance_count    = scaling.value.min_instance_count
+      max_instance_count    = scaling.value.max_instance_count
+      manual_instance_count = scaling.value.manual_instance_count
+    }
+  }
+
   template {
     service_account                  = var.api.identity
     timeout                          = var.api.runtime.timeout
     max_instance_request_concurrency = var.api.runtime.max_instance_request_concurrency
+    execution_environment            = var.api.runtime.execution_environment
 
     scaling {
       min_instance_count = var.api.runtime.min_instance_count
@@ -153,13 +164,17 @@ resource "google_cloud_run_v2_job" "migrate" {
     task_count  = var.migration_job.task_count
     parallelism = var.migration_job.parallelism
     template {
-      service_account = var.migration_job.identity
-      max_retries     = var.migration_job.max_retries
-      timeout         = var.migration_job.timeout
+      service_account       = var.migration_job.identity
+      max_retries           = var.migration_job.max_retries
+      timeout               = var.migration_job.timeout
+      execution_environment = var.migration_job.execution_environment
       containers {
         image   = var.migration_job.image
         command = var.migration_job.command
         args    = var.migration_job.args
+        resources {
+          limits = { cpu = var.migration_job.cpu, memory = var.migration_job.memory }
+        }
         dynamic "env" {
           for_each = var.migration_job.plain_env
           content {
@@ -179,6 +194,14 @@ resource "google_cloud_run_v2_job" "migrate" {
             }
           }
         }
+        volume_mounts {
+          name       = "cloudsql"
+          mount_path = "/cloudsql"
+        }
+      }
+      volumes {
+        name = "cloudsql"
+        cloud_sql_instance { instances = [var.migration_job.sql_connection_name] }
       }
     }
   }

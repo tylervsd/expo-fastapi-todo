@@ -52,11 +52,13 @@ variables {
   }
   enabled_services = ["artifactregistry.googleapis.com", "billingbudgets.googleapis.com", "iam.googleapis.com", "monitoring.googleapis.com", "run.googleapis.com", "secretmanager.googleapis.com", "servicenetworking.googleapis.com", "serviceusage.googleapis.com", "sqladmin.googleapis.com"]
   project_iam_members = {
-    runtime_sql_client = { role = "roles/cloudsql.client", member = "serviceAccount:example-runtime@example-phase18-project.iam.gserviceaccount.com" }
+    runtime_sql_client   = { role = "roles/cloudsql.client", member = "serviceAccount:example-runtime@example-phase18-project.iam.gserviceaccount.com" }
+    migration_sql_client = { role = "roles/cloudsql.client", member = "serviceAccount:example-migration@example-phase18-project.iam.gserviceaccount.com" }
   }
   secret_iam_members = {
     runtime_openrouter = { secret_key = "openrouter_api_key", role = "roles/secretmanager.secretAccessor", member = "serviceAccount:example-runtime@example-phase18-project.iam.gserviceaccount.com" }
     runtime_database   = { secret_key = "database_url", role = "roles/secretmanager.secretAccessor", member = "serviceAccount:example-runtime@example-phase18-project.iam.gserviceaccount.com" }
+    migration_database = { secret_key = "database_url", role = "roles/secretmanager.secretAccessor", member = "serviceAccount:example-migration@example-phase18-project.iam.gserviceaccount.com" }
   }
   secrets = {
     openrouter_api_key = { secret_id = "example-openrouter-api-key", replication = { auto = {} } }
@@ -94,18 +96,22 @@ variables {
   }
 
   migration_job = {
-    name                = "example-phase18-migrate"
-    identity            = "example-migration@example-phase18-project.iam.gserviceaccount.com"
-    image               = "us-west1-docker.pkg.dev/example-phase18-project/example-api/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    command             = ["sh", "-c"]
-    args                = ["alembic upgrade head"]
-    max_retries         = 1
-    timeout             = "600s"
-    task_count          = 1
-    parallelism         = 1
-    deletion_protection = true
-    plain_env           = {}
-    secret_env          = { DATABASE_URL = { secret_key = "database_url", version = "1" } }
+    name                  = "example-phase18-migrate"
+    identity              = "example-migration@example-phase18-project.iam.gserviceaccount.com"
+    image                 = "us-west1-docker.pkg.dev/example-phase18-project/example-api/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    command               = ["sh", "-c"]
+    args                  = ["alembic upgrade head"]
+    max_retries           = 1
+    timeout               = "600s"
+    task_count            = 1
+    parallelism           = 1
+    deletion_protection   = true
+    sql_connection_name   = "example-phase18-project:us-west1:example-phase18-db"
+    cpu                   = "1"
+    memory                = "512Mi"
+    execution_environment = "EXECUTION_ENVIRONMENT_GEN2"
+    plain_env             = {}
+    secret_env            = { DATABASE_URL = { secret_key = "database_url", version = "1" } }
   }
   budget     = null
   monitoring = null
@@ -117,6 +123,18 @@ run "protected_runtime" {
   assert {
     condition     = google_cloud_run_v2_service.api.deletion_protection
     error_message = "The adopted API must have deletion protection."
+  }
+  assert {
+    condition     = google_cloud_run_v2_job.migrate.template[0].template[0].service_account == "example-migration@example-phase18-project.iam.gserviceaccount.com" && google_cloud_run_v2_job.migrate.template[0].template[0].containers[0].resources[0].limits.cpu == "1" && google_cloud_run_v2_job.migrate.template[0].template[0].containers[0].resources[0].limits.memory == "512Mi"
+    error_message = "Migration jobs must preserve their identity and resource limits."
+  }
+  assert {
+    condition     = contains(toset(google_cloud_run_v2_job.migrate.template[0].template[0].volumes[0].cloud_sql_instance[0].instances), "example-phase18-project:us-west1:example-phase18-db") && google_cloud_run_v2_job.migrate.template[0].template[0].containers[0].volume_mounts[0].mount_path == "/cloudsql"
+    error_message = "Migration jobs must preserve the Cloud SQL socket mount."
+  }
+  assert {
+    condition     = anytrue([for grant in google_project_iam_member.owned : grant.role == "roles/cloudsql.client" && grant.member == "serviceAccount:example-migration@example-phase18-project.iam.gserviceaccount.com"]) && anytrue([for grant in google_secret_manager_secret_iam_member.access : grant.secret_id == "example-database-url" && grant.member == "serviceAccount:example-migration@example-phase18-project.iam.gserviceaccount.com"])
+    error_message = "The migration identity needs Cloud SQL and database-secret access."
   }
   assert {
     condition     = google_sql_database_instance.primary.deletion_protection

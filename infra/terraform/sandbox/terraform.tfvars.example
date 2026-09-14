@@ -70,6 +70,10 @@ project_iam_members = {
     role   = "roles/cloudsql.client"
     member = "serviceAccount:example-runtime@example-phase18-project.iam.gserviceaccount.com"
   }
+  migration_sql_client = {
+    role   = "roles/cloudsql.client"
+    member = "serviceAccount:example-migration@example-phase18-project.iam.gserviceaccount.com"
+  }
 }
 
 secret_iam_members = {
@@ -82,6 +86,11 @@ secret_iam_members = {
     secret_key = "database_url"
     role       = "roles/secretmanager.secretAccessor"
     member     = "serviceAccount:example-runtime@example-phase18-project.iam.gserviceaccount.com"
+  }
+  migration_database = {
+    secret_key = "database_url"
+    role       = "roles/secretmanager.secretAccessor"
+    member     = "serviceAccount:example-migration@example-phase18-project.iam.gserviceaccount.com"
   }
 }
 
@@ -135,6 +144,7 @@ api = {
     memory                           = "512Mi"
     cpu_idle                         = true
     startup_cpu_boost                = true
+    execution_environment             = "EXECUTION_ENVIRONMENT_GEN2"
     liveness_probe = {
       failure_threshold     = 3
       initial_delay_seconds = 0
@@ -175,6 +185,10 @@ migration_job = {
   task_count          = 1
   parallelism         = 1
   deletion_protection = true
+  sql_connection_name = "example-phase18-project:us-west1:example-phase18-db"
+  cpu                 = "1"
+  memory              = "512Mi"
+  execution_environment = "EXECUTION_ENVIRONMENT_GEN2"
   plain_env           = {}
   secret_env = {
     DATABASE_URL = {

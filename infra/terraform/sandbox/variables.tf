@@ -197,6 +197,12 @@ variable "api" {
     cors_origins        = set(string)
     sql_connection_name = string
     labels              = optional(map(string), {})
+    service_scaling = optional(object({
+      scaling_mode          = string
+      min_instance_count    = optional(number)
+      max_instance_count    = optional(number)
+      manual_instance_count = optional(number)
+    }))
     runtime = object({
       timeout                          = string
       max_instance_request_concurrency = number
@@ -210,6 +216,7 @@ variable "api" {
       memory                           = string
       cpu_idle                         = bool
       startup_cpu_boost                = bool
+      execution_environment            = optional(string)
       liveness_probe = optional(object({
         failure_threshold     = number
         initial_delay_seconds = number
@@ -308,17 +315,21 @@ variable "api" {
 variable "migration_job" {
   description = "Observed Cloud Run migration job configuration. Terraform records it but never executes migrations."
   type = object({
-    name                = string
-    identity            = string
-    image               = string
-    command             = list(string)
-    args                = list(string)
-    max_retries         = number
-    timeout             = string
-    task_count          = number
-    parallelism         = number
-    deletion_protection = bool
-    plain_env           = map(string)
+    name                  = string
+    identity              = string
+    image                 = string
+    command               = list(string)
+    args                  = list(string)
+    max_retries           = number
+    timeout               = string
+    task_count            = number
+    parallelism           = number
+    deletion_protection   = bool
+    sql_connection_name   = string
+    cpu                   = string
+    memory                = string
+    execution_environment = optional(string)
+    plain_env             = map(string)
     secret_env = map(object({
       secret_key = string
       version    = string

@@ -76,6 +76,12 @@ the separate additive plan, not a default Terraform value. During import
 review, compare provider-normalized duration, traffic, and default labels with
 the inventory before accepting a no-change plan.
 
+The migration job has its own identity, Cloud SQL socket, CPU/memory limits,
+and optional execution environment. It requires an inventoried Cloud SQL client
+grant plus access to the referenced database secret. API service-level scaling
+is also optional, separate from template scaling, so absent observed values do
+not become Terraform defaults.
+
 ## Offline validation
 
 ```sh
