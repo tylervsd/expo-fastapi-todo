@@ -12,7 +12,7 @@
 
 ## Global constraints
 
-- Implementation authorized on 2026-09-14. Tasks 1 and 2 are implemented and reviewed; guide preparation is in progress. Cloud acceptance remains pending.
+- Implementation authorized on 2026-09-14. Tasks 1–3 are implemented and the whole branch is reviewed. Cloud acceptance remains pending. The task checklists below retain the execution instructions; the execution notes record observed results.
 - Work in `codex/phase-17-cloudflare-pages` at `.worktrees/phase-17-cloudflare-pages`, based on `eb7cf84`.
 - Retain all existing dependency pins and the lockfile; add no dependencies.
 - Preserve local `pnpm build:web`, local CORS defaults, native behavior, auth, and owner isolation.
@@ -212,3 +212,11 @@ for (const value of [undefined, "", "http://api.example.test", "https://localhos
 - URL guard rejects canonical IPv4-mapped IPv6 loopback and trailing-dot localhost in addition to the initial examples. Existing WHATWG URL parsing supplies canonical hostnames; no dependency added.
 - Local browser regression suite: all four journeys passed after the cache fix. Cloudflare and Cloud Run manual acceptance has not been executed by the agent.
 - Manual guide uses alternate-delimiter `--update-env-vars` to preserve existing variables. It does not require a replacement YAML env file. The first Pages main build may fail until the implementation is merged; configure and test the trusted preview first.
+
+### Repository handoff
+
+Whole-branch review approved `eb7cf84..c336785`. Guide commands are instructions for the learner, not cloud operations run by the agent. No push, PR merge, Cloudflare project creation, or Cloud Run update was performed in this implementation session.
+
+Verification: 542 API tests, 523 mobile tests, 23 Pages build tests, four local Playwright journeys, 13 repository contracts, and 51 doctor tests passed. Type checking, API lint, Markdown, external links, and shell checks passed. Existing warnings remain: 14 API deprecations, 44 mobile lint warnings, and React test `act` warnings. The guide's displayed shell blocks also passed syntax checking without execution.
+
+Implementation adjustments preserve existing service environment variables during CORS updates, clear inherited CORS settings before test imports, clear Metro caches when exporting for a different API origin, and tolerate an initial Pages main build failure until the implementation is merged. The costs are targeted redeployment if configuration needs correction, isolation of the test process from operator settings, slower fresh exports, and one initial failed Pages build respectively.
