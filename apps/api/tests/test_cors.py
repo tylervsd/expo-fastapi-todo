@@ -159,6 +159,7 @@ def test_non_cors_health_request_is_unchanged(
         json.dumps(["https://example.com?query=1"]),
         json.dumps(["https://example.com#fragment"]),
         json.dumps(["https://example .com"]),
+        json.dumps(["https://example.com\\evil"]),
         json.dumps(["https://example.com:invalid"]),
         json.dumps([""]),
     ],

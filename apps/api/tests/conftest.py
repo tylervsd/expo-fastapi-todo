@@ -22,6 +22,9 @@ DEFAULT_TEST_DATABASE_URL = (
 )
 REVISION = "2026091001"
 
+# Keep module-level app construction independent of an operator's shell.
+os.environ.pop("CORS_ALLOWED_ORIGINS", None)
+
 
 def get_test_database_url() -> URL:
     url = make_url(os.environ.get("TEST_DATABASE_URL", DEFAULT_TEST_DATABASE_URL))
