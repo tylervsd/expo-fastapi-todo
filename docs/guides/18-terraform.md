@@ -15,6 +15,7 @@ worktree. Angle-bracket values are learner input, not real values.
 
 ```sh
 cd /path/to/expo-fastapi-todo/.worktrees/phase-18-terraform
+command -v gcloud jq curl shasum unzip >/dev/null || { echo 'Install gcloud and jq first: brew install --cask google-cloud-sdk && brew install jq'; exit 1; }
 export PROJECT_ID='fullstack-sandbox-tylervsd'
 export REGION='us-west1'
 export OPERATOR_EMAIL='<your-Google-account-email>'
@@ -217,14 +218,22 @@ import {
   to = google_secret_manager_secret.containers["database_url"]
   id = "projects/$PROJECT_ID/secrets/fullstack-database-url"
 }
-import { to = google_sql_database_instance.primary
-  id = "projects/$PROJECT_ID/instances/$SQL_INSTANCE" }
-import { to = google_sql_database.app
-  id = "projects/$PROJECT_ID/instances/$SQL_INSTANCE/databases/$SQL_DATABASE" }
-import { to = google_cloud_run_v2_service.api
-  id = "projects/$PROJECT_ID/locations/$REGION/services/$API_SERVICE" }
-import { to = google_cloud_run_v2_job.migrate
-  id = "projects/$PROJECT_ID/locations/$REGION/jobs/$MIGRATION_JOB" }
+import {
+  to = google_sql_database_instance.primary
+  id = "projects/$PROJECT_ID/instances/$SQL_INSTANCE"
+}
+import {
+  to = google_sql_database.app
+  id = "projects/$PROJECT_ID/instances/$SQL_INSTANCE/databases/$SQL_DATABASE"
+}
+import {
+  to = google_cloud_run_v2_service.api
+  id = "projects/$PROJECT_ID/locations/$REGION/services/$API_SERVICE"
+}
+import {
+  to = google_cloud_run_v2_job.migrate
+  id = "projects/$PROJECT_ID/locations/$REGION/jobs/$MIGRATION_JOB"
+}
 EOF
 while IFS= read -r service; do
   printf 'import {\n  to = google_project_service.required["%s"]\n  id = "%s/%s"\n}\n' "$service" "$PROJECT_ID" "$service" >> "$IMPORTS"
@@ -251,12 +260,18 @@ vi "$IMPORTS"
 Append only confirmed existing operation objects:
 
 ```hcl
-import { to = google_billing_budget.sandbox[0]
-  id = "billingAccounts/BILLING_ACCOUNT/budgets/BUDGET_ID" }
-import { to = google_monitoring_uptime_check_config.api[0]
-  id = "projects/PROJECT_ID/uptimeCheckConfigs/CHECK_ID" }
-import { to = google_monitoring_alert_policy.api[0]
-  id = "projects/PROJECT_ID/alertPolicies/POLICY_ID" }
+import {
+  to = google_billing_budget.sandbox[0]
+  id = "billingAccounts/BILLING_ACCOUNT/budgets/BUDGET_ID"
+}
+import {
+  to = google_monitoring_uptime_check_config.api[0]
+  id = "projects/PROJECT_ID/uptimeCheckConfigs/CHECK_ID"
+}
+import {
+  to = google_monitoring_alert_policy.api[0]
+  id = "projects/PROJECT_ID/alertPolicies/POLICY_ID"
+}
 ```
 
 Before every import/apply, the plan must say imports only: zero add/change/
@@ -268,7 +283,7 @@ terraform -chdir=infra/terraform/sandbox init -backend-config=backend.hcl
 terraform -chdir=infra/terraform/sandbox plan -out=adoption.tfplan
 terraform -chdir=infra/terraform/sandbox show adoption.tfplan
 terraform -chdir=infra/terraform/sandbox show -json adoption.tfplan > "$INVENTORY/adoption-plan.json"
-jq -e '([.resource_changes[]? | select(.change.importing == null and .change.actions != ["no-op"])] | length) == 0 and ([.resource_changes[]? | select(.change.importing != null)] | length) > 0' "$INVENTORY/adoption-plan.json"
+jq -e '([.resource_changes[]? | select(.mode == "managed")] | all(.change.actions == ["no-op"])) and any(.resource_changes[]?; .mode == "managed" and .change.importing != null)' "$INVENTORY/adoption-plan.json" || { echo 'STOP: plan has a managed remote action or no import'; exit 1; }
 ```
 
 Inspect all addresses and IDs. `apply adoption.tfplan` has no another prompt,
@@ -278,8 +293,8 @@ so approval belongs before it.
 terraform -chdir=infra/terraform/sandbox apply adoption.tfplan
 rm infra/terraform/sandbox/adoption.tfplan
 terraform -chdir=infra/terraform/sandbox plan -detailed-exitcode
-status=$?
-case "$status" in 0) echo no-change;; 2) echo differences-investigate;; 1) echo error;; *) exit "$status";; esac
+plan_status=$?
+case "$plan_status" in 0) echo no-change;; 2) echo differences-investigate;; 1) echo error;; *) exit "$plan_status";; esac
 ```
 
 Do not put the final command under `set -e`: 0 is no change, 2 is drift, 1 is
@@ -308,7 +323,8 @@ plan with only intentional additions/protection updates.
 
 ```sh
 gcloud services list --enabled --project="$PROJECT_ID" --filter='config.name:(billingbudgets.googleapis.com monitoring.googleapis.com)' --format='value(config.name)'
-gcloud monitoring channels list --project="$PROJECT_ID" --format='table(name,displayName,verificationStatus)'
+gcloud components install alpha
+gcloud alpha monitoring channels list --project="$PROJECT_ID" --format='table(name,displayName,verificationStatus)'
 terraform -chdir=infra/terraform/sandbox plan -out=operations.tfplan
 terraform -chdir=infra/terraform/sandbox show operations.tfplan
 terraform -chdir=infra/terraform/sandbox apply operations.tfplan
@@ -335,8 +351,8 @@ reconcile in code, review/apply and restore a no-change plan.
 
 ```sh
 gcloud run services describe "$API_SERVICE" --project="$PROJECT_ID" --region="$REGION" --format='value(metadata.labels)'
-terraform -chdir=infra/terraform/sandbox plan -detailed-exitcode; status=$?
-test "$status" = 2
+terraform -chdir=infra/terraform/sandbox plan -detailed-exitcode; plan_status=$?
+test "$plan_status" = 2
 vi infra/terraform/sandbox/terraform.tfvars
 terraform -chdir=infra/terraform/sandbox plan -out=label.tfplan
 terraform -chdir=infra/terraform/sandbox show label.tfplan
@@ -360,18 +376,19 @@ cp infra/terraform/drill/terraform.tfvars.example infra/terraform/drill/terrafor
 vi infra/terraform/drill/terraform.tfvars
 terraform -chdir=infra/terraform/drill init -backend-config=backend.hcl
 test "$(terraform -chdir=infra/terraform/drill workspace show)" = default
-terraform -chdir=infra/terraform/drill providers >/dev/null
-gcloud storage buckets describe "gs://$STATE_BUCKET" --format='value(name)' | grep -Fx "gs://$STATE_BUCKET"
+jq -e --arg bucket "$STATE_BUCKET" '.backend.type == "gcs" and .backend.config.bucket == $bucket and .backend.config.prefix == "phase18/drill"' infra/terraform/drill/.terraform/terraform.tfstate
 export DRILL_STATE_OBJECT='phase18/drill/default.tfstate'
-gcloud storage ls "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT" >/dev/null 2>&1 || true
 terraform -chdir=infra/terraform/drill plan -out=drill-create.tfplan
 terraform -chdir=infra/terraform/drill show drill-create.tfplan
 terraform -chdir=infra/terraform/drill apply drill-create.tfplan
 rm infra/terraform/drill/drill-create.tfplan
 gcloud storage ls -L "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT" | tee "$INVENTORY/drill-object.txt"
+test "$DRILL_STATE_OBJECT" = phase18/drill/default.tfstate
+gcloud storage ls "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT" | grep -F "/$DRILL_STATE_OBJECT"
 gcloud storage cp "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT" "$INVENTORY/drill-current.tfstate"
 terraform -chdir=infra/terraform/drill state pull > "$INVENTORY/drill-before.json"
 terraform -chdir=infra/terraform/drill state rm google_storage_bucket.disposable
+terraform -chdir=infra/terraform/drill state pull > "$INVENTORY/drill-damaged-pulled.json"
 gcloud storage ls -a "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT" | tee "$INVENTORY/drill-generations.txt"
 ```
 
@@ -384,8 +401,10 @@ export GOOD_GENERATION='<known-good-generation>'
 export CURRENT_GENERATION='<current-live-generation-from-generation-list>'
 gcloud storage cp "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT#$GOOD_GENERATION" "$INVENTORY/drill-good.tfstate"
 gcloud storage cp "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT#$CURRENT_GENERATION" "$INVENTORY/drill-damaged.tfstate"
-grep -E '"(lineage|serial)"' "$INVENTORY/drill-good.tfstate" "$INVENTORY/drill-damaged.tfstate"
-grep -E '"(lineage|serial)"' "$INVENTORY/drill-before.json" "$INVENTORY/drill-current.tfstate"
+jq -e '.resources[]? | select(.type == "google_storage_bucket" and .name == "disposable")' "$INVENTORY/drill-good.tfstate" >/dev/null
+jq -e 'all(.resources[]?; (.type != "google_storage_bucket" or .name != "disposable"))' "$INVENTORY/drill-damaged.tfstate"
+jq -e --arg lineage "$(jq -r .lineage "$INVENTORY/drill-good.tfstate")" --argjson serial "$(jq -r .serial "$INVENTORY/drill-good.tfstate")" '.lineage == $lineage and .serial > $serial' "$INVENTORY/drill-damaged.tfstate"
+jq -e --argjson before "$(jq -c . "$INVENTORY/drill-before.json")" '. == $before' "$INVENTORY/drill-good.tfstate" >/dev/null
 gcloud storage ls -a "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT"
 gcloud storage cp "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT#$GOOD_GENERATION" "gs://$STATE_BUCKET/$DRILL_STATE_OBJECT" --if-generation-match="$CURRENT_GENERATION"
 terraform -chdir=infra/terraform/drill state pull > "$INVENTORY/drill-restored.json"
@@ -409,10 +428,15 @@ terraform -chdir=infra/terraform/drill destroy
 vi infra/terraform/drill/main.tf
 terraform -chdir=infra/terraform/drill plan -destroy -out=drill-destroy.tfplan
 terraform -chdir=infra/terraform/drill show drill-destroy.tfplan
+terraform -chdir=infra/terraform/drill show -json drill-destroy.tfplan > "$INVENTORY/drill-destroy-plan.json"
+jq -e '([.resource_changes[]? | select(.mode == "managed")] | length) == 1 and .[0].address == "google_storage_bucket.disposable" and .[0].change.actions == ["delete"]' "$INVENTORY/drill-destroy-plan.json"
 terraform -chdir=infra/terraform/drill apply drill-destroy.tfplan
 rm infra/terraform/drill/drill-destroy.tfplan
 git checkout -- infra/terraform/drill/main.tf
-terraform -chdir=infra/terraform/drill plan -detailed-exitcode; test $? = 2
+terraform -chdir=infra/terraform/drill plan -out=drill-recreate.tfplan
+terraform -chdir=infra/terraform/drill show -json drill-recreate.tfplan > "$INVENTORY/drill-recreate-plan.json"
+jq -e '([.resource_changes[]? | select(.mode == "managed")] | length) == 1 and .[0].address == "google_storage_bucket.disposable" and .[0].change.actions == ["create"]' "$INVENTORY/drill-recreate-plan.json"
+rm infra/terraform/drill/drill-recreate.tfplan
 ```
 
 Never run sandbox destroy, delete the state bucket, or issue a broad bucket
