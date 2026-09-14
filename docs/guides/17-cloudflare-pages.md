@@ -91,15 +91,15 @@ A10 only; they do not provide cloud-browser evidence for any pending row.
 
    | Baseline field | Observed value |
    | --- | --- |
-   | Git revision | Pending |
-   | Stable API origin | Pending |
-   | Ready revision and image digest | Pending |
-   | Traffic allocation | Pending |
-   | Cloud SQL attachment | Pending |
-   | All non-secret names and values | Pending |
-   | Secret variable, resource, and version reference | Pending |
-   | Intended Pages project | Pending |
-   | Assigned production `pages.dev` origin | Pending |
+   | Git revision | Passed — learner-reported |
+   | Stable API origin | Passed — learner-reported |
+   | Ready revision and image digest | Passed — learner-reported |
+   | Traffic allocation | Passed — learner-reported |
+   | Cloud SQL attachment | Passed — learner-reported |
+   | All non-secret names and values | Passed — learner-reported |
+   | Secret variable, resource, and version reference | Passed — learner-reported |
+   | Intended Pages project | Passed — learner-reported |
+   | Assigned production `pages.dev` origin | Passed — learner-reported |
 
 ## Local repository verification and Pages setup
 
@@ -498,27 +498,43 @@ A10 only; they do not provide cloud-browser evidence for any pending row.
 
 17. Fill this table only with observed, redacted evidence. Include date,
     URL/origin, commit, API image digest or revision, Pages deployment ID, and
-    result for every completed row. All rows are pending until then.
+    result for every completed row. The learner reported all checks passed on
+    2026-09-14; this sign-off records that report, not an agent rerun.
 
 | ID | Result | Required observed evidence |
 | --- | --- | --- |
-| A1 | Pending | Invalid/missing API target fails before export; valid target builds; output has intended public target and no server secrets. |
-| A2 | Pending | Preview and production Pages builds use pinned tools, frozen lockfile, correct root/output, and separate API targets. |
-| A3 | Pending | Local CORS passes; hosted allowlist excludes localhost and rejects unrelated, deceptive-suffix, and unlisted preview origins. |
-| A4 | Pending | Browser denied preview, exact-alias grant, browser success, alias removal, and renewed denial. |
-| A5 | Pending | Assigned production `pages.dev` hostname over HTTPS, valid certificate, HTTP redirect, and distinct preview/production deployments. |
-| A6 | Pending | Root refresh, unmatched-path shell fallback, correct JS/CSS MIME types, and no console regression. |
-| A7 | Pending | Required headers, preview noindex, and fresh-deployment cache behavior. |
-| A8 | Pending | Hosted signup/login, todo CRUD, reload persistence, sign-out, and second-user isolation. |
-| A9 | Pending | Hosted guided workflow and bounded AI/AG-UI stream, confirmation, cancellation, and refresh/resume. |
-| A10 | Pending | Repository quality and existing local Playwright suite pass; native behavior remains unchanged. |
-| A11 | Pending | Pages production rollback and restoration, each with observed deployment ID and commit. |
-| A12 | Pending | Preview origin removal, test-data cleanup, final API/Pages state, shared-data note, costs, and remaining gaps. |
+| A1 | Passed — learner-reported | Invalid/missing API target fails before export; valid target builds; output has intended public target and no server secrets. |
+| A2 | Passed — learner-reported | Preview and production Pages builds use pinned tools, frozen lockfile, correct root/output, and separate API targets. |
+| A3 | Passed — learner-reported | Local CORS passes; hosted allowlist excludes localhost and rejects unrelated, deceptive-suffix, and unlisted preview origins. |
+| A4 | Passed — learner-reported | Browser denied preview, exact-alias grant, browser success, alias removal, and renewed denial. |
+| A5 | Passed — learner-reported | Assigned production `pages.dev` hostname over HTTPS, valid certificate, HTTP redirect, and distinct preview/production deployments. |
+| A6 | Passed — learner-reported | Root refresh, unmatched-path shell fallback, correct JS/CSS MIME types, and no console regression. |
+| A7 | Passed — learner-reported | Required headers, preview noindex, and fresh-deployment cache behavior. |
+| A8 | Passed — learner-reported | Hosted signup/login, todo CRUD, reload persistence, sign-out, and second-user isolation. |
+| A9 | Passed — learner-reported | Hosted guided workflow and bounded AI/AG-UI stream, confirmation, cancellation, and refresh/resume. |
+| A10 | Passed — learner-reported | Repository quality and existing local Playwright suite pass; native behavior remains unchanged. |
+| A11 | Passed — learner-reported | Pages production rollback and restoration, each with observed deployment ID and commit. |
+| A12 | Passed — learner-reported | Preview origin removal, test-data cleanup, final API/Pages state, shared-data note, costs, and remaining gaps. |
 
-Record the assigned hostname, final image digest, API revision, Pages deployment
-IDs, traffic, rollback observations, and cost settings with the table. Do not
-mark Phase 17 complete or name Phase 18 as next until the learner reports the
-required manual checks passed.
+**Signed off on 2026-09-14.** The learner completed the walkthrough and reported
+all Phase 17 verification passed (A1–A12). Implementation merged in PR #16 at
+`0f8011a`. Phase 18 is next.
+
+- Production origin: `https://expo-fastapi-todo.pages.dev`.
+- Observed preview branch alias: `https://codex-phase-17-cloudflare-pa.expo-fastapi-todo.pages.dev`.
+- API URL used during the walkthrough: `https://fullstack-api-74dhngrpaa-uw.a.run.app`.
+- Live AI worked after setting `OPENROUTER_MODEL=openrouter/free` on Cloud Run;
+  the API key remained a Secret Manager reference.
+- CORS startup failure was resolved by using plain origin strings without
+  Markdown link formatting or trailing slashes. The preview was changed from
+  a deployment hash URL to the observed branch alias.
+- Preview and production share the sandbox API and database. The existing app
+  has no account deletion endpoint; disposable accounts can remain after todo cleanup.
+
+Final image digest, API revision, Pages deployment IDs, rollback target IDs,
+and detailed cost settings were not supplied for this record. The acceptance
+results above are learner-reported; those identifiers are not independently
+verified or invented here. Earlier phases' acceptance gaps remain unchanged.
 
 <!-- markdownlint-enable MD029 -->
 

@@ -176,6 +176,8 @@ Phases 7-9 build one guided-todo creation feature to teach backend-owned state t
 
 ## 17. Cloudflare Pages and the hosted web application
 
+- **Status:** Signed off on 2026-09-14; all acceptance checks reported passed by the learner ([acceptance record](guides/17-cloudflare-pages.md#acceptance-record)). The deployed hostname uses `pages.dev`; no custom domain was required.
+
 - **Learning goal:** Deploy Expo's static web output separately from the API and understand the browser boundary between two cloud providers.
 - **Visible outcome:** Cloudflare Pages builds the web application from the monorepo, preview and production deployments use the intended Cloud Run URL, and a user completes an authenticated deployed journey through a custom web origin.
 - **New technology/pattern:** Expo static export, Pages Git integration, monorepo build roots, build-time `EXPO_PUBLIC_` configuration, preview deployments, custom domains, DNS/TLS, redirects, cache behavior, security headers, and production CORS allowlists.

@@ -12,7 +12,7 @@
 
 ## Global constraints
 
-- Implementation authorized on 2026-09-14. Tasks 1–3 are implemented and the whole branch is reviewed. Cloud acceptance remains pending. The task checklists below retain the execution instructions; the execution notes record observed results.
+- Implementation authorized on 2026-09-14. Tasks 1–3 are implemented and the whole branch is reviewed. The learner reported all cloud acceptance checks passed and signed off Phase 17 on 2026-09-14; see the guide acceptance record. The task checklists below retain the execution instructions; the execution notes record observed results.
 - Work in `codex/phase-17-cloudflare-pages` at `.worktrees/phase-17-cloudflare-pages`, based on `eb7cf84`.
 - Retain all existing dependency pins and the lockfile; add no dependencies.
 - Preserve local `pnpm build:web`, local CORS defaults, native behavior, auth, and owner isolation.
