@@ -73,10 +73,12 @@ the API runtime and traffic inputs.
 
 ## Review fix round 1
 
-Added the provider-schema fields needed by Task 2 without adding resources:
+Added the provider-schema fields needed by later tasks without adding resources:
 
-- `database.deletion_protection` remains the Terraform lifecycle input;
-  `database.deletion_protection_enabled` maps separately to the Cloud SQL
+- `database.deletion_protection` maps to the Cloud SQL resource-level provider
+  flag; it is separate from the unconditional `lifecycle.prevent_destroy`
+  guard. Task 2 consumes these foundation SQL fields.
+- `database.deletion_protection_enabled` maps separately to the Cloud SQL
   `settings.deletion_protection_enabled` API/provider field.
 - `database.connector_enforcement` and `database.database_flags` map to the
   corresponding Cloud SQL settings fields.
@@ -86,8 +88,8 @@ Added the provider-schema fields needed by Task 2 without adding resources:
   of `grpc`, `http_get`, or `tcp_socket`.
 
 The fictional example now supplies all added required fields, including
-`/health` HTTP probes on port 8080. Task 2 should use these exact field names;
-it must still populate them only from the adoption inventory.
+`/health` HTTP probes on port 8080. Task 3 consumes the API runtime field
+names; every task must still populate them only from the adoption inventory.
 
 After this correction, the actual root again passed backend-disabled
 `init -reconfigure`, `fmt -check -recursive`, and `validate`. Copying only its
