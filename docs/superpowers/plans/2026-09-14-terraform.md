@@ -53,6 +53,21 @@ Use Luna for mechanical implementation, Terra for provider/import integration,
 and Sol medium for task/whole-branch review per project instructions. Do not
 parallelize edits within the same Terraform root. No agent executes cloud apply.
 
+## Repository execution record
+
+- [x] Task 1: pinned sandbox root, ignored local artifacts, and typed input boundary.
+- [x] Task 2: imported foundation, IAM, secret metadata, and Cloud SQL resources.
+- [x] Task 3: Cloud Run/operations resources, outputs, and credential-free mocked safety tests.
+- [x] Task 4: isolated drill root and Terraform CI/configuration scan.
+- [x] Task 5: manual adoption guide and repository links.
+- [ ] Final whole-branch gate and learner A1–A12 acceptance remain pending.
+
+Rulings retained from the execution ledger: all implementation was repository
+only; live inventory, backend initialization, imports, plans, applies, and
+manual acceptance remain learner work. Provider schema inspection used the
+ignored backend-free workspace, and provider processes may need local scoped
+execution permission; neither grants cloud access.
+
 ### Task 1: Establish the root and input boundary
 
 **Files:** Create `infra/terraform/README.md`, `.terraform-version`,

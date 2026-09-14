@@ -88,6 +88,7 @@ variable "database" {
     })
     network = object({
       ipv4_enabled                                  = bool
+      ssl_mode                                      = string
       private_network                               = optional(string)
       allocated_ip_range                            = optional(string)
       enable_private_path_for_google_cloud_services = optional(bool)
@@ -105,6 +106,15 @@ variable "database" {
     user_labels = optional(map(string), {})
   })
   nullable = false
+
+  validation {
+    condition = contains([
+      "ALLOW_UNENCRYPTED_AND_ENCRYPTED",
+      "ENCRYPTED_ONLY",
+      "TRUSTED_CLIENT_CERTIFICATE_REQUIRED",
+    ], var.database.network.ssl_mode)
+    error_message = "database.network.ssl_mode must be a supported Cloud SQL SSL mode."
+  }
 }
 
 variable "service_accounts" {

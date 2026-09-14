@@ -25,6 +25,8 @@ resource "google_billing_budget" "sandbox" {
     monitoring_notification_channels = var.budget.notification_channels
     disable_default_iam_recipients   = var.budget.disable_default_iam_recipients
   }
+
+  depends_on = [google_project_service.required]
 }
 
 resource "google_monitoring_uptime_check_config" "api" {
@@ -43,7 +45,7 @@ resource "google_monitoring_uptime_check_config" "api" {
     use_ssl        = var.monitoring.uptime_check.use_ssl
     validate_ssl   = var.monitoring.uptime_check.validate_ssl
   }
-  depends_on = [google_cloud_run_v2_service.api]
+  depends_on = [google_project_service.required, google_cloud_run_v2_service.api]
 }
 
 resource "google_monitoring_alert_policy" "api" {
@@ -62,5 +64,5 @@ resource "google_monitoring_alert_policy" "api" {
       aggregations { alignment_period = var.monitoring.alert_policy.alignment_period }
     }
   }
-  depends_on = [google_monitoring_uptime_check_config.api]
+  depends_on = [google_project_service.required, google_monitoring_uptime_check_config.api]
 }

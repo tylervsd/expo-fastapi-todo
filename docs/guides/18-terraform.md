@@ -139,7 +139,6 @@ test "$(terraform version -json | jq -r .terraform_version)" = 1.14.7
 gcloud auth application-default login
 gcloud auth application-default set-quota-project "$PROJECT_ID"
 gcloud auth application-default print-access-token >/dev/null
-gcloud storage buckets describe "gs://$STATE_BUCKET" --format=json || true
 ```
 
 CLI login and ADC are separate; do not use service-account key files. If the
@@ -147,11 +146,11 @@ bucket exists, stop until its owner proves it is intended. Otherwise create the
 private, versioned backend bucket with Google-managed encryption.
 
 ```sh
-gcloud storage buckets create "gs://$STATE_BUCKET" --project="$PROJECT_ID" --location="$REGION" --uniform-bucket-level-access
-gcloud storage buckets update "gs://$STATE_BUCKET" --public-access-prevention=enforced --versioning
-gcloud storage buckets add-iam-policy-binding "gs://$STATE_BUCKET" --member="user:$OPERATOR_EMAIL" --role=roles/storage.objectAdmin
-gcloud storage buckets describe "gs://$STATE_BUCKET" --format='yaml(name,location,iamConfiguration,versioning)'
-gcloud storage buckets get-iam-policy "gs://$STATE_BUCKET" --format=json
+gcloud storage buckets create "gs://$STATE_BUCKET" --project="$PROJECT_ID" --location="$REGION" --uniform-bucket-level-access || { echo 'STOP: state bucket creation failed; it may already exist or access may be denied'; exit 1; }
+gcloud storage buckets update "gs://$STATE_BUCKET" --public-access-prevention=enforced --versioning || { echo 'STOP: state bucket update failed'; exit 1; }
+gcloud storage buckets add-iam-policy-binding "gs://$STATE_BUCKET" --member="user:$OPERATOR_EMAIL" --role=roles/storage.objectAdmin || { echo 'STOP: state bucket IAM grant failed'; exit 1; }
+gcloud storage buckets describe "gs://$STATE_BUCKET" --format='yaml(name,location,iamConfiguration,versioning)' || { echo 'STOP: cannot verify state bucket'; exit 1; }
+gcloud storage buckets get-iam-policy "gs://$STATE_BUCKET" --format=json || { echo 'STOP: cannot verify state bucket IAM'; exit 1; }
 ```
 
 No locked retention policy or lifecycle deletion rule: backend locking needs
@@ -294,7 +293,7 @@ terraform -chdir=infra/terraform/sandbox apply adoption.tfplan
 rm infra/terraform/sandbox/adoption.tfplan
 terraform -chdir=infra/terraform/sandbox plan -detailed-exitcode
 plan_status=$?
-case "$plan_status" in 0) echo no-change;; 2) echo differences-investigate;; 1) echo error;; *) exit "$plan_status";; esac
+case "$plan_status" in 0) echo no-change;; 2) echo 'STOP: differences-investigate'; exit 2;; 1) echo 'STOP: plan error'; exit 1;; *) exit "$plan_status";; esac
 ```
 
 Do not put the final command under `set -e`: 0 is no change, 2 is drift, 1 is

@@ -40,6 +40,7 @@ resource "google_sql_database_instance" "primary" {
 
     ip_configuration {
       ipv4_enabled                                  = var.database.network.ipv4_enabled
+      ssl_mode                                      = var.database.network.ssl_mode
       private_network                               = var.database.network.private_network
       allocated_ip_range                            = var.database.network.allocated_ip_range
       enable_private_path_for_google_cloud_services = var.database.network.enable_private_path_for_google_cloud_services
@@ -75,6 +76,8 @@ resource "google_sql_database_instance" "primary" {
   lifecycle {
     prevent_destroy = true
   }
+
+  depends_on = [google_project_service.required]
 }
 
 resource "google_sql_database" "app" {
@@ -88,4 +91,6 @@ resource "google_sql_database" "app" {
   lifecycle {
     prevent_destroy = true
   }
+
+  depends_on = [google_project_service.required]
 }

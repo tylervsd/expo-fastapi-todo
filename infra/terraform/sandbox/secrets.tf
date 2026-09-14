@@ -42,6 +42,8 @@ resource "google_secret_manager_secret" "containers" {
   lifecycle {
     prevent_destroy = true
   }
+
+  depends_on = [google_project_service.required]
 }
 
 resource "google_secret_manager_secret_iam_member" "access" {
@@ -60,4 +62,6 @@ resource "google_secret_manager_secret_iam_member" "access" {
       description = condition.value.description
     }
   }
+
+  depends_on = [google_project_service.required, google_service_account.dedicated]
 }

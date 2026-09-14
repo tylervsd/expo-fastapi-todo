@@ -39,6 +39,7 @@ database = {
   }
   network = {
     ipv4_enabled = true
+    ssl_mode     = "ALLOW_UNENCRYPTED_AND_ENCRYPTED"
   }
 }
 

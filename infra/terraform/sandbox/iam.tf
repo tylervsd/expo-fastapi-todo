@@ -10,6 +10,8 @@ resource "google_service_account" "dedicated" {
   lifecycle {
     prevent_destroy = true
   }
+
+  depends_on = [google_project_service.required]
 }
 
 resource "google_project_iam_member" "owned" {
@@ -27,4 +29,6 @@ resource "google_project_iam_member" "owned" {
       description = condition.value.description
     }
   }
+
+  depends_on = [google_project_service.required, google_service_account.dedicated]
 }

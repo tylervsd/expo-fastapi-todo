@@ -43,7 +43,10 @@ variables {
       retained_backups               = 7
       retention_unit                 = "COUNT"
     }
-    network = { ipv4_enabled = true }
+    network = {
+      ipv4_enabled = true
+      ssl_mode     = "ALLOW_UNENCRYPTED_AND_ENCRYPTED"
+    }
   }
 
   service_accounts = {
@@ -139,6 +142,10 @@ run "protected_runtime" {
   assert {
     condition     = google_sql_database_instance.primary.deletion_protection
     error_message = "Terraform must protect Cloud SQL from destruction."
+  }
+  assert {
+    condition     = google_sql_database_instance.primary.settings[0].ip_configuration[0].ssl_mode == "ALLOW_UNENCRYPTED_AND_ENCRYPTED"
+    error_message = "The adoption fixture must explicitly preserve its reviewed insecure SQL TLS posture."
   }
   assert {
     condition     = one([for env in google_cloud_run_v2_service.api.template[0].containers[0].env : env.value if env.name == "CORS_ALLOWED_ORIGINS"]) == "[\"https://example-phase18.pages.dev\"]"
