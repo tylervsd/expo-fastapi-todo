@@ -39,6 +39,8 @@ A10 only; they do not provide cloud-browser evidence for any pending row.
    export CLOUD_REGION=us-west1
    export CLOUD_SERVICE=fullstack-api
    export PHASE17_SUFFIX="web-$(date +%Y%m%d%H%M%S)"
+   export BRANCH="$(git branch --show-current)"
+   test -n "$BRANCH"
    ```
 
    Do not put OpenRouter keys, database passwords, or service-account keys in
@@ -68,8 +70,21 @@ A10 only; they do not provide cloud-browser evidence for any pending row.
 
    In Cloud Run, open the current revision's **Container**, **Variables &
    Secrets**, and **Connections** panels. Record the image digest, Cloud SQL
-   connection name, each secret resource and version reference, and the
-   traffic allocation. Record references only, never their plaintext values.
+   connection name, traffic allocation, every non-secret name/value (including
+   `OPENROUTER_MODEL` if present), and every secret variable's resource/version
+   reference. Record references only, never plaintext secret values.
+
+   ```sh
+   export BASELINE_REVISION="$(
+     gcloud run services describe "$CLOUD_SERVICE" \
+       --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" --format=json |
+       python3 -c 'import json, sys; print(next(item["revisionName"] for item in json.load(sys.stdin)["status"]["traffic"] if item.get("percent") == 100))'
+   )"
+   gcloud run revisions describe "$BASELINE_REVISION" \
+     --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
+     --format='yaml(spec.containers[0].image,spec.containers[0].env,metadata.annotations)'
+   ```
+
    Open the printed `$CLOUD_URL/docs` URL and use the API documentation to run
    the disposable-account signup and todo journey. The web app is not hosted
    yet, so do not look for a Pages URL at this stage.
@@ -81,7 +96,8 @@ A10 only; they do not provide cloud-browser evidence for any pending row.
    | Ready revision and image digest | Pending |
    | Traffic allocation | Pending |
    | Cloud SQL attachment | Pending |
-   | Secret names and versions | Pending |
+   | All non-secret names and values | Pending |
+   | Secret variable, resource, and version reference | Pending |
    | Intended Pages project | Pending |
    | Assigned production `pages.dev` origin | Pending |
 
@@ -141,7 +157,11 @@ A10 only; they do not provide cloud-browser evidence for any pending row.
    `build:pages` yet, its initial deployment can fail or serve pre-Phase-17
    code. That is expected and is not Phase 17 acceptance. In the Pages
    dashboard, paste the actual HTTPS URL printed for `$CLOUD_URL`; Pages does
-   not expand terminal variables.
+   not expand terminal variables. Before pushing, open **Settings**, **Builds &
+   deployments**, and **Configure Preview deployments**. Select **Custom
+   branches**; add only the exact `$BRANCH` value to **Include Preview
+   branches**, leave **Exclude Preview branches** empty, and save. Do not use a
+   wildcard or leave the default all-non-production-branches policy.
 
 5. Push the implementation branch to trigger its trusted Pages preview. In the
    Pages project, open **Deployments**, wait for the branch deployment to finish,
@@ -151,7 +171,6 @@ A10 only; they do not provide cloud-browser evidence for any pending row.
    trusted by the API yet.
 
    ```sh
-   export BRANCH="$(git branch --show-current)"
    git push -u origin "$BRANCH"
    export PRODUCTION_ORIGIN='https://<observed-project>.pages.dev'
    export PREVIEW_ORIGIN='https://<observed-branch-alias>.pages.dev'
@@ -213,38 +232,35 @@ A10 only; they do not provide cloud-browser evidence for any pending row.
      --revision-suffix="$PHASE17_SUFFIX" \
      --no-traffic --tag=web-v1
 
-   export CANDIDATE_REVISION="$(
-     gcloud run services describe "$CLOUD_SERVICE" \
-       --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
-       --format='value(status.latestCreatedRevisionName)'
-   )"
-   gcloud run services describe "$CLOUD_SERVICE" \
-     --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
-     --format='yaml(status.traffic)'
-   ```
-
-   Discover the candidate URL and record the previous stable revision before
-   promotion. The tagged URL is needed because an inactive revision has no
-   normal service traffic.
-
-   ```sh
    export ROLLBACK_REVISION="$(
      gcloud run services describe "$CLOUD_SERVICE" \
        --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" --format=json |
        python3 -c 'import json, sys; print(next(item["revisionName"] for item in json.load(sys.stdin)["status"]["traffic"] if item.get("percent") == 100))'
    )"
-   export CANDIDATE_URL="$(
+   export CANDIDATE_TRAFFIC="$(
      gcloud run services describe "$CLOUD_SERVICE" \
        --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" --format=json |
-       python3 -c 'import json, sys; tag = "web-v1"; print(next(item["url"] for item in json.load(sys.stdin)["status"]["traffic"] if item.get("tag") == tag))'
+       python3 -c 'import json, sys; tag = "web-v1"; item = next(item for item in json.load(sys.stdin)["status"]["traffic"] if item.get("tag") == tag); print(item["revisionName"], item["url"])'
    )"
+   export CANDIDATE_REVISION="${CANDIDATE_TRAFFIC%% *}"
+   export CANDIDATE_URL="${CANDIDATE_TRAFFIC#* }"
    test -n "$CANDIDATE_REVISION" && test -n "$CANDIDATE_URL"
+   gcloud run revisions describe "$CANDIDATE_REVISION" \
+     --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
+     --format='yaml(spec.containers[0].image,spec.containers[0].env,metadata.annotations)'
    curl --fail --show-error "$CANDIDATE_URL/health"
    curl --include --request OPTIONS "$CANDIDATE_URL/auth/login" \
      --header "Origin: $PRODUCTION_ORIGIN" \
      --header 'Access-Control-Request-Method: POST' \
      --header 'Access-Control-Request-Headers: Authorization, Content-Type'
    ```
+
+   Before promotion, compare the candidate output with the recorded baseline:
+   its image must equal `$CLOUD_IMAGE_REF`; Cloud SQL attachment, every
+   non-secret variable except `CORS_ALLOWED_ORIGINS`, and every secret
+   variable/resource/version reference must match. Only the image and CORS list
+   may differ. Do not deploy another revision or change the `web-v1` tag between
+   this lookup, preflight, and promotion.
 
    Verify a `200` preflight with the exact production
    `Access-Control-Allow-Origin`; its allowed methods must include `POST` and
@@ -270,25 +286,40 @@ A10 only; they do not provide cloud-browser evidence for any pending row.
      --header 'Access-Control-Request-Headers: Authorization, Content-Type'
     ```
 
-   Recheck the revision's Cloud SQL connection, secret references, and
-   non-secret variables in the console. If any are absent, stop before browser
-   acceptance and correct the deployment configuration; do not add secrets or
-   connection flags speculatively.
+   Record the promoted revision and stable preflight result. If the candidate
+   comparison failed, do not promote; correct the configuration without adding
+   secrets or Cloud SQL flags speculatively.
 
 ## Preview trust exercise and browser acceptance
 
-10. Prove that the unlisted preview is denied. Request a preflight with the
-    actual preview alias and inspect both the command result and the browser.
+10. Prove the hosted allowlist rejects localhost, an unrelated origin, a
+    deceptive-suffix origin, and the unlisted real preview alias. Inspect every
+    response before continuing.
 
     ```sh
+    export LOCAL_ORIGIN=http://localhost:8081
+    export UNRELATED_ORIGIN=https://unrelated.example.test
+    export DECEPTIVE_ORIGIN="https://attacker.${PRODUCTION_ORIGIN#https://}"
+    curl --include --request OPTIONS "$CLOUD_URL/auth/login" \
+      --header "Origin: $LOCAL_ORIGIN" \
+      --header 'Access-Control-Request-Method: POST' \
+      --header 'Access-Control-Request-Headers: Authorization, Content-Type'
+    curl --include --request OPTIONS "$CLOUD_URL/auth/login" \
+      --header "Origin: $UNRELATED_ORIGIN" \
+      --header 'Access-Control-Request-Method: POST' \
+      --header 'Access-Control-Request-Headers: Authorization, Content-Type'
+    curl --include --request OPTIONS "$CLOUD_URL/auth/login" \
+      --header "Origin: $DECEPTIVE_ORIGIN" \
+      --header 'Access-Control-Request-Method: POST' \
+      --header 'Access-Control-Request-Headers: Authorization, Content-Type'
     curl --include --request OPTIONS "$CLOUD_URL/auth/login" \
       --header "Origin: $PREVIEW_ORIGIN" \
       --header 'Access-Control-Request-Method: POST' \
       --header 'Access-Control-Request-Headers: Authorization, Content-Type'
     ```
 
-   The denied preflight must be `400` and must not contain an allow-origin
-   header for that alias.
+   Each of the four preflights must be `400` and must not contain an
+   `Access-Control-Allow-Origin` header for its requested origin.
     In a browser opened at the preview URL, try sign-up or sign-in and confirm
     DevTools reports blocked response access. A simple request may still have
     an HTTP status, because CORS controls browser access to its response; this
@@ -306,26 +337,29 @@ A10 only; they do not provide cloud-browser evidence for any pending row.
       --update-env-vars="^|^CORS_ALLOWED_ORIGINS=$CORS_ORIGINS" \
       --revision-suffix="$PREVIEW_SUFFIX" --no-traffic --tag=preview-cors
 
-    export PREVIEW_CANDIDATE_REVISION="$(
-      gcloud run services describe "$CLOUD_SERVICE" \
-        --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
-        --format='value(status.latestCreatedRevisionName)'
-    )"
-    export PREVIEW_CANDIDATE_URL="$(
+    export PREVIEW_CANDIDATE_TRAFFIC="$(
       gcloud run services describe "$CLOUD_SERVICE" \
         --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" --format=json |
-        python3 -c 'import json, sys; tag = "preview-cors"; print(next(item["url"] for item in json.load(sys.stdin)["status"]["traffic"] if item.get("tag") == tag))'
+        python3 -c 'import json, sys; tag = "preview-cors"; item = next(item for item in json.load(sys.stdin)["status"]["traffic"] if item.get("tag") == tag); print(item["revisionName"], item["url"])'
     )"
+    export PREVIEW_CANDIDATE_REVISION="${PREVIEW_CANDIDATE_TRAFFIC%% *}"
+    export PREVIEW_CANDIDATE_URL="${PREVIEW_CANDIDATE_TRAFFIC#* }"
     test -n "$PREVIEW_CANDIDATE_REVISION" && test -n "$PREVIEW_CANDIDATE_URL"
+    gcloud run revisions describe "$PREVIEW_CANDIDATE_REVISION" \
+      --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
+      --format='yaml(spec.containers[0].image,spec.containers[0].env,metadata.annotations)'
     curl --include --request OPTIONS "$PREVIEW_CANDIDATE_URL/auth/login" \
       --header "Origin: $PREVIEW_ORIGIN" \
       --header 'Access-Control-Request-Method: POST' \
       --header 'Access-Control-Request-Headers: Authorization, Content-Type'
     ```
 
-    Stop here unless the tagged preflight is `200`, returns the exact preview
-    `Access-Control-Allow-Origin`, permits `POST`, and allows `Authorization`
-    and `Content-Type`. Then promote this revision and verify the stable URL.
+    Stop here unless the candidate image equals `$CLOUD_IMAGE_REF`, Cloud SQL,
+    every non-CORS non-secret variable, and all secret resource/version
+    references match the baseline; only `CORS_ALLOWED_ORIGINS` may add the exact
+    preview alias. Its tagged preflight must be `200`, return the exact preview
+    `Access-Control-Allow-Origin`, permit `POST`, and allow `Authorization` and
+    `Content-Type`. Do not deploy or retag between this check and promotion.
 
     ```sh
     gcloud run services update-traffic "$CLOUD_SERVICE" \
@@ -411,17 +445,17 @@ A10 only; they do not provide cloud-browser evidence for any pending row.
       --update-env-vars="^|^CORS_ALLOWED_ORIGINS=$CORS_ORIGINS" \
       --revision-suffix="$CLEANUP_SUFFIX" --no-traffic --tag=cleanup-cors
 
-    export CLEANUP_CANDIDATE_REVISION="$(
-      gcloud run services describe "$CLOUD_SERVICE" \
-        --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
-        --format='value(status.latestCreatedRevisionName)'
-    )"
-    export CLEANUP_CANDIDATE_URL="$(
+    export CLEANUP_CANDIDATE_TRAFFIC="$(
       gcloud run services describe "$CLOUD_SERVICE" \
         --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" --format=json |
-        python3 -c 'import json, sys; tag = "cleanup-cors"; print(next(item["url"] for item in json.load(sys.stdin)["status"]["traffic"] if item.get("tag") == tag))'
+        python3 -c 'import json, sys; tag = "cleanup-cors"; item = next(item for item in json.load(sys.stdin)["status"]["traffic"] if item.get("tag") == tag); print(item["revisionName"], item["url"])'
     )"
+    export CLEANUP_CANDIDATE_REVISION="${CLEANUP_CANDIDATE_TRAFFIC%% *}"
+    export CLEANUP_CANDIDATE_URL="${CLEANUP_CANDIDATE_TRAFFIC#* }"
     test -n "$CLEANUP_CANDIDATE_REVISION" && test -n "$CLEANUP_CANDIDATE_URL"
+    gcloud run revisions describe "$CLEANUP_CANDIDATE_REVISION" \
+      --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
+      --format='yaml(spec.containers[0].image,spec.containers[0].env,metadata.annotations)'
     curl --include --request OPTIONS "$CLEANUP_CANDIDATE_URL/auth/login" \
       --header "Origin: $PRODUCTION_ORIGIN" \
       --header 'Access-Control-Request-Method: POST' \
@@ -432,10 +466,12 @@ A10 only; they do not provide cloud-browser evidence for any pending row.
       --header 'Access-Control-Request-Headers: Authorization, Content-Type'
     ```
 
-    Stop unless the production candidate preflight is `200` with the exact
-    production allow-origin and the preview preflight is `400` without an
-    allow-origin header. Then promote it, recheck the stable URL, and remove
-    the temporary tags.
+    Stop unless the candidate image equals `$CLOUD_IMAGE_REF`, Cloud SQL, every
+    non-CORS non-secret variable, and all secret resource/version references
+    match the baseline; only `CORS_ALLOWED_ORIGINS` may remove the preview alias.
+    The production candidate preflight must be `200` with the exact production
+    allow-origin and the preview preflight must be `400` without an allow-origin
+    header. Do not deploy or retag between this check and promotion.
 
     ```sh
     gcloud run services update-traffic "$CLOUD_SERVICE" \
@@ -504,6 +540,7 @@ required manual checks passed.
 - [Expo web export and public assets](https://docs.expo.dev/guides/publishing-websites/)
 - [Cloudflare Pages build image and version overrides](https://developers.cloudflare.com/pages/configuration/build-image/)
 - [Cloudflare Pages preview deployments](https://developers.cloudflare.com/pages/configuration/preview-deployments/)
+- [Cloudflare Pages branch deployment controls](https://developers.cloudflare.com/pages/configuration/branch-build-controls/)
 - [Cloudflare Pages serving, SPA fallback, and caching](https://developers.cloudflare.com/pages/configuration/serving-pages/)
 - [Cloudflare Pages headers](https://developers.cloudflare.com/pages/configuration/headers/)
 - [Cloudflare Pages rollbacks](https://developers.cloudflare.com/pages/configuration/rollbacks/)
