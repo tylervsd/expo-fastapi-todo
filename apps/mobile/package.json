@@ -37,7 +37,7 @@
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
     "test": "jest",
-    "export:web": "expo export --platform web --output-dir dist"
+    "export:web": "expo export --clear --platform web --output-dir dist"
   },
   "private": true
 }
