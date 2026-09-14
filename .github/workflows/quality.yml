@@ -49,6 +49,7 @@ jobs:
       - run: terraform -chdir=infra/terraform/drill init -backend=false -lockfile=readonly
       - run: terraform -chdir=infra/terraform/drill validate
       - run: terraform -chdir=infra/terraform/sandbox test -no-color
+      - run: terraform -chdir=infra/terraform/drill test -no-color
 
   application:
     runs-on: ubuntu-latest

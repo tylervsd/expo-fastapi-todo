@@ -26,7 +26,7 @@ variable "bucket_name" {
   nullable    = false
 
   validation {
-    condition     = contains(var.bucket_name, "phase18-drill")
+    condition     = strcontains(var.bucket_name, "phase18-drill")
     error_message = "bucket_name must contain phase18-drill."
   }
 }
