@@ -7,7 +7,8 @@ from app.main import create_app
 
 
 @pytest.fixture
-def client() -> Iterator[TestClient]:
+def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+    monkeypatch.delenv("CORS_ALLOWED_ORIGINS", raising=False)
     with TestClient(create_app()) as test_client:
         yield test_client
 

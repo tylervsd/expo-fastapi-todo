@@ -50,6 +50,7 @@ from app.auth_repository import (
     generate_token,
     hash_token,
 )
+from app.cors import get_cors_origins
 from app.database import (
     create_database_engine,
     create_session_factory,
@@ -108,8 +109,6 @@ from app.workflow_service import (
     list_active_workflows,
     start_workflow,
 )
-
-EXPO_WEB_ORIGIN = "http://localhost:8081"
 
 
 class Todo(BaseModel):
@@ -485,7 +484,7 @@ def create_app(
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[EXPO_WEB_ORIGIN],
+        allow_origins=get_cors_origins(),
         allow_credentials=False,
         allow_methods=["GET", "POST", "PATCH", "DELETE"],
         allow_headers=["Content-Type", "Authorization"],
