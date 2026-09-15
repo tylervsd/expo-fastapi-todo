@@ -10,14 +10,14 @@ budget/monitoring/protection work. Never combine them.
 
 ## Learner progress and agreed deferrals
 
-Recorded from this learning session on 2026-09-14:
+Recorded from this learning session on 2026-09-14; updated on 2026-09-15:
 
 - **Completed:** inventory/input mapping, backend initialization and validation,
   reviewed import-only plan for 25 resources, learner-run import apply, and
   learner-reported follow-up “No changes” with detailed exit code 0.
 - **Completed:** dependency graph generation and inspection commands.
-- **Not yet confirmed:** step 6 label drift/reconciliation and its final
-  no-change check. Instructions were provided; a passing result was not reported.
+- **Closed by learner confirmation on 2026-09-15:** step 6 label-drift
+  verification. No new command transcript was supplied with this confirmation.
 - **Deferred by learner choice:** step 7 state recovery and step 8 guarded
   destruction. A10/A11 and the drill portions of A3 are deferred, not passed.
   Keep backend versioning enabled and retain these exercises for later.

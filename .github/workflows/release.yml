@@ -1,0 +1,188 @@
+name: release
+
+# Phase 19: one gated sandbox release path. Validation gates are reused from
+# the existing workflows (no duplicate main triggers); the deploy job runs
+# once per validated main commit after sandbox approval. Delivery stays off
+# until the learner sets DELIVERY_ENABLED=true and protects the environment.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    uses: ./.github/workflows/quality.yml
+  security:
+    # Caller permissions: reusable jobs cannot elevate the caller's token.
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+      security-events: write
+    uses: ./.github/workflows/security.yml
+  web:
+    uses: ./.github/workflows/e2e.yml
+    with:
+      run_ios: false
+  deploy:
+    needs: [quality, security, web]
+    if: github.ref == 'refs/heads/main' && vars.DELIVERY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: sandbox
+    concurrency:
+      group: sandbox-release
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      CLOUD_PROJECT: ${{ vars.CLOUD_PROJECT }}
+      CLOUD_REGION: ${{ vars.CLOUD_REGION }}
+      CLOUD_SERVICE: ${{ vars.CLOUD_SERVICE }}
+      CLOUD_MIGRATION_JOB: ${{ vars.CLOUD_MIGRATION_JOB }}
+      CLOUD_IMAGE: ${{ vars.CLOUD_IMAGE }}
+      GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
+      GCP_DEPLOY_SERVICE_ACCOUNT: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Validate release inputs and checkout
+        run: |
+          for var in CLOUD_PROJECT CLOUD_REGION CLOUD_SERVICE CLOUD_MIGRATION_JOB CLOUD_IMAGE GCP_WIF_PROVIDER GCP_DEPLOY_SERVICE_ACCOUNT; do
+            [ -n "${!var:-}" ] || { echo "missing required environment: $var" >&2; exit 1; }
+          done
+          [ "$(git rev-parse HEAD)" = "$GITHUB_SHA" ] || { echo "checkout SHA does not match $GITHUB_SHA" >&2; exit 1; }
+
+      # Pinned at execution time from google-github-actions/setup-gcloud v3.
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+        with:
+          version: '584.0.0'
+
+      # Pinned at execution time from google-github-actions/auth v3.
+      # action.yml verified: token_format access_token outputs a masked
+      # short-lived token with configurable access_token_lifetime.
+      - name: Authenticate deploy identity
+        id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ vars.CLOUD_PROJECT }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_lifetime: 3600s
+          create_credentials_file: false
+          export_environment_variables: false
+
+      - name: Capture serving revision
+        id: previous
+        env:
+          CLOUDSDK_AUTH_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+        run: |
+          gcloud run services describe "$CLOUD_SERVICE" --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" --quiet --format=json > "$RUNNER_TEMP/service.json"
+          PREVIOUS_REVISION=$(python3 -c 'import json, os, sys; sys.path.insert(0, "scripts"); from release_deploy import serving_revision; print(serving_revision(json.load(open(os.path.join(os.environ["RUNNER_TEMP"], "service.json")))))')
+          echo "previous_revision=$PREVIOUS_REVISION" >> "$GITHUB_OUTPUT"
+
+      - name: Derive release identity
+        run: |
+          SHORT_SHA=$(echo "$GITHUB_SHA" | cut -c1-8)
+          RELEASE_ID="r$GITHUB_RUN_ID-a$GITHUB_RUN_ATTEMPT-$SHORT_SHA"
+          echo "RELEASE_ID=$RELEASE_ID" >> "$GITHUB_ENV"
+          CANDIDATE="$CLOUD_SERVICE-$RELEASE_ID"
+          echo "candidate revision: $CANDIDATE"
+          [ "${#CANDIDATE}" -le 63 ] || { echo "candidate revision name exceeds 63 characters" >&2; exit 1; }
+
+      - name: Build release image once
+        run: |
+          docker buildx build --platform linux/amd64 --load \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --tag "$CLOUD_IMAGE:$RELEASE_ID" apps/api
+
+      - name: Verify single-arch non-root container health
+        run: |
+          ARCH_USER=$(docker image inspect "$CLOUD_IMAGE:$RELEASE_ID" --format '{{.Architecture}} {{.Config.User}}')
+          [ "$ARCH_USER" = "amd64 10001:10001" ] || { echo "unexpected image arch/user: $ARCH_USER" >&2; exit 1; }
+          CONTAINER_ID=$(docker run -d --rm -p 127.0.0.1::8080 -e PORT=8080 "$CLOUD_IMAGE:$RELEASE_ID")
+          trap 'docker rm -f "$CONTAINER_ID" >/dev/null 2>&1 || true' EXIT
+          HOST_PORT=$(docker port "$CONTAINER_ID" 8080 | head -n 1 | sed 's/.*://')
+          READY=0
+          for _ in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:$HOST_PORT/health" 2>/dev/null | python3 -c 'import json, sys; assert json.load(sys.stdin) == {"status": "ok"}'; then
+              READY=1
+              break
+            fi
+            sleep 2
+          done
+          [ "$READY" = "1" ] || { echo "local container health check timed out" >&2; exit 1; }
+          [ "$(docker exec "$CONTAINER_ID" id -u)" = "10001" ] || { echo "container is not running as uid 10001" >&2; exit 1; }
+
+      - name: Scan release image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.CLOUD_IMAGE }}:${{ env.RELEASE_ID }}
+          scanners: vuln
+          format: table
+          exit-code: 1
+          severity: HIGH,CRITICAL
+
+      - name: Push release image and resolve digest
+        id: push
+        env:
+          CLOUDSDK_AUTH_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+        run: |
+          REGISTRY_HOST=$(echo "$CLOUD_IMAGE" | cut -d/ -f1)
+          echo "$ACCESS_TOKEN" | docker login --password-stdin --username oauth2accesstoken "$REGISTRY_HOST"
+          docker push "$CLOUD_IMAGE:$RELEASE_ID" 2>&1 | tee "$RUNNER_TEMP/push.log"
+          PUSH_DIGEST=$(grep -oE 'sha256:[0-9a-f]{64}' "$RUNNER_TEMP/push.log" | sort -u)
+          [ "$(echo "$PUSH_DIGEST" | wc -l)" = "1" ] || { echo "expected exactly one push digest" >&2; exit 1; }
+          TAG_DIGEST=$(gcloud artifacts docker images describe "$CLOUD_IMAGE:$RELEASE_ID" --project="$CLOUD_PROJECT" --format='value(image_summary.digest)')
+          echo "$TAG_DIGEST" | grep -qE '^sha256:[0-9a-f]{64}$' || { echo "tag digest missing or malformed" >&2; exit 1; }
+          [ "$PUSH_DIGEST" = "$TAG_DIGEST" ] || { echo "push digest does not match tag digest" >&2; exit 1; }
+          echo "image_digest=$CLOUD_IMAGE@$PUSH_DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: Migrate, deploy candidate, and promote
+        env:
+          CLOUDSDK_AUTH_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          IMAGE_DIGEST: ${{ steps.push.outputs.image_digest }}
+          PREVIOUS_REVISION: ${{ steps.previous.outputs.previous_revision }}
+        run: |
+          python3 scripts/release_deploy.py "$IMAGE_DIGEST" "$PREVIOUS_REVISION"
+
+      - name: Summarize pre-rollout failure
+        if: always() && failure() && steps.push.outputs.image_digest == ''
+        env:
+          CLOUDSDK_AUTH_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          PREVIOUS_REVISION: ${{ steps.previous.outputs.previous_revision }}
+        run: |
+          TRAFFIC=$(gcloud run services describe "$CLOUD_SERVICE" --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" --quiet --format='value(status.traffic)' 2>/dev/null || echo unknown)
+          {
+            echo "## Release (pre-rollout failure)"
+            echo "commit: $GITHUB_SHA"
+            echo "digest: not reached"
+            echo "migration: not reached"
+            echo "previous: $PREVIOUS_REVISION"
+            echo "candidate: not reached"
+            echo "smoke: not reached"
+            echo "traffic: $TRAFFIC"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  delivery-status:
+    needs: [quality, security, web]
+    if: github.ref == 'refs/heads/main' && vars.DELIVERY_ENABLED != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Report delivery disabled
+        run: |
+          {
+            echo "## Delivery not activated"
+            echo "DELIVERY_ENABLED is not 'true'; validation passed but nothing was deployed."
+          } >> "$GITHUB_STEP_SUMMARY"

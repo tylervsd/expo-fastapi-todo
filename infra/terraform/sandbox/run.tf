@@ -153,7 +153,16 @@ resource "google_cloud_run_v2_service" "api" {
 
   depends_on = [google_project_service.required, google_project_iam_member.owned, google_secret_manager_secret_iam_member.access]
 
-  lifecycle { prevent_destroy = true }
+  # Release-owned fields: the release workflow deploys revisions by digest
+  # and moves traffic. Terraform keeps all stable configuration.
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes = [
+      template[0].containers[0].image,
+      template[0].revision,
+      traffic,
+    ]
+  }
 }
 
 resource "google_cloud_run_v2_job" "migrate" {
@@ -213,5 +222,9 @@ resource "google_cloud_run_v2_job" "migrate" {
 
   depends_on = [google_project_service.required, google_project_iam_member.owned, google_secret_manager_secret_iam_member.access]
 
-  lifecycle { prevent_destroy = true }
+  # Release-owned field: the release workflow updates the job image by digest.
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes  = [template[0].template[0].containers[0].image]
+  }
 }

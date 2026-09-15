@@ -58,12 +58,14 @@ enabled_services = [
   "artifactregistry.googleapis.com",
   "billingbudgets.googleapis.com",
   "iam.googleapis.com",
+  "iamcredentials.googleapis.com",
   "monitoring.googleapis.com",
   "run.googleapis.com",
   "secretmanager.googleapis.com",
   "servicenetworking.googleapis.com",
   "serviceusage.googleapis.com",
   "sqladmin.googleapis.com",
+  "sts.googleapis.com",
 ]
 
 project_iam_members = {
@@ -198,6 +200,10 @@ migration_job = {
     }
   }
 }
+
+# Delivery identity is opt-in. Keep null in committed config; the learner sets
+# real numeric GitHub IDs locally during bootstrap. Never commit real values.
+github_delivery = null
 
 # Keep optional operations absent until inventory records existing IDs/settings or
 # a learner approves the separate additive budget/monitoring plan.

@@ -375,6 +375,32 @@ variable "migration_job" {
   }
 }
 
+variable "github_delivery" {
+  description = "GitHub continuous-delivery identity settings, or null when delivery is not configured. Learner supplies real values locally; never commit them."
+  type = object({
+    repository    = string
+    repository_id = string
+    owner_id      = string
+  })
+  default  = null
+  nullable = true
+
+  validation {
+    condition     = var.github_delivery == null || can(regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", var.github_delivery.repository))
+    error_message = "github_delivery.repository must be an owner/repository pair."
+  }
+
+  validation {
+    condition     = var.github_delivery == null || can(regex("^[0-9]+$", var.github_delivery.repository_id))
+    error_message = "github_delivery.repository_id must contain only digits."
+  }
+
+  validation {
+    condition     = var.github_delivery == null || can(regex("^[0-9]+$", var.github_delivery.owner_id))
+    error_message = "github_delivery.owner_id must contain only digits."
+  }
+}
+
 variable "budget" {
   description = "Observed project-scoped billing budget, or null when none exists."
   type = object({

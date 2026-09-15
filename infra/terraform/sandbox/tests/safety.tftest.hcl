@@ -8,6 +8,41 @@ override_data {
   }
 }
 
+# Pin computed delivery identities so membership and output assertions stay
+# plan-known under mocks. Applies only when delivery resources exist.
+override_resource {
+  target          = google_service_account.dedicated["runtime"]
+  override_during = plan
+  values = {
+    name = "projects/example-phase18-project/serviceAccounts/example-runtime@example-phase18-project.iam.gserviceaccount.com"
+  }
+}
+
+override_resource {
+  target          = google_service_account.dedicated["migration"]
+  override_during = plan
+  values = {
+    name = "projects/example-phase18-project/serviceAccounts/example-migration@example-phase18-project.iam.gserviceaccount.com"
+  }
+}
+
+override_resource {
+  target          = google_service_account.deploy
+  override_during = plan
+  values = {
+    email = "github-deploy@example-phase18-project.iam.gserviceaccount.com"
+    name  = "projects/example-phase18-project/serviceAccounts/github-deploy@example-phase18-project.iam.gserviceaccount.com"
+  }
+}
+
+override_resource {
+  target          = google_iam_workload_identity_pool_provider.github
+  override_during = plan
+  values = {
+    name = "projects/example-phase18-project/locations/global/workloadIdentityPools/github-delivery/providers/github"
+  }
+}
+
 variables {
   project_id = "example-phase18-project"
   region     = "us-west1"
@@ -54,7 +89,7 @@ variables {
     runtime   = { account_id = "example-runtime", display_name = "Example runtime" }
     migration = { account_id = "example-migration", display_name = "Example migration" }
   }
-  enabled_services = ["artifactregistry.googleapis.com", "billingbudgets.googleapis.com", "iam.googleapis.com", "monitoring.googleapis.com", "run.googleapis.com", "secretmanager.googleapis.com", "servicenetworking.googleapis.com", "serviceusage.googleapis.com", "sqladmin.googleapis.com"]
+  enabled_services = ["artifactregistry.googleapis.com", "billingbudgets.googleapis.com", "iam.googleapis.com", "iamcredentials.googleapis.com", "monitoring.googleapis.com", "run.googleapis.com", "secretmanager.googleapis.com", "servicenetworking.googleapis.com", "serviceusage.googleapis.com", "sqladmin.googleapis.com", "sts.googleapis.com"]
   project_iam_members = {
     runtime_sql_client   = { role = "roles/cloudsql.client", member = "serviceAccount:example-runtime@example-phase18-project.iam.gserviceaccount.com" }
     migration_sql_client = { role = "roles/cloudsql.client", member = "serviceAccount:example-migration@example-phase18-project.iam.gserviceaccount.com" }
@@ -230,4 +265,155 @@ run "rejects_non_numeric_secret_version" {
   command         = plan
   expect_failures = [var.api]
   variables { api = merge(var.api, { secret_env = merge(var.api.secret_env, { DATABASE_URL = { secret_key = "database_url", version = "latest" } }) }) }
+}
+
+run "delivery_disabled" {
+  command = plan
+  variables { github_delivery = null }
+
+  assert {
+    condition     = length(google_iam_workload_identity_pool.delivery) == 0
+    error_message = "No delivery pool must exist when github_delivery is null."
+  }
+  assert {
+    condition     = length(google_iam_workload_identity_pool_provider.github) == 0
+    error_message = "No delivery provider must exist when github_delivery is null."
+  }
+  assert {
+    condition     = length(google_service_account.deploy) == 0
+    error_message = "No deploy service account must exist when github_delivery is null."
+  }
+  assert {
+    condition     = output.github_workload_identity_provider == null
+    error_message = "The provider output must be null when delivery is disabled."
+  }
+  assert {
+    condition     = output.github_deploy_service_account == null
+    error_message = "The deploy account output must be null when delivery is disabled."
+  }
+}
+
+run "delivery_identity" {
+  command = plan
+  variables {
+    github_delivery = {
+      repository    = "example-owner/example-repo"
+      repository_id = "123456789"
+      owner_id      = "987654321"
+    }
+  }
+  assert {
+    condition = strcontains(
+      google_iam_workload_identity_pool_provider.github[0].attribute_condition,
+      "assertion.repository_id == '123456789'"
+    )
+    error_message = "Federation must restrict the numeric repository ID."
+  }
+  assert {
+    condition = strcontains(
+      google_iam_workload_identity_pool_provider.github[0].attribute_condition,
+      "assertion.repository_owner_id == '987654321'"
+    )
+    error_message = "Federation must restrict the numeric repository owner ID."
+  }
+  assert {
+    condition = strcontains(
+      google_iam_workload_identity_pool_provider.github[0].attribute_condition,
+      "assertion.ref == 'refs/heads/main'"
+    )
+    error_message = "Federation must restrict deployment to refs/heads/main."
+  }
+  assert {
+    condition = strcontains(
+      google_iam_workload_identity_pool_provider.github[0].attribute_condition,
+      "assertion.workflow_ref == 'example-owner/example-repo/.github/workflows/release.yml@refs/heads/main'"
+    )
+    error_message = "Federation must restrict the exact release workflow ref."
+  }
+  assert {
+    condition     = google_iam_workload_identity_pool.delivery[0].workload_identity_pool_id == "github-delivery"
+    error_message = "The delivery pool must use the fixed github-delivery ID."
+  }
+  assert {
+    condition     = google_iam_workload_identity_pool_provider.github[0].workload_identity_pool_provider_id == "github"
+    error_message = "The delivery provider must use the fixed github ID."
+  }
+  assert {
+    condition     = google_service_account.deploy[0].account_id == "github-deploy"
+    error_message = "The deploy account must use the fixed github-deploy ID."
+  }
+  assert {
+    condition     = google_service_account_iam_member.deploy_wif[0].member == "principal://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/github-delivery/subject/repo:example-owner/example-repo:environment:sandbox"
+    error_message = "Workload Identity binding must accept only the sandbox environment subject."
+  }
+  assert {
+    condition     = google_artifact_registry_repository_iam_member.deploy_push[0].role == "roles/artifactregistry.writer"
+    error_message = "The deploy identity must hold Artifact Registry Writer on the API repository."
+  }
+  assert {
+    condition     = google_cloud_run_v2_service_iam_member.deploy_api[0].role == "roles/run.developer"
+    error_message = "The deploy identity must hold Cloud Run Developer on the API service."
+  }
+  assert {
+    condition     = google_cloud_run_v2_job_iam_member.deploy_migrate[0].role == "roles/run.developer"
+    error_message = "The deploy identity must hold Cloud Run Developer on the migration job."
+  }
+  assert {
+    condition     = length(google_service_account_iam_member.deploy_runtime_user) == 2
+    error_message = "The deploy identity must hold Service Account User on both runtime identities."
+  }
+  assert {
+    condition     = sort(keys(google_service_account_iam_member.deploy_runtime_user)) == tolist(["migration", "runtime"])
+    error_message = "The Service Account User bindings must target the distinct runtime and migration identities."
+  }
+  assert {
+    condition     = google_service_account_iam_member.deploy_runtime_user["runtime"].service_account_id == google_service_account.dedicated["runtime"].name
+    error_message = "The runtime binding must target the runtime service account."
+  }
+  assert {
+    condition     = google_service_account_iam_member.deploy_runtime_user["migration"].service_account_id == google_service_account.dedicated["migration"].name
+    error_message = "The migration binding must target the migration service account."
+  }
+  assert {
+    condition     = google_service_account_iam_member.deploy_runtime_user["runtime"].service_account_id != google_service_account_iam_member.deploy_runtime_user["migration"].service_account_id
+    error_message = "The two identity bindings must target different service accounts."
+  }
+  assert {
+    condition = alltrue([
+      for binding in google_service_account_iam_member.deploy_runtime_user :
+      binding.member == "serviceAccount:github-deploy@example-phase18-project.iam.gserviceaccount.com"
+      && binding.role == "roles/iam.serviceAccountUser"
+    ])
+    error_message = "Both identity bindings must grant the deploy account Service Account User."
+  }
+  assert {
+    condition = alltrue([
+      google_artifact_registry_repository_iam_member.deploy_push[0].member == "serviceAccount:github-deploy@example-phase18-project.iam.gserviceaccount.com",
+      google_cloud_run_v2_service_iam_member.deploy_api[0].member == "serviceAccount:github-deploy@example-phase18-project.iam.gserviceaccount.com",
+      google_cloud_run_v2_job_iam_member.deploy_migrate[0].member == "serviceAccount:github-deploy@example-phase18-project.iam.gserviceaccount.com",
+    ])
+    error_message = "Every delivery grant must belong to the deploy service account."
+  }
+  assert {
+    condition     = output.github_workload_identity_provider == "projects/example-phase18-project/locations/global/workloadIdentityPools/github-delivery/providers/github"
+    error_message = "The provider output must expose the delivery provider name."
+  }
+  assert {
+    condition     = output.github_deploy_service_account == "github-deploy@example-phase18-project.iam.gserviceaccount.com"
+    error_message = "The deploy account output must expose the deploy service account email."
+  }
+  assert {
+    condition = alltrue([
+      for grant in google_project_iam_member.owned :
+      !contains(["roles/owner", "roles/editor", "roles/run.admin"], grant.role)
+    ])
+    error_message = "Delivery must not introduce broad project grants."
+  }
+  assert {
+    condition = alltrue([
+      for grant in google_secret_manager_secret_iam_member.access :
+      !startswith(grant.member, "serviceAccount:github-deploy@")
+    ])
+    error_message = "The deploy identity must hold no secret-access grants."
+  }
 }

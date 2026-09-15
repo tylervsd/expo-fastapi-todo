@@ -2,8 +2,7 @@ name: quality
 
 on:
   pull_request:
-  push:
-    branches: [main]
+  workflow_call:
 
 permissions:
   contents: read
@@ -90,6 +89,8 @@ jobs:
       - run: pnpm test:mobile
       - run: pnpm lint:api
       - run: pnpm test:api
+      - run: pnpm test:release
+      - run: uv run --directory apps/api ruff check ../../scripts/release_smoke.py ../../scripts/release_deploy.py ../../tests/test_release.py
       - run: pnpm build:web
       - run: pnpm build:pages
         env:

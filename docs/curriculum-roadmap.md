@@ -188,7 +188,7 @@ Phases 7-9 build one guided-todo creation feature to teach backend-owned state t
 
 ## 18. Terraform and reproducible Google infrastructure
 
-**Status:** Core Terraform adoption is complete: the learner imported 25 resources and reported a no-change plan with exit code 0. Steps 7–8 (state recovery and disposable-resource destruction) are deferred by learner agreement. Final label-drift verification is not yet recorded. See the [walkthrough status](guides/18-terraform.md#learner-progress-and-agreed-deferrals). Phase 19 remains future work.
+**Status:** Core Terraform adoption is complete: the learner imported 25 resources and reported a no-change plan with exit code 0. Steps 7–8 (state recovery and disposable-resource destruction) are deferred by learner agreement. Label-drift verification was confirmed closed by the learner on 2026-09-15. See the [walkthrough status](guides/18-terraform.md#learner-progress-and-agreed-deferrals). Phase 19 remains future work.
 
 - **Learning goal:** Convert the manually understood Google environment into reviewable, reproducible infrastructure as code.
 - **Visible outcome:** Terraform adopts or recreates the sandbox's enabled APIs, registry, identities, IAM, secret containers, Cloud Run service and job, Cloud SQL resources, budgets, and basic monitoring, then produces an empty plan against the intended configuration.
@@ -200,13 +200,14 @@ Phases 7-9 build one guided-todo creation feature to teach backend-owned state t
 
 ## 19. Continuous delivery, revisions, and rollback
 
-- **Learning goal:** Deliver application and infrastructure changes through one auditable pipeline without long-lived Google credentials or competing deployment owners.
-- **Visible outcome:** GitHub Actions tests and scans the repository, builds an immutable image, authenticates through Workload Identity Federation, runs a reviewed Terraform plan, applies migrations, deploys by image digest, smoke-tests the revision, and can roll back.
-- **New technology/pattern:** GitHub OIDC, Workload Identity Federation, least-privilege deploy identities, immutable image digests, protected environments, plan/apply separation, Cloud Run traffic management, release metadata, and rollback.
-- **Verification emphasis:** Required status checks, security gates, no-traffic revision tests, migration compatibility checks, post-deploy smoke tests, failure injection, and rollback rehearsal.
-- **Learning experiment:** Deploy a revision that fails its smoke check, verify that it receives no production traffic, then restore the last known-good image and configuration.
-- **Non-goals:** Service-account JSON keys, unreviewed production applies, two tools owning the same Cloud Run fields, multi-region delivery, and a general deployment platform.
-- **Spec gate:** Approve federation claims and conditions, pipeline permissions, artifact provenance, plan review, migration ordering, traffic policy, rollback trigger, environment protection, and failure notifications.
+- **Learning goal:** Deliver validated application commits to the sandbox with one CI identity, compatible migrations, and traffic-only rollback.
+- **Visible outcome:** GitHub Actions runs the existing gates, waits for `sandbox` approval, builds/tests/scans/pushes one image, runs migrations from the same digest, smoke-tests a zero-traffic candidate, promotes it, and restores the previous revision on post-promotion failure. Infrastructure changes stay in the reviewed local Terraform process.
+- **New technology/pattern:** GitHub OIDC, Workload Identity Federation, one least-privilege deploy identity, immutable image digests (`repository@sha256:...`), protected environments, Cloud Run tags/traffic, and a manual rollback runbook.
+- **Verification emphasis:** Exact-commit validation, activation guard, deployment lock, digest equality, migration-before-candidate ordering, zero-traffic candidate smoke, stable smoke with automatic restoration, failure injection, and a final no-drift Terraform plan.
+- **Learning experiment:** Deploy a revision that fails its smoke check, verify that it receives no production traffic, then restore the last known-good revision through traffic controls only.
+- **Non-goals:** Service-account JSON keys, Terraform plan/apply in application CI, Docker archive transport, custom release metadata, workflow rollback mode, arbitrary historical revision selection, multi-region delivery, and a general deployment platform.
+- **Spec gate:** Approve federation claims and conditions, pipeline permissions, digest deployment, migration compatibility, traffic policy, manual rollback trigger, environment protection, and summary evidence.
+- **Status:** Repository implementation is under review on `codex/phase-19-continuous-delivery`; live activation and rehearsal are pending (Task 6, learner-operated). See the [design](superpowers/specs/2026-09-14-continuous-delivery-design.md), [plan](superpowers/plans/2026-09-14-continuous-delivery.md), and [walkthrough](guides/19-continuous-delivery.md).
 
 ## 20. Cloud Tasks and Cloud Scheduler
 
