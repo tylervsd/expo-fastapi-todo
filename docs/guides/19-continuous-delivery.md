@@ -250,9 +250,9 @@ from unittest.mock import patch
 import release_deploy
 import release_smoke
 
-# Build the rehearsal ID in the shell first (matches ^r\d+-a\d+-[0-9a-f]{8}$):
-# RELEASE_ID="r$(date +%s)-a1-$(git rev-parse --short=8 HEAD)" python3 <wrapper>.py
-os.environ["RELEASE_ID"]  # KeyError if unset — set it as above
+# Build the rehearsal ID in the shell first (matches ^r\d+-a\d+-[0-9a-f]{8}$).
+# Invoke as: RELEASE_ID="r$(date +%s)-a1-$(git rev-parse --short=8 HEAD)" PYTHONPATH=scripts python3 <wrapper>.py
+os.environ["RELEASE_ID"]  # KeyError if unset — invoke as above
 os.environ["GITHUB_STEP_SUMMARY"] = os.environ.get(
     "GITHUB_STEP_SUMMARY", "/tmp/rehearsal-summary.md")
 real_smoke = release_smoke.smoke
@@ -271,8 +271,13 @@ with patch.object(release_deploy, "smoke", side_effect=fail_second):
         print("release failed as rehearsed:", exc)
 ```
 
-   Run with `PYTHONPATH=scripts python3 <wrapper>.py` from the
-worktree root with the `CLOUD_*`/`GITHUB_SHA` environment set.
+   Run from the worktree root with the `CLOUD_*`/`GITHUB_SHA`
+   environment set:
+
+```sh
+RELEASE_ID="r$(date +%s)-a1-$(git rev-parse --short=8 HEAD)" PYTHONPATH=scripts python3 <wrapper>.py
+```
+
 Expect the release to raise, traffic restored to the previous
 revision, and the stable URL re-verified; the wrapper prints the
 rehearsed failure. Record run output and final traffic.
