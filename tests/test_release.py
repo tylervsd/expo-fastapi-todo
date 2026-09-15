@@ -4,12 +4,14 @@ import json
 import os
 import re
 import sys
+import tempfile
 import unittest
 from io import BytesIO
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
+import release_deploy
 import release_smoke
 
 BASE = "https://example.run.app"
@@ -275,6 +277,316 @@ class SmokeContractTest(unittest.TestCase):
             self.assertEqual(release_smoke.main([BASE]), 1)
         self.assertEqual(release_smoke.main([]), 2)
         self.assertEqual(release_smoke.main(["not-a-url"]), 2)
+
+
+class _Cloud:
+    """Scripted fake for release_deploy.cloud; records every command."""
+
+    def __init__(self, replies):
+        self._replies = list(replies)
+        self.commands = []
+
+    def __call__(self, *args):
+        self.commands.append(tuple(args))
+        reply = self._replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+
+REL = "r123-a1-abcdef12"
+ENV = {
+    "CLOUD_PROJECT": "demo-proj",
+    "CLOUD_REGION": "us-central1",
+    "CLOUD_SERVICE": "api",
+    "CLOUD_MIGRATION_JOB": "migrate",
+    "CLOUD_IMAGE": "us-central1-docker.pkg.dev/demo-proj/repo/api",
+    "RELEASE_ID": REL,
+    "GITHUB_SHA": "0123456789abcdef0123456789abcdef01234567",
+}
+IMAGE = ENV["CLOUD_IMAGE"] + "@sha256:" + "ab" * 32
+PREV = "api-00001"
+CAND = "api-" + REL
+STABLE_URL = "https://api-example.run.app"
+CAND_URL = f"https://{REL}---api-example.run.app"
+
+
+def _svc(traffic, image=None):
+    svc = {"status": {"url": STABLE_URL, "traffic": traffic}}
+    if image is not None:
+        svc["spec"] = {"template": {"spec": {"containers": [{"image": image}]}}}
+    return svc
+
+
+def _prod(rev):
+    return {"revisionName": rev, "percent": 100}
+
+
+def _tagged(rev, tag, url):
+    return {"revisionName": rev, "percent": 0, "tag": tag, "url": url}
+
+
+def _exec_ok():
+    return {
+        "metadata": {"name": "migrate-xyz"},
+        "status": {"conditions": [{"type": "Completed", "status": "True"}]},
+        "spec": {"template": {"spec": {"containers": [{"image": IMAGE}]}}},
+    }
+
+
+class DeploySequenceTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.summary = os.path.join(self._tmp.name, "summary.md")
+        self._env = patch.dict(
+            os.environ, {**ENV, "GITHUB_STEP_SUMMARY": self.summary}
+        )
+        self._env.start()
+        self.addCleanup(self._env.stop)
+        self.addCleanup(self._tmp.cleanup)
+
+    def _deploy(self, fake, smoke_effect):
+        with (
+            patch.object(release_deploy, "cloud", fake),
+            patch.object(release_deploy, "smoke", side_effect=smoke_effect),
+        ):
+            release_deploy.deploy(IMAGE, PREV)
+
+    def _replies_to_candidate(self):
+        return [
+            _svc([_prod(PREV)]),
+            {},
+            _exec_ok(),
+            {},
+            _svc([_prod(PREV), _tagged(CAND, REL, CAND_URL)], image=IMAGE),
+        ]
+
+    def _assert_safe(self, commands):
+        for cmd in commands:
+            self.assertEqual(cmd[0], "run")
+            joined = " ".join(cmd)
+            for bad in (
+                "downgrade",
+                "terraform",
+                "set-env",
+                "allow-unauthenticated",
+            ):
+                self.assertNotIn(bad, joined)
+
+    def _assert_ordered(self, commands):
+        order = ["update", "execute", "deploy", "traffic"]
+        kinds = []
+        for cmd in commands:
+            if cmd[1:3] == ("jobs", "update"):
+                kinds.append("update")
+            elif cmd[1:3] == ("jobs", "execute"):
+                kinds.append("execute")
+            elif cmd[1] == "deploy":
+                kinds.append("deploy")
+            elif "update-traffic" in cmd and any(
+                a.startswith("--to-revisions=") for a in cmd
+            ):
+                kinds.append("traffic")
+        idx = {}
+        for i, kind in enumerate(kinds):
+            idx.setdefault(kind, i)
+        for want in order:
+            self.assertIn(want, idx)
+        self.assertLess(idx["update"], idx["execute"])
+        self.assertLess(idx["execute"], idx["deploy"])
+        self.assertLess(idx["deploy"], idx["traffic"])
+
+    def _traffic_moves(self, commands):
+        return [c for c in commands if any(
+            a.startswith("--to-revisions=") for a in c
+        )]
+
+    def test_stable_smoke_failure_restores_traffic(self):
+        service = ENV["CLOUD_SERVICE"]
+        replies = self._replies_to_candidate() + [
+            {},
+            _svc([_prod(CAND)], image=IMAGE),
+            {},
+            _svc([_prod(PREV)], image=IMAGE),
+            {},
+        ]
+        fake = _Cloud(replies)
+        with patch.object(release_deploy, "cloud", fake):  # noqa: SIM117 - brief mandates this exact form
+            with patch.object(
+                release_deploy,
+                "smoke",
+                side_effect=[None, RuntimeError("stable failed"), None],
+            ):
+                with self.assertRaises(RuntimeError):
+                    release_deploy.deploy(IMAGE, PREV)
+        self.assertIn(
+            (
+                "run",
+                "services",
+                "update-traffic",
+                service,
+                "--to-revisions=" + PREV + "=100",
+            ),
+            fake.commands,
+        )
+        self._assert_safe(fake.commands)
+
+    def test_split_traffic_stops_before_mutation(self):
+        fake = _Cloud([
+            _svc([
+                {"revisionName": PREV, "percent": 50},
+                {"revisionName": "api-00002", "percent": 50},
+            ])
+        ])
+        with (
+            patch.object(release_deploy, "cloud", fake),
+            patch.object(release_deploy, "smoke") as smoke,
+            self.assertRaises(RuntimeError),
+        ):
+            release_deploy.deploy(IMAGE, PREV)
+        smoke.assert_not_called()
+        self.assertEqual(len(fake.commands), 1)
+
+    def test_empty_traffic_stops_before_mutation(self):
+        fake = _Cloud([_svc([])])
+        with (
+            patch.object(release_deploy, "cloud", fake),
+            patch.object(release_deploy, "smoke") as smoke,
+            self.assertRaises(RuntimeError),
+        ):
+            release_deploy.deploy(IMAGE, PREV)
+        smoke.assert_not_called()
+        self.assertEqual(len(fake.commands), 1)
+
+    def test_tagged_zero_traffic_entries_are_not_a_split(self):
+        replies = [
+            _svc([_prod(PREV), _tagged("api-old", "rold", "https://old")]),
+            {},
+            _exec_ok(),
+            {},
+            _svc([_prod(PREV), _tagged(CAND, REL, CAND_URL)], image=IMAGE),
+            {},
+            _svc([_prod(CAND)], image=IMAGE),
+            {},
+        ]
+        fake = _Cloud(replies)
+        self._deploy(fake, [None, None])
+        self._assert_ordered(fake.commands)
+        self._assert_safe(fake.commands)
+
+    def test_migration_failure_stops_before_candidate(self):
+        replies = [_svc([_prod(PREV)]), {}, RuntimeError("migration boom"), {}]
+        fake = _Cloud(replies)
+        with (
+            patch.object(release_deploy, "cloud", fake),
+            patch.object(release_deploy, "smoke") as smoke,
+            self.assertRaisesRegex(RuntimeError, "migration"),
+        ):
+            release_deploy.deploy(IMAGE, PREV)
+        smoke.assert_not_called()
+        self.assertFalse(any("deploy" in c for c in fake.commands))
+        self.assertEqual(self._traffic_moves(fake.commands), [])
+
+    def test_missing_candidate_url_stops_before_promotion(self):
+        no_url = _svc(
+            [_prod(PREV), {"revisionName": CAND, "percent": 0, "tag": REL}],
+            image=IMAGE,
+        )
+        replies = [_svc([_prod(PREV)]), {}, _exec_ok(), {}, no_url, {}]
+        fake = _Cloud(replies)
+        with (
+            patch.object(release_deploy, "cloud", fake),
+            patch.object(release_deploy, "smoke") as smoke,
+            self.assertRaisesRegex(RuntimeError, "tag"),
+        ):
+            release_deploy.deploy(IMAGE, PREV)
+        smoke.assert_not_called()
+        self.assertEqual(self._traffic_moves(fake.commands), [])
+
+    def test_candidate_smoke_failure_leaves_traffic(self):
+        replies = self._replies_to_candidate() + [{}]
+        fake = _Cloud(replies)
+        with (
+            patch.object(release_deploy, "cloud", fake),
+            patch.object(release_deploy, "smoke", side_effect=RuntimeError("bad")),
+            self.assertRaisesRegex(RuntimeError, "candidate"),
+        ):
+            release_deploy.deploy(IMAGE, PREV)
+        self.assertEqual(self._traffic_moves(fake.commands), [])
+        self._assert_safe(fake.commands)
+
+    def test_promotion_failure_attempts_restore(self):
+        replies = self._replies_to_candidate() + [
+            RuntimeError("promote boom"),
+            {},
+            _svc([_prod(PREV)], image=IMAGE),
+            {},
+        ]
+        fake = _Cloud(replies)
+        with (
+            patch.object(release_deploy, "cloud", fake),
+            patch.object(release_deploy, "smoke", side_effect=[None, None]),
+            self.assertRaisesRegex(RuntimeError, "promote"),
+        ):
+            release_deploy.deploy(IMAGE, PREV)
+        moves = self._traffic_moves(fake.commands)
+        self.assertEqual(len(moves), 2)
+        self.assertTrue(moves[1][-1].startswith("--to-revisions=" + PREV))
+
+    def test_restore_failure_reports_both_errors(self):
+        replies = self._replies_to_candidate() + [
+            {},
+            _svc([_prod(CAND)], image=IMAGE),
+            RuntimeError("restore boom"),
+            _svc([_prod(CAND)], image=IMAGE),
+            {},
+        ]
+        fake = _Cloud(replies)
+        with (
+            patch.object(release_deploy, "cloud", fake),
+            patch.object(
+                release_deploy,
+                "smoke",
+                side_effect=[None, RuntimeError("stable failed")],
+            ),
+            self.assertRaisesRegex(RuntimeError, "stable"),
+        ):
+            try:
+                release_deploy.deploy(IMAGE, PREV)
+            except RuntimeError as exc:
+                self.assertIn("restore", str(exc))
+                raise
+
+    def test_cleanup_failure_does_not_mask_original(self):
+        replies = self._replies_to_candidate() + [RuntimeError("tag gone")]
+        fake = _Cloud(replies)
+        with (
+            patch.object(release_deploy, "cloud", fake),
+            patch.object(release_deploy, "smoke", side_effect=RuntimeError("bad")),
+            self.assertRaisesRegex(RuntimeError, "candidate"),
+        ):
+            release_deploy.deploy(IMAGE, PREV)
+        with open(self.summary) as handle:
+            self.assertIn("cleanup", handle.read())
+
+    def test_success_writes_summary_and_ordering(self):
+        replies = self._replies_to_candidate() + [
+            {},
+            _svc([_prod(CAND)], image=IMAGE),
+            {},
+        ]
+        fake = _Cloud(replies)
+        self._deploy(fake, [None, None])
+        self._assert_ordered(fake.commands)
+        self._assert_safe(fake.commands)
+        moves = self._traffic_moves(fake.commands)
+        self.assertEqual(len(moves), 1)
+        self.assertTrue(moves[0][-1].startswith("--to-revisions=" + CAND))
+        with open(self.summary) as handle:
+            body = handle.read()
+        for want in (ENV["GITHUB_SHA"][:8], "migrate-xyz", PREV, CAND, "passed"):
+            self.assertIn(want, body)
+        self.assertIn("sha256:", body)
 
 
 if __name__ == "__main__":
