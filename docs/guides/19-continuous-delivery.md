@@ -197,20 +197,79 @@ local tests alone do not establish it.
 | Serialized mutations, safe reruns, superseded pending run | pending |
 | Final local Terraform plan: no drift from release-owned fields | pending |
 
-Rehearsal instructions (delivery paused throughout):
+Rehearsal instructions (delivery paused throughout; `$CLOUD_*`
+from the [Bootstrap](#bootstrap) table, same verified digest from
+the release summary, a new rehearsal release ID such as
+`rREHEARSE-a1-<short-sha>`):
 
-- Candidate failure: deploy the same verified digest with native
-  no-traffic flags under a temporary tag, run smoke against the
-  candidate URL with a nonexistent base path, confirm current traffic
-  is unchanged, then remove the temporary tag and record the result.
-- Post-promotion restore: run the actual rollout function locally
-  with `unittest.mock.patch` failing only its second smoke call;
-  real candidate and restored-revision smoke calls delegate to
-  `release_smoke.smoke`. Use a new rehearsal release ID. The learner
-  must approve this deliberate live promotion/restore cycle — there
-  is no production failure-injection flag.
-- A separate normal successful release and a separate manual
-  rollback must also pass before sign-off.
+1. Candidate failure. Deploy the digest with zero traffic under a
+   temporary tag, prove the bad path fails, prove traffic never
+   moved, then clean the tag:
+
+```sh
+REHEARSAL_TAG="rehearse-candidate-<short-sha>"
+gcloud run deploy "$CLOUD_SERVICE" \
+  --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
+  --image="<verified-digest>" \
+  --revision-suffix="$REHEARSAL_TAG" --tag="$REHEARSAL_TAG" --no-traffic
+gcloud run services describe "$CLOUD_SERVICE" \
+  --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
+  --format=json > /tmp/rehearsal-service.json
+CANDIDATE_URL=$(python3 -c "import json;svc=json.load(open('/tmp/rehearsal-service.json'));print([t['url'] for t in svc['status']['traffic'] if t.get('tag')=='$REHEARSAL_TAG'][0])")
+python3 scripts/release_smoke.py "$CANDIDATE_URL/nonexistent-rehearsal-path" \
+  && echo UNEXPECTED-PASS || echo "candidate smoke failed as rehearsed"
+gcloud run services describe "$CLOUD_SERVICE" \
+  --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
+  --format='value(status.traffic)'
+# Confirm the previous revision still holds 100% before cleanup.
+gcloud run services update-traffic "$CLOUD_SERVICE" \
+  --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
+  --remove-tags="$REHEARSAL_TAG"
+```
+
+   The smoke script appends `/health` and `/auth/login` to the
+given base URL, so the nonexistent path must fail; traffic output
+must still show the previous revision at 100%. Record the result.
+
+1. Post-promotion restore. Run the real rollout function locally
+   with only its second smoke call forced to fail; the candidate
+   and restored-revision calls delegate to the real
+   `release_smoke.smoke`. The learner must approve this deliberate
+   live promotion/restore cycle — there is no production
+   failure-injection flag:
+
+```python
+import os
+from unittest.mock import patch
+import release_deploy
+import release_smoke
+
+os.environ["RELEASE_ID"] = "rREHEARSE-a1-<short-sha>"  # new rehearsal ID
+os.environ["GITHUB_STEP_SUMMARY"] = "/tmp/rehearsal-summary.md"
+real_smoke = release_smoke.smoke
+calls = []
+
+def fail_second(url):
+    calls.append(url)
+    if len(calls) == 2:
+        raise RuntimeError("rehearsed stable-smoke failure")
+    return real_smoke(url)
+
+with patch.object(release_deploy, "smoke", side_effect=fail_second):
+    try:
+        release_deploy.deploy("<verified-digest>", "<previous-revision>")
+    except RuntimeError as exc:
+        print("release failed as rehearsed:", exc)
+```
+
+   Run with `PYTHONPATH=scripts python3 <wrapper>.py` from the
+worktree root with the `CLOUD_*`/`GITHUB_SHA` environment set.
+Expect the release to raise, traffic restored to the previous
+revision, and the stable URL re-verified; the wrapper prints the
+rehearsed failure. Record run output and final traffic.
+
+1. A separate normal successful release and a separate manual
+   rollback must also pass before sign-off.
 
 ## Recovery
 
