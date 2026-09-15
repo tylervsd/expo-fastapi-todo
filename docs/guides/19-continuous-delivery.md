@@ -10,8 +10,8 @@ Plan: [Phase 19 implementation plan](../superpowers/plans/2026-09-14-continuous-
 
 ## Prerequisites
 
-- Close the Phase 18 live label-drift follow-up before activating delivery.
-  It does not block reading this guide.
+- Phase 18 label-drift verification was confirmed closed by the learner on
+  2026-09-15. This activation prerequisite is satisfied.
 - Local operator credentials via Application Default Credentials
   (`gcloud auth application-default login`); no downloaded service-account
   keys anywhere.

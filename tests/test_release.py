@@ -3,6 +3,8 @@
 import json
 import os
 import re
+import shlex
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -118,6 +120,27 @@ def _set_login(actions, action):
 
 def _headers_of(req):
     return {k.lower(): v for k, v in req.header_items()}
+
+
+class ReleaseWorkflowTest(unittest.TestCase):
+    def test_capture_serving_revision_command(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, ".github/workflows/release.yml")) as workflow:
+            line = next(line for line in workflow if "PREVIOUS_REVISION=$(python3 -c " in line)
+        argument = line.split("$(python3 -c ", 1)[1].strip()[:-1]
+        code = shlex.split(argument)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            with open(os.path.join(directory, "service.json"), "w") as service:
+                json.dump({"status": {"traffic": [
+                    {"revisionName": "api-previous", "percent": 100}
+                ]}}, service)
+            result = subprocess.run(
+                [sys.executable, "-c", code], cwd=root,
+                env={**os.environ, "RUNNER_TEMP": directory},
+                capture_output=True, text=True, check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "api-previous")
 
 
 class SmokeContractTest(unittest.TestCase):

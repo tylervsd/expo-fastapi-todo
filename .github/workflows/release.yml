@@ -85,7 +85,7 @@ jobs:
           CLOUDSDK_AUTH_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
         run: |
           gcloud run services describe "$CLOUD_SERVICE" --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" --quiet --format=json > "$RUNNER_TEMP/service.json"
-          PREVIOUS_REVISION=$(python3 -c 'import json, os, sys; sys.path.insert(0, "scripts"); from release_deploy import serving_revision; print(serving_revision(json.load(open(os.path.join(os.environ["RUNNER_TEMP"], "service.json"))))))')
+          PREVIOUS_REVISION=$(python3 -c 'import json, os, sys; sys.path.insert(0, "scripts"); from release_deploy import serving_revision; print(serving_revision(json.load(open(os.path.join(os.environ["RUNNER_TEMP"], "service.json")))))')
           echo "previous_revision=$PREVIOUS_REVISION" >> "$GITHUB_OUTPUT"
 
       - name: Derive release identity
