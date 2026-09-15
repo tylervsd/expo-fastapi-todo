@@ -23,21 +23,20 @@ class _Resp:
         self.status = status
         self.headers = dict(headers)
         self._body = body
+        self.closed = False
 
     def read(self):
         return self._body
 
+    def close(self):
+        self.closed = True
 
-def _preflight_ok(origin=ORIGIN):
-    return _Resp(
-        200,
-        {
-            "Access-Control-Allow-Origin": origin,
-            "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE",
-            "Access-Control-Allow-Headers": "Content-Type, Authorization",
-        },
-        b"",
-    )
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
 
 
 def _login_401():
@@ -54,22 +53,27 @@ class _FakeOpener:
     def __init__(self, actions):
         self._actions = list(actions)
         self.requests = []
+        self.timeouts = []
+        self.responses = []
 
     def open(self, req, timeout=None):
         self.requests.append(req)
+        self.timeouts.append(timeout)
         action = self._actions.pop(0)
         if action[0] == "raise":
             raise action[1]
         kind, status, headers, body = action
         assert kind == "respond"
-        return _Resp(status, headers, body)
+        resp = _Resp(status, headers, body)
+        self.responses.append(resp)
+        return resp
 
 
 def _run_check(actions, base_url=BASE):
     opener = _FakeOpener(actions)
     with patch.object(release_smoke, "_OPENER", opener):
         release_smoke.check(base_url)
-    return opener.requests
+    return opener
 
 
 def _expect_check_failure(case, actions, pattern, base_url=BASE):
@@ -133,7 +137,8 @@ class SmokeContractTest(unittest.TestCase):
         self.assertEqual(check.call_count, 2)
 
     def test_success_checks_exact_contract(self):
-        requests = _run_check(_passing_actions())
+        opener = _run_check(_passing_actions())
+        requests = opener.requests
         self.assertEqual(len(requests), 3)
         methods = [r.get_method() for r in requests]
         self.assertEqual(methods, ["GET", "OPTIONS", "POST"])
@@ -141,9 +146,12 @@ class SmokeContractTest(unittest.TestCase):
         self.assertTrue(urls[0].endswith("/health"))
         self.assertTrue(urls[1].endswith("/auth/login"))
         self.assertTrue(urls[2].endswith("/auth/login"))
+        self.assertEqual(opener.timeouts, [release_smoke.TIMEOUT] * 3)
+        for resp in opener.responses:
+            self.assertTrue(resp.closed)
 
     def test_outgoing_requests_make_no_writes(self):
-        requests = _run_check(_passing_actions())
+        requests = _run_check(_passing_actions()).requests
         for req in requests:
             self.assertNotIn("signup", req.full_url)
             self.assertNotIn("authorization", _headers_of(req))

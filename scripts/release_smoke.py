@@ -51,8 +51,8 @@ def _header(headers, name):
 
 def _send(req, endpoint):
     try:
-        resp = _OPENER.open(req, timeout=TIMEOUT)
-        return resp.status, resp.headers, resp.read()
+        with _OPENER.open(req, timeout=TIMEOUT) as resp:
+            return resp.status, resp.headers, resp.read()
     except urllib.error.HTTPError as exc:
         try:
             return exc.code, exc.headers or {}, exc.read()
