@@ -11,6 +11,22 @@ override_data {
 # Pin computed delivery identities so membership and output assertions stay
 # plan-known under mocks. Applies only when delivery resources exist.
 override_resource {
+  target          = google_service_account.dedicated["runtime"]
+  override_during = plan
+  values = {
+    name = "projects/example-phase18-project/serviceAccounts/example-runtime@example-phase18-project.iam.gserviceaccount.com"
+  }
+}
+
+override_resource {
+  target          = google_service_account.dedicated["migration"]
+  override_during = plan
+  values = {
+    name = "projects/example-phase18-project/serviceAccounts/example-migration@example-phase18-project.iam.gserviceaccount.com"
+  }
+}
+
+override_resource {
   target          = google_service_account.deploy
   override_during = plan
   values = {
@@ -349,6 +365,18 @@ run "delivery_identity" {
   assert {
     condition     = sort(keys(google_service_account_iam_member.deploy_runtime_user)) == tolist(["migration", "runtime"])
     error_message = "The Service Account User bindings must target the distinct runtime and migration identities."
+  }
+  assert {
+    condition     = google_service_account_iam_member.deploy_runtime_user["runtime"].service_account_id == google_service_account.dedicated["runtime"].name
+    error_message = "The runtime binding must target the runtime service account."
+  }
+  assert {
+    condition     = google_service_account_iam_member.deploy_runtime_user["migration"].service_account_id == google_service_account.dedicated["migration"].name
+    error_message = "The migration binding must target the migration service account."
+  }
+  assert {
+    condition     = google_service_account_iam_member.deploy_runtime_user["runtime"].service_account_id != google_service_account_iam_member.deploy_runtime_user["migration"].service_account_id
+    error_message = "The two identity bindings must target different service accounts."
   }
   assert {
     condition = alltrue([
