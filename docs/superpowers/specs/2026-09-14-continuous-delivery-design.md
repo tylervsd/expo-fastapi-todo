@@ -141,10 +141,11 @@ is paused and no release is active.
 
 ### Existing checks become callable gates
 
-The quality, security, and web end-to-end workflows keep their pull-request
-behavior and become callable with `workflow_call`. Their direct `push: main`
-triggers are removed so a release commit is not validated twice. Existing
-scheduled and manual triggers remain where they already provide value.
+The quality, security, and web end-to-end workflows are callable gates using
+`workflow_call`. The release workflow owns pull-request, main push, weekly
+schedule, and manual validation so CodeQL uses the same analysis identity on
+pull requests and main. Gates have no duplicate direct PR or push triggers;
+security scans also use this caller for scheduled and manual runs.
 
 The iOS end-to-end workflow remains manual and outside the sandbox deployment
 gate because it depends on a local simulator and is not currently a reliable
@@ -152,8 +153,10 @@ hosted CI signal.
 
 ### Release workflow
 
-A new `release.yml` runs on pushes to `main` and `workflow_dispatch` from `main`
-for activation rehearsal or retry. Manual rollback uses the learner runbook.
+The `release.yml` workflow validates pull requests and weekly scheduled runs
+without deploying. Only pushes to `main` and `workflow_dispatch` from `main`
+can deploy, including activation rehearsal or retry. Manual rollback uses the
+learner runbook.
 
 ```text
 quality + security + web E2E

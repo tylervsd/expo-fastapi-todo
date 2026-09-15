@@ -72,10 +72,7 @@
   workflow=.github/workflows/security.yml
   [ -f "$workflow" ] || return 1
 
-  grep -F 'pull_request:' "$workflow" || return 1
   grep -F 'workflow_call:' "$workflow" || return 1
-  grep -F 'schedule:' "$workflow" || return 1
-  grep -F 'workflow_dispatch:' "$workflow" || return 1
   ! grep -F 'pull_request_target:' "$workflow" || return 1
 
   grep -F 'gitleaks/gitleaks-action@' "$workflow" || return 1
@@ -267,18 +264,17 @@
   [ "$status" -eq 0 ]
 }
 
-@test "quality security and web e2e gates are reusable without main push triggers" {
+@test "release owns PR and scheduled validation for a stable CodeQL identity" {
   for workflow in .github/workflows/quality.yml .github/workflows/security.yml .github/workflows/e2e.yml; do
-    [ -f "$workflow" ] || return 1
     grep -F 'workflow_call:' "$workflow" || return 1
-    ! grep -F 'push:' "$workflow" || return 1
+    ! grep -E '^[[:space:]]+(push|pull_request|schedule):' "$workflow" || return 1
   done
-  grep -F 'pull_request:' .github/workflows/quality.yml || return 1
-  grep -F 'pull_request:' .github/workflows/security.yml || return 1
-  grep -F 'schedule:' .github/workflows/security.yml || return 1
-  grep -F 'workflow_dispatch:' .github/workflows/security.yml || return 1
-  grep -F 'pull_request:' .github/workflows/e2e.yml || return 1
+  ! grep -F 'workflow_dispatch:' .github/workflows/security.yml || return 1
   grep -F 'workflow_dispatch:' .github/workflows/e2e.yml || return 1
+  for trigger in pull_request schedule workflow_dispatch; do
+    grep -F "$trigger:" .github/workflows/release.yml || return 1
+  done
+  [ "$(grep -Fc "(github.event_name == 'push' || github.event_name == 'workflow_dispatch')" .github/workflows/release.yml)" -eq 2 ]
 }
 
 @test "e2e keeps native ios out of reusable release calls" {
@@ -292,7 +288,6 @@
   workflow=.github/workflows/release.yml
   [ -f "$workflow" ] || return 1
   grep -F 'branches: [main]' "$workflow" || return 1
-  grep -F 'workflow_dispatch:' "$workflow" || return 1
   grep -F 'ref: ${{ github.sha }}' "$workflow" || return 1
   grep -F "vars.DELIVERY_ENABLED == 'true'" "$workflow" || return 1
   grep -F 'environment: sandbox' "$workflow" || return 1

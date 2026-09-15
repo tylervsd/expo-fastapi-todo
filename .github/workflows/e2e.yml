@@ -8,7 +8,6 @@ name: e2e
 # A reusable call (github.workflow != 'e2e') never runs iOS: release passes
 # run_ios: false and the ios job additionally requires a direct dispatch.
 on:
-  pull_request:
   workflow_dispatch:
   workflow_call:
     inputs:
