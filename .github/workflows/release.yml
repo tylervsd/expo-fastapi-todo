@@ -5,6 +5,9 @@ name: release
 # once per validated main commit after sandbox approval. Delivery stays off
 # until the learner sets DELIVERY_ENABLED=true and protects the environment.
 on:
+  pull_request:
+  schedule:
+    - cron: "30 13 * * 1"
   push:
     branches: [main]
   workflow_dispatch:
@@ -29,7 +32,7 @@ jobs:
       run_ios: false
   deploy:
     needs: [quality, security, web]
-    if: github.ref == 'refs/heads/main' && vars.DELIVERY_ENABLED == 'true'
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && vars.DELIVERY_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: sandbox
@@ -175,7 +178,7 @@ jobs:
 
   delivery-status:
     needs: [quality, security, web]
-    if: github.ref == 'refs/heads/main' && vars.DELIVERY_ENABLED != 'true'
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && vars.DELIVERY_ENABLED != 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read

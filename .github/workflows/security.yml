@@ -1,10 +1,6 @@
 name: security
 
 on:
-  pull_request:
-  schedule:
-    - cron: "30 13 * * 1"
-  workflow_dispatch:
   workflow_call:
 
 permissions:
@@ -72,3 +68,6 @@ jobs:
         with:
           languages: ${{ matrix.language }}
       - uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
+        with:
+          # Keep the existing main baseline; all scans use the release caller.
+          category: .github/workflows/release.yml:codeql/language:${{ matrix.language }}
