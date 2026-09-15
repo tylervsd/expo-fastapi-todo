@@ -67,6 +67,7 @@ variable "database" {
     maintenance_version                  = optional(string)
     encryption_key_name                  = optional(string)
     enforce_new_sql_network_architecture = optional(bool)
+    enable_dataplex_integration          = optional(bool)
     edition                              = string
     tier                                 = string
     availability_type                    = string
@@ -196,6 +197,8 @@ variable "api" {
     name                 = string
     identity             = string
     image                = string
+    client               = optional(string)
+    client_version       = optional(string)
     ingress              = string
     invoker_iam_disabled = bool
     deletion_protection  = bool
@@ -208,7 +211,7 @@ variable "api" {
     sql_connection_name = string
     labels              = optional(map(string), {})
     service_scaling = optional(object({
-      scaling_mode          = string
+      scaling_mode          = optional(string)
       min_instance_count    = optional(number)
       max_instance_count    = optional(number)
       manual_instance_count = optional(number)
@@ -227,6 +230,7 @@ variable "api" {
       cpu_idle                         = bool
       startup_cpu_boost                = bool
       execution_environment            = optional(string)
+      revision                         = optional(string)
       liveness_probe = optional(object({
         failure_threshold     = number
         initial_delay_seconds = number
@@ -328,6 +332,8 @@ variable "migration_job" {
     name                  = string
     identity              = string
     image                 = string
+    client                = optional(string)
+    client_version        = optional(string)
     command               = list(string)
     args                  = list(string)
     max_retries           = number

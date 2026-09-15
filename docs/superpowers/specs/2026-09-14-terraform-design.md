@@ -4,8 +4,11 @@
 
 Planning prepared on 2026-09-14 from `main` at `d845c58`, after the learner
 signed off Phase 17. Terraform code, credential-free checks, and the manual
-guide are repository-ready. Cloud acceptance is not implemented: inventory,
-bootstrap, imports, applies, drills, and learner sign-off remain manual work.
+guide are implemented. Core cloud adoption is learner-completed: 25 resources
+imported with a follow-up no-change plan and exit code 0. The learner agreed
+to defer recovery/destruction steps 7–8 (A10/A11 and drill portions of A3);
+these are not passed checks. Final label-drift verification remains unconfirmed.
+See the [guide progress record](../../guides/18-terraform.md#learner-progress-and-agreed-deferrals).
 Work lives on `codex/phase-18-terraform` in `.worktrees/phase-18-terraform`.
 
 Adopt the working Google sandbox into one Terraform root, preserve the hosted

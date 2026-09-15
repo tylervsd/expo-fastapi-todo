@@ -61,7 +61,11 @@ parallelize edits within the same Terraform root. No agent executes cloud apply.
 - [x] Task 4: isolated drill root and Terraform CI/configuration scan.
 - [x] Task 5: manual adoption guide and repository links.
 - [x] Final whole-branch review and scoped fix review passed.
-- [ ] Learner A1–A12 cloud acceptance remains pending.
+- [x] Learner imported 25 resources and reported a no-change plan, exit code 0.
+- [x] Learner completed the dependency graph commands.
+- [ ] Final label-drift verification remains unconfirmed.
+- **Deferred by learner agreement:** recovery/destruction steps 7–8; A10/A11
+  and drill portions of A3 are not marked passed.
 
 Local verification passed: backend-disabled initialization and validation for
 both roots; seven sandbox and two drill mocked tests; Terraform formatting;

@@ -1,6 +1,6 @@
 # Phase 18 Terraform
 
-Repository configuration is ready for the pending manual [adoption walkthrough](../../docs/guides/18-terraform.md). Do not infer cloud acceptance from local checks; the learner must inventory, import, verify, drill, and sign off separately.
+Core adoption is learner-completed: 25 resources imported and a no-change plan reported. Recovery/destruction drills are deferred by agreement; final label-drift verification remains unconfirmed. See the [walkthrough progress record](../../docs/guides/18-terraform.md#learner-progress-and-agreed-deferrals). Local checks do not establish live cloud acceptance.
 
 This root adopts the Google sandbox by import. It owns explicitly declared
 Google resources after handoff; it never manages the project lifecycle,

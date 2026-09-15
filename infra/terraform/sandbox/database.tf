@@ -23,6 +23,7 @@ resource "google_sql_database_instance" "primary" {
     activation_policy           = var.database.activation_policy
     connector_enforcement       = var.database.connector_enforcement
     deletion_protection_enabled = var.database.deletion_protection_enabled
+    enable_dataplex_integration = var.database.enable_dataplex_integration
     user_labels                 = var.database.user_labels
 
     backup_configuration {

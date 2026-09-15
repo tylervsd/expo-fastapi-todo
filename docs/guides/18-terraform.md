@@ -1,12 +1,35 @@
 # Phase 18: Terraform adoption walkthrough
 
-Phase 18 is repository-ready but **pending learner sign-off**. It adopts the
-existing Google sandbox manually. CI never reads or changes cloud state.
+Phase 18 **core adoption is complete**, with recovery/destruction drills
+**deferred by learner agreement**. It adopts the existing Google sandbox manually. CI never reads or changes cloud state.
 Cloudflare Pages, the project and billing link, state bucket, credentials,
 secret payloads/versions, SQL passwords, and Alembic execution are external.
 
 Use two plans: an import-only adoption plan, then optional additive
 budget/monitoring/protection work. Never combine them.
+
+## Learner progress and agreed deferrals
+
+Recorded from this learning session on 2026-09-14:
+
+- **Completed:** inventory/input mapping, backend initialization and validation,
+  reviewed import-only plan for 25 resources, learner-run import apply, and
+  learner-reported follow-up “No changes” with detailed exit code 0.
+- **Completed:** dependency graph generation and inspection commands.
+- **Not yet confirmed:** step 6 label drift/reconciliation and its final
+  no-change check. Instructions were provided; a passing result was not reported.
+- **Deferred by learner choice:** step 7 state recovery and step 8 guarded
+  destruction. A10/A11 and the drill portions of A3 are deferred, not passed.
+  Keep backend versioning enabled and retain these exercises for later.
+- **Optional additions deferred:** monitoring remains absent. The existing
+  account-wide budget stays outside the project-filtered Terraform resource.
+- **Not repeated during adoption:** hosted application verification. The
+  reviewed adoption plan changed no remote configuration; Phase 17's prior
+  sign-off remains the recorded application evidence.
+
+This records completion of core adoption, not an assertion that every original
+A1–A12 acceptance check passed. Steps 7–8 are no longer required for this
+learner's current phase scope; their instructions remain below for future use.
 
 ## 1. Maintenance window and inputs
 
@@ -147,7 +170,7 @@ private, versioned backend bucket with Google-managed encryption.
 
 ```sh
 gcloud storage buckets create "gs://$STATE_BUCKET" --project="$PROJECT_ID" --location="$REGION" --uniform-bucket-level-access || { echo 'STOP: state bucket creation failed; it may already exist or access may be denied'; exit 1; }
-gcloud storage buckets update "gs://$STATE_BUCKET" --public-access-prevention=enforced --versioning || { echo 'STOP: state bucket update failed'; exit 1; }
+gcloud storage buckets update "gs://$STATE_BUCKET" --public-access-prevention --versioning || { echo 'STOP: state bucket update failed'; exit 1; }
 gcloud storage buckets add-iam-policy-binding "gs://$STATE_BUCKET" --member="user:$OPERATOR_EMAIL" --role=roles/storage.objectAdmin || { echo 'STOP: state bucket IAM grant failed'; exit 1; }
 gcloud storage buckets describe "gs://$STATE_BUCKET" --format='yaml(name,location,iamConfiguration,versioning)' || { echo 'STOP: cannot verify state bucket'; exit 1; }
 gcloud storage buckets get-iam-policy "gs://$STATE_BUCKET" --format=json || { echo 'STOP: cannot verify state bucket IAM'; exit 1; }
@@ -365,6 +388,8 @@ fields; Phase 19 must define release-pipeline ownership before automation.
 
 ## 7. Separate state recovery drill
 
+**Deferred for this learner; skip this section for now.**
+
 Use only the drill root and an empty globally unique bucket containing
 `phase18-drill`. Never manipulate sandbox state. Verify the initialized
 backend object path rather than guessing it.
@@ -419,6 +444,8 @@ force-unlocked.
 
 ## 8. Guarded destruction drill
 
+**Deferred with step 7; skip this section for now.**
+
 First demonstrate refusal. Then temporarily remove only the literal
 `prevent_destroy = true` in `infra/terraform/drill/main.tf`, review one
 single-resource destroy, destroy only its empty bucket, and restore the guard.
@@ -466,8 +493,8 @@ key. If a provider normalizes a field, compare it with inventory and pinned
 documentation before changing configuration. If budget/channel access is
 missing, leave the nullable object absent and record the prerequisite. Local
 checks do not prove cloud access, state, no-change plan, recovery or hosted
-behavior. Phase 18 remains pending until learner-reported A1–A12; Phase 19 is
-future work.
+behavior. Use the progress record above to distinguish completed adoption,
+unconfirmed checks, and agreed deferrals. Phase 19 remains future work.
 
 ## References
 

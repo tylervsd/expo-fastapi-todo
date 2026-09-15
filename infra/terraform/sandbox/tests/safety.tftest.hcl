@@ -26,6 +26,7 @@ variables {
     region                      = "us-west1"
     deletion_protection         = true
     deletion_protection_enabled = true
+    enable_dataplex_integration = true
     edition                     = "ENTERPRISE"
     tier                        = "db-custom-1-3840"
     availability_type           = "ZONAL"
@@ -72,6 +73,8 @@ variables {
     name                 = "example-phase18-api"
     identity             = "example-runtime@example-phase18-project.iam.gserviceaccount.com"
     image                = "us-west1-docker.pkg.dev/example-phase18-project/example-api/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    client               = "gcloud"
+    client_version       = "584.0.0"
     ingress              = "INGRESS_TRAFFIC_ALL"
     invoker_iam_disabled = false
     deletion_protection  = true
@@ -82,6 +85,7 @@ variables {
     }
     cors_origins        = ["https://example-phase18.pages.dev"]
     sql_connection_name = "example-phase18-project:us-west1:example-phase18-db"
+    service_scaling     = { min_instance_count = 0, max_instance_count = 2 }
     runtime = {
       timeout                          = "300s"
       max_instance_request_concurrency = 80
@@ -94,6 +98,7 @@ variables {
       memory                           = "512Mi"
       cpu_idle                         = true
       startup_cpu_boost                = true
+      revision                         = "fullstack-api-cleanup-20260914135601"
     }
     traffic = { stable = { type = "TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST", percent = 100 } }
   }
@@ -102,6 +107,8 @@ variables {
     name                  = "example-phase18-migrate"
     identity              = "example-migration@example-phase18-project.iam.gserviceaccount.com"
     image                 = "us-west1-docker.pkg.dev/example-phase18-project/example-api/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    client                = "gcloud"
+    client_version        = "584.0.0"
     command               = ["sh", "-c"]
     args                  = ["alembic upgrade head"]
     max_retries           = 1
@@ -128,6 +135,18 @@ run "protected_runtime" {
     error_message = "The adopted API must have deletion protection."
   }
   assert {
+    condition     = google_cloud_run_v2_service.api.client == "gcloud" && google_cloud_run_v2_service.api.client_version == "584.0.0" && google_cloud_run_v2_job.migrate.client == "gcloud" && google_cloud_run_v2_job.migrate.client_version == "584.0.0"
+    error_message = "Imported Cloud Run client metadata must be retained."
+  }
+  assert {
+    condition     = google_cloud_run_v2_service.api.template[0].revision == "fullstack-api-cleanup-20260914135601"
+    error_message = "Imported Cloud Run service revision metadata must be retained."
+  }
+  assert {
+    condition     = try(google_cloud_run_v2_service.api.scaling[0].scaling_mode, null) == null
+    error_message = "An absent imported scaling mode must remain absent."
+  }
+  assert {
     condition     = google_cloud_run_v2_job.migrate.template[0].template[0].service_account == "example-migration@example-phase18-project.iam.gserviceaccount.com" && google_cloud_run_v2_job.migrate.template[0].template[0].containers[0].resources[0].limits.cpu == "1" && google_cloud_run_v2_job.migrate.template[0].template[0].containers[0].resources[0].limits.memory == "512Mi"
     error_message = "Migration jobs must preserve their identity and resource limits."
   }
@@ -146,6 +165,10 @@ run "protected_runtime" {
   assert {
     condition     = google_sql_database_instance.primary.settings[0].ip_configuration[0].ssl_mode == "ALLOW_UNENCRYPTED_AND_ENCRYPTED"
     error_message = "The adoption fixture must explicitly preserve its reviewed insecure SQL TLS posture."
+  }
+  assert {
+    condition     = google_sql_database_instance.primary.settings[0].enable_dataplex_integration
+    error_message = "The adoption fixture must preserve Cloud SQL Dataplex integration."
   }
   assert {
     condition     = one([for env in google_cloud_run_v2_service.api.template[0].containers[0].env : env.value if env.name == "CORS_ALLOWED_ORIGINS"]) == "[\"https://example-phase18.pages.dev\"]"

@@ -2,6 +2,8 @@ resource "google_cloud_run_v2_service" "api" {
   project              = var.project_id
   name                 = var.api.name
   location             = var.region
+  client               = var.api.client
+  client_version       = var.api.client_version
   ingress              = var.api.ingress
   invoker_iam_disabled = var.api.invoker_iam_disabled
   deletion_protection  = var.api.deletion_protection
@@ -22,6 +24,7 @@ resource "google_cloud_run_v2_service" "api" {
     timeout                          = var.api.runtime.timeout
     max_instance_request_concurrency = var.api.runtime.max_instance_request_concurrency
     execution_environment            = var.api.runtime.execution_environment
+    revision                         = var.api.runtime.revision
 
     scaling {
       min_instance_count = var.api.runtime.min_instance_count
@@ -157,6 +160,8 @@ resource "google_cloud_run_v2_job" "migrate" {
   project             = var.project_id
   name                = var.migration_job.name
   location            = var.region
+  client              = var.migration_job.client
+  client_version      = var.migration_job.client_version
   deletion_protection = var.migration_job.deletion_protection
   labels              = var.migration_job.labels
 

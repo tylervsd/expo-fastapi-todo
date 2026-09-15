@@ -188,7 +188,7 @@ Phases 7-9 build one guided-todo creation feature to teach backend-owned state t
 
 ## 18. Terraform and reproducible Google infrastructure
 
-**Repository readiness:** Terraform roots, credential-free checks, and the [manual adoption walkthrough](guides/18-terraform.md) are ready. Cloud inventory, bootstrap, imports, applies, drills, and learner sign-off remain pending; Phase 19 remains future work.
+**Status:** Core Terraform adoption is complete: the learner imported 25 resources and reported a no-change plan with exit code 0. Steps 7–8 (state recovery and disposable-resource destruction) are deferred by learner agreement. Final label-drift verification is not yet recorded. See the [walkthrough status](guides/18-terraform.md#learner-progress-and-agreed-deferrals). Phase 19 remains future work.
 
 - **Learning goal:** Convert the manually understood Google environment into reviewable, reproducible infrastructure as code.
 - **Visible outcome:** Terraform adopts or recreates the sandbox's enabled APIs, registry, identities, IAM, secret containers, Cloud Run service and job, Cloud SQL resources, budgets, and basic monitoring, then produces an empty plan against the intended configuration.
