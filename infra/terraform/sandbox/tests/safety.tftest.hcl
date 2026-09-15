@@ -54,7 +54,7 @@ variables {
     runtime   = { account_id = "example-runtime", display_name = "Example runtime" }
     migration = { account_id = "example-migration", display_name = "Example migration" }
   }
-  enabled_services = ["artifactregistry.googleapis.com", "billingbudgets.googleapis.com", "iam.googleapis.com", "monitoring.googleapis.com", "run.googleapis.com", "secretmanager.googleapis.com", "servicenetworking.googleapis.com", "serviceusage.googleapis.com", "sqladmin.googleapis.com"]
+  enabled_services = ["artifactregistry.googleapis.com", "billingbudgets.googleapis.com", "iam.googleapis.com", "iamcredentials.googleapis.com", "monitoring.googleapis.com", "run.googleapis.com", "secretmanager.googleapis.com", "servicenetworking.googleapis.com", "serviceusage.googleapis.com", "sqladmin.googleapis.com", "sts.googleapis.com"]
   project_iam_members = {
     runtime_sql_client   = { role = "roles/cloudsql.client", member = "serviceAccount:example-runtime@example-phase18-project.iam.gserviceaccount.com" }
     migration_sql_client = { role = "roles/cloudsql.client", member = "serviceAccount:example-migration@example-phase18-project.iam.gserviceaccount.com" }
@@ -230,4 +230,93 @@ run "rejects_non_numeric_secret_version" {
   command         = plan
   expect_failures = [var.api]
   variables { api = merge(var.api, { secret_env = merge(var.api.secret_env, { DATABASE_URL = { secret_key = "database_url", version = "latest" } }) }) }
+}
+
+run "delivery_disabled" {
+  command = plan
+  variables { github_delivery = null }
+
+  assert {
+    condition     = length(google_iam_workload_identity_pool.delivery) == 0
+    error_message = "No delivery pool must exist when github_delivery is null."
+  }
+  assert {
+    condition     = length(google_iam_workload_identity_pool_provider.github) == 0
+    error_message = "No delivery provider must exist when github_delivery is null."
+  }
+  assert {
+    condition     = length(google_service_account.deploy) == 0
+    error_message = "No deploy service account must exist when github_delivery is null."
+  }
+}
+
+run "delivery_identity" {
+  command = plan
+  variables {
+    github_delivery = {
+      repository    = "example-owner/example-repo"
+      repository_id = "123456789"
+      owner_id      = "987654321"
+    }
+  }
+  assert {
+    condition = strcontains(
+      google_iam_workload_identity_pool_provider.github[0].attribute_condition,
+      "assertion.repository_id == '123456789'"
+    )
+    error_message = "Federation must restrict the numeric repository ID."
+  }
+  assert {
+    condition = strcontains(
+      google_iam_workload_identity_pool_provider.github[0].attribute_condition,
+      "assertion.repository_owner_id == '987654321'"
+    )
+    error_message = "Federation must restrict the numeric repository owner ID."
+  }
+  assert {
+    condition = strcontains(
+      google_iam_workload_identity_pool_provider.github[0].attribute_condition,
+      "assertion.ref == 'refs/heads/main'"
+    )
+    error_message = "Federation must restrict deployment to refs/heads/main."
+  }
+  assert {
+    condition = strcontains(
+      google_iam_workload_identity_pool_provider.github[0].attribute_condition,
+      "assertion.workflow_ref == 'example-owner/example-repo/.github/workflows/release.yml@refs/heads/main'"
+    )
+    error_message = "Federation must restrict the exact release workflow ref."
+  }
+  assert {
+    condition     = google_iam_workload_identity_pool.delivery[0].workload_identity_pool_id == "github-delivery"
+    error_message = "The delivery pool must use the fixed github-delivery ID."
+  }
+  assert {
+    condition     = google_iam_workload_identity_pool_provider.github[0].workload_identity_pool_provider_id == "github"
+    error_message = "The delivery provider must use the fixed github ID."
+  }
+  assert {
+    condition     = google_service_account.deploy[0].account_id == "github-deploy"
+    error_message = "The deploy account must use the fixed github-deploy ID."
+  }
+  assert {
+    condition     = google_service_account_iam_member.deploy_wif[0].member == "principal://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/github-delivery/subject/repo:example-owner/example-repo:environment:sandbox"
+    error_message = "Workload Identity binding must accept only the sandbox environment subject."
+  }
+  assert {
+    condition     = google_artifact_registry_repository_iam_member.deploy_push[0].role == "roles/artifactregistry.writer"
+    error_message = "The deploy identity must hold Artifact Registry Writer on the API repository."
+  }
+  assert {
+    condition     = google_cloud_run_v2_service_iam_member.deploy_api[0].role == "roles/run.developer"
+    error_message = "The deploy identity must hold Cloud Run Developer on the API service."
+  }
+  assert {
+    condition     = google_cloud_run_v2_job_iam_member.deploy_migrate[0].role == "roles/run.developer"
+    error_message = "The deploy identity must hold Cloud Run Developer on the migration job."
+  }
+  assert {
+    condition     = length(google_service_account_iam_member.deploy_runtime_user) == 2
+    error_message = "The deploy identity must hold Service Account User on both runtime identities."
+  }
 }
