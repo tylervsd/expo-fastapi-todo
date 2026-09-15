@@ -199,8 +199,8 @@ local tests alone do not establish it.
 
 Rehearsal instructions (delivery paused throughout; `$CLOUD_*`
 from the [Bootstrap](#bootstrap) table, same verified digest from
-the release summary, a new rehearsal release ID such as
-`rREHEARSE-a1-<short-sha>`):
+the release summary, and a new rehearsal release ID built as
+`RELEASE_ID="r$(date +%s)-a1-$(git rev-parse --short=8 HEAD)"`):
 
 1. Candidate failure. Deploy the digest with zero traffic under a
    temporary tag, prove the bad path fails, prove traffic never
@@ -216,8 +216,13 @@ gcloud run services describe "$CLOUD_SERVICE" \
   --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
   --format=json > /tmp/rehearsal-service.json
 CANDIDATE_URL=$(python3 -c "import json;svc=json.load(open('/tmp/rehearsal-service.json'));print([t['url'] for t in svc['status']['traffic'] if t.get('tag')=='$REHEARSAL_TAG'][0])")
-python3 scripts/release_smoke.py "$CANDIDATE_URL/nonexistent-rehearsal-path" \
-  && echo UNEXPECTED-PASS || echo "candidate smoke failed as rehearsed"
+# The smoke script strips any URL path before probing, so a bad path
+# cannot induce failure. Use an unroutable loopback URL instead:
+# connection-refused is deterministic and fully offline.
+if python3 scripts/release_smoke.py "http://127.0.0.1:9"; then
+  echo "rehearsal invalid: smoke unexpectedly passed"; exit 1
+fi
+echo "candidate smoke failed as rehearsed"
 gcloud run services describe "$CLOUD_SERVICE" \
   --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
   --format='value(status.traffic)'
@@ -227,8 +232,9 @@ gcloud run services update-traffic "$CLOUD_SERVICE" \
   --remove-tags="$REHEARSAL_TAG"
 ```
 
-   The smoke script appends `/health` and `/auth/login` to the
-given base URL, so the nonexistent path must fail; traffic output
+   The loopback failure proves the smoke contract can fail. The
+candidate tag URL (extracted above) confirms the candidate
+exists with zero traffic, and the traffic output
 must still show the previous revision at 100%. Record the result.
 
 1. Post-promotion restore. Run the real rollout function locally
@@ -244,8 +250,11 @@ from unittest.mock import patch
 import release_deploy
 import release_smoke
 
-os.environ["RELEASE_ID"] = "rREHEARSE-a1-<short-sha>"  # new rehearsal ID
-os.environ["GITHUB_STEP_SUMMARY"] = "/tmp/rehearsal-summary.md"
+# Build the rehearsal ID in the shell first (matches ^r\d+-a\d+-[0-9a-f]{8}$):
+# RELEASE_ID="r$(date +%s)-a1-$(git rev-parse --short=8 HEAD)" python3 <wrapper>.py
+os.environ["RELEASE_ID"]  # KeyError if unset — set it as above
+os.environ["GITHUB_STEP_SUMMARY"] = os.environ.get(
+    "GITHUB_STEP_SUMMARY", "/tmp/rehearsal-summary.md")
 real_smoke = release_smoke.smoke
 calls = []
 
