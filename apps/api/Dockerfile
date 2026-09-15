@@ -1,6 +1,11 @@
 FROM ghcr.io/astral-sh/uv:0.12.1 AS uv
 
-FROM python:3.14.7-slim-bookworm
+FROM python:3.14.7-slim-trixie
+
+# Apply distribution security updates before installing application dependencies.
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY --from=uv /uv /usr/local/bin/uv
 
