@@ -678,7 +678,10 @@ class DeploySequenceTest(unittest.TestCase):
 
     def test_migration_wrong_digest_stops_before_candidate(self):
         wrong = {
-            "metadata": {"name": "migrate-xyz"},
+            "metadata": {
+                "name": "migrate-xyz",
+                "annotations": {"previous-image": IMAGE},
+            },
             "status": {"conditions": [{"type": "Completed", "status": "True"}]},
             "spec": {"template": {"spec": {"containers": [{"image": OTHER_IMAGE}]}}},
         }

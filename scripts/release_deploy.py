@@ -84,14 +84,13 @@ def _completed(execution):
     )
 
 
-def _contains_image(obj, image):
-    if isinstance(obj, str):
-        return obj == image
-    if isinstance(obj, dict):
-        return any(_contains_image(v, image) for v in obj.values())
-    if isinstance(obj, list):
-        return any(_contains_image(v, image) for v in obj)
-    return False
+def _execution_image(execution):
+    """Return the executed job container image, or None."""
+    try:
+        containers = execution["spec"]["template"]["spec"]["containers"]
+        return containers[0].get("image")
+    except (KeyError, TypeError, IndexError):
+        return None
 
 
 def _revision_image(revision, candidate):
@@ -169,7 +168,7 @@ def deploy(image: str, previous: str) -> None:
         execution = executed.get("metadata", {}).get("name", "unknown")
         if not _completed(executed):
             raise RuntimeError(f"migration execution failed: {execution}")
-        if not _contains_image(executed, image):
+        if _execution_image(executed) != image:
             raise RuntimeError("migration did not run the release digest")
         cloud(
             "run",
