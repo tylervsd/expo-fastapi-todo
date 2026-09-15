@@ -16,6 +16,20 @@ __pycache__/
 .ruff_cache/
 *.pyc
 
+# Terraform state, plans, local backend configuration, and downloaded tooling.
+infra/terraform/**/.terraform/
+infra/terraform/**/*.tfstate*
+infra/terraform/**/*.tfplan
+infra/terraform/**/*.plan.json
+infra/terraform/**/crash*.log
+infra/terraform/**/*.tfvars
+infra/terraform/**/*.tfvars.json
+!infra/terraform/**/*.tfvars.example
+infra/terraform/**/backend.hcl
+infra/terraform/**/imports.tf
+infra/terraform/**/generated.tf
+infra/terraform/.local/
+
 # Phase 12 cross-platform E2E generated output.
 apps/mobile/ios/
 apps/mobile/dist-e2e/
