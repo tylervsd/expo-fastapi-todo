@@ -22,6 +22,20 @@ Plan: [Phase 19 implementation plan](../superpowers/plans/2026-09-14-continuous-
 gh api repos/OWNER/REPO --jq '{id, owner: .owner.id}'
 ```
 
+- Verify the repository's OIDC subject format:
+
+```sh
+gh api repos/tylervsd/expo-fastapi-todo/actions/oidc/customization/sub
+```
+
+This repository uses immutable subjects (`use_immutable_subject: true`). The
+sandbox subject is `repo:tylervsd@8146738/expo-fastapi-todo@1357662068:environment:sandbox`.
+Terraform derives it from the repository name and numeric IDs. A legacy
+name-only IAM member will not match and causes `iam.serviceAccounts.getAccessToken`
+to be denied even with Workload Identity User granted. Correct the Terraform
+member and review/apply its replacement locally; do not broaden roles or disable
+immutable subjects. See [GitHub's OIDC reference](https://docs.github.com/en/actions/reference/security/oidc#immutable-subject-claims).
+
 - Required Google APIs: IAM Credentials and Security Token Service, plus
   the existing Phase 18 set (`google_project_service.required` covers
   them; see `infra/terraform/sandbox/terraform.tfvars.example`).

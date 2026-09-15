@@ -209,7 +209,7 @@ assertion.workflow_ref == 'example-owner/example-repo/.github/workflows/release.
 ```
 
   Bind `roles/iam.workloadIdentityUser` on the deploy account to the exact
-  `principal://iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/github-delivery/subject/repo:OWNER/REPO:environment:sandbox`
+  `principal://iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/github-delivery/subject/repo:OWNER@OWNER_ID/REPO@REPOSITORY_ID:environment:sandbox`
   value assembled from `data.google_project.current.number` and the input.
   The capitalized components here describe Terraform expressions, not literal
   values to put in source or documentation examples.

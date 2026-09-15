@@ -55,13 +55,14 @@ resource "google_service_account" "deploy" {
   depends_on = [google_project_service.required]
 }
 
-# Only the sandbox environment subject may impersonate the deploy account.
+# Only the immutable sandbox environment subject may impersonate the deploy account.
+# GitHub includes owner/repository IDs in this repository's OIDC subject.
 resource "google_service_account_iam_member" "deploy_wif" {
   count = var.github_delivery == null ? 0 : 1
 
   service_account_id = google_service_account.deploy[0].name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "principal://iam.googleapis.com/projects/${data.google_project.current.number}/locations/global/workloadIdentityPools/${google_iam_workload_identity_pool.delivery[0].workload_identity_pool_id}/subject/repo:${var.github_delivery.repository}:environment:sandbox"
+  member             = "principal://iam.googleapis.com/projects/${data.google_project.current.number}/locations/global/workloadIdentityPools/${google_iam_workload_identity_pool.delivery[0].workload_identity_pool_id}/subject/repo:${split("/", var.github_delivery.repository)[0]}@${var.github_delivery.owner_id}/${split("/", var.github_delivery.repository)[1]}@${var.github_delivery.repository_id}:environment:sandbox"
 
   depends_on = [google_project_service.required]
 }

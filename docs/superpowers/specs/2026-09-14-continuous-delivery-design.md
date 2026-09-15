@@ -215,7 +215,7 @@ roles materially exceed the required scope.
 The provider condition requires the expected numeric repository and owner IDs,
 `refs/heads/main`, and the exact release workflow reference. The service-account
 binding accepts only the environment subject
-`repo:<owner>/<repository>:environment:sandbox`. Together these restrictions
+`repo:<owner>@<owner_id>/<repository>@<repository_id>:environment:sandbox`. Together these restrictions
 limit credentials to the expected repository, branch, workflow, and protected
 environment. Repository and owner names alone are not trust anchors.
 

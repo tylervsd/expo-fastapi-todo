@@ -343,7 +343,7 @@ run "delivery_identity" {
     error_message = "The deploy account must use the fixed github-deploy ID."
   }
   assert {
-    condition     = google_service_account_iam_member.deploy_wif[0].member == "principal://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/github-delivery/subject/repo:example-owner/example-repo:environment:sandbox"
+    condition     = google_service_account_iam_member.deploy_wif[0].member == "principal://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/github-delivery/subject/repo:example-owner@987654321/example-repo@123456789:environment:sandbox"
     error_message = "Workload Identity binding must accept only the sandbox environment subject."
   }
   assert {
