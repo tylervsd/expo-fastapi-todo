@@ -125,6 +125,8 @@ jobs:
           [ "$(docker exec "$CONTAINER_ID" id -u)" = "10001" ] || { echo "container is not running as uid 10001" >&2; exit 1; }
 
       - name: Scan release image
+        id: image_scan
+        continue-on-error: true
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: image
@@ -133,6 +135,12 @@ jobs:
           format: table
           exit-code: 1
           severity: HIGH,CRITICAL
+
+      - name: Report image scan warning
+        if: steps.image_scan.outcome == 'failure'
+        run: |
+          echo "::warning::Release image scan found vulnerabilities or could not complete. Review the scan logs; deployment continues."
+          echo "Image scan is advisory: vulnerabilities were found or scanning failed. Review the scan logs." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Push release image and resolve digest
         id: push

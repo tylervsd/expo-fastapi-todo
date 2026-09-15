@@ -315,3 +315,13 @@
   grep -F 'image_summary.digest' "$workflow" || return 1
   ! grep -F 'docker archive' "$workflow" || return 1
 }
+
+@test "release image scan is advisory and reports a warning" {
+  workflow=.github/workflows/release.yml
+  run sed -n '/name: Scan release image/,/name: Push release image/p' "$workflow"
+  [[ "$output" == *"id: image_scan"* ]] || return 1
+  [[ "$output" == *"continue-on-error: true"* ]] || return 1
+  [[ "$output" == *"steps.image_scan.outcome == 'failure'"* ]] || return 1
+  [[ "$output" == *"::warning::"* ]] || return 1
+  [[ "$output" == *"exit-code: 1"* ]] || return 1
+}

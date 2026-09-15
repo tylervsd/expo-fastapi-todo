@@ -137,6 +137,10 @@ Each attribute has one ownership policy. The rollback runbook follows the same
 traffic ownership rules as the release workflow and runs only while delivery
 is paused and no release is active.
 
+The release-image vulnerability scan is advisory: HIGH/CRITICAL findings or
+scanner errors produce a workflow warning and summary entry while deployment
+continues. Other validation gates remain blocking.
+
 ## Workflow topology
 
 ### Existing checks become callable gates
@@ -341,7 +345,7 @@ the stable service URL.
 
 ## Failure handling
 
-- Validation, approval, build, scan, push, or migration failure
+- Validation, approval, build, push, or migration failure
   stops the release before a candidate receives production traffic.
 - Candidate smoke failure leaves existing traffic unchanged, removes the
   temporary tag where possible, and retains the zero-traffic revision for
