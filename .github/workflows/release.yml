@@ -156,9 +156,10 @@ jobs:
           python3 scripts/release_deploy.py "$IMAGE_DIGEST" "$PREVIOUS_REVISION"
 
       - name: Summarize pre-rollout failure
-        if: failure() && steps.push.outputs.image_digest == ''
+        if: always() && failure() && steps.push.outputs.image_digest == ''
         env:
           CLOUDSDK_AUTH_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          PREVIOUS_REVISION: ${{ steps.previous.outputs.previous_revision }}
         run: |
           TRAFFIC=$(gcloud run services describe "$CLOUD_SERVICE" --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" --quiet --format='value(status.traffic)' 2>/dev/null || echo unknown)
           {
@@ -166,7 +167,7 @@ jobs:
             echo "commit: $GITHUB_SHA"
             echo "digest: not reached"
             echo "migration: not reached"
-            echo "previous: ${{ steps.previous.outputs.previous_revision }}"
+            echo "previous: $PREVIOUS_REVISION"
             echo "candidate: not reached"
             echo "smoke: not reached"
             echo "traffic: $TRAFFIC"
