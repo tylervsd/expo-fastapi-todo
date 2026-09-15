@@ -2,6 +2,8 @@
 
 Core adoption is learner-completed: 25 resources imported and a no-change plan reported. Recovery/destruction drills are deferred by agreement; final label-drift verification remains unconfirmed. See the [walkthrough progress record](../../docs/guides/18-terraform.md#learner-progress-and-agreed-deferrals). Local checks do not establish live cloud acceptance.
 
+Phase 19 adds an opt-in delivery identity (`github_delivery`, default `null`) with Workload Identity Federation and one deploy service account, plus narrow `ignore_changes` for release-owned Cloud Run image, revision, and traffic fields. Infrastructure changes stay local and reviewed; the release workflow owns only those ignored fields. See the [Phase 19 walkthrough](../../docs/guides/19-continuous-delivery.md).
+
 This root adopts the Google sandbox by import. It owns explicitly declared
 Google resources after handoff; it never manages the project lifecycle,
 billing link, state bucket, Cloudflare Pages, Secret Manager payloads or
