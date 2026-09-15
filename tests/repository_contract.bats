@@ -73,7 +73,7 @@
   [ -f "$workflow" ] || return 1
 
   grep -F 'pull_request:' "$workflow" || return 1
-  grep -F 'push:' "$workflow" || return 1
+  grep -F 'workflow_call:' "$workflow" || return 1
   grep -F 'schedule:' "$workflow" || return 1
   grep -F 'workflow_dispatch:' "$workflow" || return 1
   ! grep -F 'pull_request_target:' "$workflow" || return 1
@@ -260,4 +260,63 @@
   grep -Fx 'docker run --rm hello-world' "$guide" || return 1
   grep -F 'disposable smoke container exits successfully' "$guide" || return 1
   grep -F 'Do not reset Docker or delete Docker data' "$guide"
+}
+
+@test "release checks run from the root test script" {
+  run node -e 'if (require("./package.json").scripts["test:release"] !== "python3 -m unittest discover -s tests -p test_release.py -v") throw new Error("test:release mismatch")'
+  [ "$status" -eq 0 ]
+}
+
+@test "quality security and web e2e gates are reusable without main push triggers" {
+  for workflow in .github/workflows/quality.yml .github/workflows/security.yml .github/workflows/e2e.yml; do
+    [ -f "$workflow" ] || return 1
+    grep -F 'workflow_call:' "$workflow" || return 1
+    ! grep -F 'push:' "$workflow" || return 1
+  done
+  grep -F 'pull_request:' .github/workflows/quality.yml || return 1
+  grep -F 'pull_request:' .github/workflows/security.yml || return 1
+  grep -F 'schedule:' .github/workflows/security.yml || return 1
+  grep -F 'workflow_dispatch:' .github/workflows/security.yml || return 1
+  grep -F 'pull_request:' .github/workflows/e2e.yml || return 1
+  grep -F 'workflow_dispatch:' .github/workflows/e2e.yml || return 1
+}
+
+@test "e2e keeps native ios out of reusable release calls" {
+  workflow=.github/workflows/e2e.yml
+  grep -F 'run_ios:' "$workflow" || return 1
+  grep -F "github.workflow == 'e2e'" "$workflow" || return 1
+  grep -F 'inputs.run_ios' "$workflow" || return 1
+}
+
+@test "release workflow gates sandbox deployment on validated main commits" {
+  workflow=.github/workflows/release.yml
+  [ -f "$workflow" ] || return 1
+  grep -F 'branches: [main]' "$workflow" || return 1
+  grep -F 'workflow_dispatch:' "$workflow" || return 1
+  grep -F 'ref: ${{ github.sha }}' "$workflow" || return 1
+  grep -F "vars.DELIVERY_ENABLED == 'true'" "$workflow" || return 1
+  grep -F 'environment: sandbox' "$workflow" || return 1
+  grep -F 'group: sandbox-release' "$workflow" || return 1
+  grep -F 'cancel-in-progress: false' "$workflow" || return 1
+  grep -F 'id-token: write' "$workflow" || return 1
+  grep -F './.github/workflows/quality.yml' "$workflow" || return 1
+  grep -F './.github/workflows/security.yml' "$workflow" || return 1
+  grep -F './.github/workflows/e2e.yml' "$workflow" || return 1
+  grep -F 'run_ios: false' "$workflow" || return 1
+  grep -F 'GITHUB_STEP_SUMMARY' "$workflow" || return 1
+  ! grep -F 'credentials_json' "$workflow" || return 1
+}
+
+@test "only the release deploy job may request OIDC tokens" {
+  grep -F 'id-token: write' .github/workflows/release.yml || return 1
+  ! grep -F 'id-token' .github/workflows/quality.yml || return 1
+  ! grep -F 'id-token' .github/workflows/security.yml || return 1
+  ! grep -F 'id-token' .github/workflows/e2e.yml || return 1
+}
+
+@test "release passes one immutable digest to the rollout sequence" {
+  workflow=.github/workflows/release.yml
+  grep -F 'release_deploy.py "$IMAGE_DIGEST" "$PREVIOUS_REVISION"' "$workflow" || return 1
+  grep -F 'image_summary.digest' "$workflow" || return 1
+  ! grep -F 'docker archive' "$workflow" || return 1
 }

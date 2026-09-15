@@ -42,3 +42,4 @@ e2e/web/test-results/
 .env
 .env.*
 !.env.example
+gha-creds-*.json
