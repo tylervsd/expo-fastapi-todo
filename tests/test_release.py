@@ -697,6 +697,35 @@ class DeploySequenceTest(unittest.TestCase):
         self.assertFalse(any("deploy" in c for c in fake.commands))
         self.assertEqual(self._traffic_moves(fake.commands), [])
 
+    def test_pre_promotion_failures_record_observed_traffic(self):
+        failed = {
+            "metadata": {"name": "migrate-xyz"},
+            "status": {"conditions": [{"type": "Completed", "status": "False"}]},
+            "spec": {"template": {"spec": {"containers": [{"image": IMAGE}]}}},
+        }
+        fake = _Cloud([_svc([_prod(PREV)]), {}, failed])
+        with (
+            patch.object(release_deploy, "cloud", fake),
+            patch.object(release_deploy, "smoke") as smoke,
+            self.assertRaisesRegex(RuntimeError, "migration execution failed"),
+        ):
+            release_deploy.deploy(IMAGE, PREV)
+        smoke.assert_not_called()
+        with open(self.summary) as handle:
+            self.assertIn(f"- traffic: {PREV}", handle.read())
+
+        replies = self._replies_to_candidate()
+        fake = _Cloud(replies)
+        with (
+            patch.object(release_deploy, "cloud", fake),
+            patch.object(release_deploy, "smoke", side_effect=RuntimeError("bad")),
+            self.assertRaisesRegex(RuntimeError, "candidate"),
+        ):
+            release_deploy.deploy(IMAGE, PREV)
+        self.assertEqual(self._traffic_moves(fake.commands), [])
+        with open(self.summary) as handle:
+            self.assertIn(f"- traffic: {PREV}", handle.read())
+
     def test_invalid_digest_writes_failure_summary(self):
         fake = _Cloud([])
         with (

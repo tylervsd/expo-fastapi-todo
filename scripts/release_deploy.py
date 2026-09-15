@@ -158,7 +158,8 @@ def deploy(image: str, previous: str) -> None:
         if len(candidate) > 63:
             raise RuntimeError(f"candidate revision name too long: {candidate}")
         described = cloud("run", "services", "describe", service)
-        if serving_revision(described) != previous:
+        observed = serving_revision(described)
+        if observed != previous:
             raise RuntimeError("previous revision is no longer serving 100%")
         stable_url = described.get("status", {}).get("url", "")
         if not stable_url:
@@ -184,7 +185,8 @@ def deploy(image: str, previous: str) -> None:
         if _revision_image(revision, candidate) != image:
             raise RuntimeError("candidate revision image mismatch")
         described = cloud("run", "services", "describe", service)
-        if serving_revision(described) != previous:
+        observed = serving_revision(described)
+        if observed != previous:
             raise RuntimeError("traffic moved before candidate smoke")
         tag_url = _tag_url(described, release, candidate)
         try:
