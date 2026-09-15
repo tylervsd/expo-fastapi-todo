@@ -305,6 +305,7 @@ ENV = {
     "GITHUB_SHA": "0123456789abcdef0123456789abcdef01234567",
 }
 IMAGE = ENV["CLOUD_IMAGE"] + "@sha256:" + "ab" * 32
+OTHER_IMAGE = ENV["CLOUD_IMAGE"] + "@sha256:" + "cd" * 32
 PREV = "api-00001"
 CAND = "api-" + REL
 STABLE_URL = "https://api-example.run.app"
@@ -334,6 +335,13 @@ def _exec_ok():
     }
 
 
+def _rev(image=IMAGE, name=CAND):
+    return {
+        "metadata": {"name": name},
+        "spec": {"containers": [{"image": image}]},
+    }
+
+
 class DeploySequenceTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -358,6 +366,7 @@ class DeploySequenceTest(unittest.TestCase):
             {},
             _exec_ok(),
             {},
+            _rev(),
             _svc([_prod(PREV), _tagged(CAND, REL, CAND_URL)], image=IMAGE),
         ]
 
@@ -464,6 +473,7 @@ class DeploySequenceTest(unittest.TestCase):
             {},
             _exec_ok(),
             {},
+            _rev(),
             _svc([_prod(PREV), _tagged(CAND, REL, CAND_URL)], image=IMAGE),
             {},
             _svc([_prod(CAND)], image=IMAGE),
@@ -492,7 +502,7 @@ class DeploySequenceTest(unittest.TestCase):
             [_prod(PREV), {"revisionName": CAND, "percent": 0, "tag": REL}],
             image=IMAGE,
         )
-        replies = [_svc([_prod(PREV)]), {}, _exec_ok(), {}, no_url, {}]
+        replies = [_svc([_prod(PREV)]), {}, _exec_ok(), {}, _rev(), no_url, {}]
         fake = _Cloud(replies)
         with (
             patch.object(release_deploy, "cloud", fake),
@@ -587,6 +597,127 @@ class DeploySequenceTest(unittest.TestCase):
         for want in (ENV["GITHUB_SHA"][:8], "migrate-xyz", PREV, CAND, "passed"):
             self.assertIn(want, body)
         self.assertIn("sha256:", body)
+
+    def test_restore_traffic_mismatch_is_not_reported_recovered(self):
+        still_candidate = _svc([_prod(CAND)], image=IMAGE)
+        replies = self._replies_to_candidate() + [
+            {},
+            _svc([_prod(CAND)], image=IMAGE),
+            {},
+            still_candidate,
+            still_candidate,
+            {},
+        ]
+        fake = _Cloud(replies)
+        with (
+            patch.object(release_deploy, "cloud", fake),
+            patch.object(
+                release_deploy,
+                "smoke",
+                side_effect=[None, RuntimeError("stable failed")],
+            ),
+            self.assertRaisesRegex(RuntimeError, "restore") as ctx,
+        ):
+            release_deploy.deploy(IMAGE, PREV)
+        self.assertIn(CAND, str(ctx.exception))
+
+    def test_candidate_revision_image_mismatch_stops(self):
+        replies = [
+            _svc([_prod(PREV)]),
+            {},
+            _exec_ok(),
+            {},
+            _rev(image=OTHER_IMAGE),
+            {},
+        ]
+        fake = _Cloud(replies)
+        with (
+            patch.object(release_deploy, "cloud", fake),
+            patch.object(release_deploy, "smoke") as smoke,
+            self.assertRaisesRegex(RuntimeError, "image mismatch"),
+        ):
+            release_deploy.deploy(IMAGE, PREV)
+        smoke.assert_not_called()
+        self.assertEqual(self._traffic_moves(fake.commands), [])
+
+    def test_candidate_revision_identity_mismatch_stops(self):
+        replies = [
+            _svc([_prod(PREV)]),
+            {},
+            _exec_ok(),
+            {},
+            _rev(name="api-stale"),
+            {},
+        ]
+        fake = _Cloud(replies)
+        with (
+            patch.object(release_deploy, "cloud", fake),
+            patch.object(release_deploy, "smoke") as smoke,
+            self.assertRaisesRegex(RuntimeError, "not found"),
+        ):
+            release_deploy.deploy(IMAGE, PREV)
+        smoke.assert_not_called()
+        self.assertEqual(self._traffic_moves(fake.commands), [])
+
+    def test_migration_completed_false_stops_before_candidate(self):
+        failed = {
+            "metadata": {"name": "migrate-xyz"},
+            "status": {"conditions": [{"type": "Completed", "status": "False"}]},
+            "spec": {"template": {"spec": {"containers": [{"image": IMAGE}]}}},
+        }
+        fake = _Cloud([_svc([_prod(PREV)]), {}, failed])
+        with (
+            patch.object(release_deploy, "cloud", fake),
+            patch.object(release_deploy, "smoke") as smoke,
+            self.assertRaisesRegex(RuntimeError, "migration execution failed"),
+        ):
+            release_deploy.deploy(IMAGE, PREV)
+        smoke.assert_not_called()
+        self.assertFalse(any("deploy" in c for c in fake.commands))
+        self.assertEqual(self._traffic_moves(fake.commands), [])
+
+    def test_migration_wrong_digest_stops_before_candidate(self):
+        wrong = {
+            "metadata": {"name": "migrate-xyz"},
+            "status": {"conditions": [{"type": "Completed", "status": "True"}]},
+            "spec": {"template": {"spec": {"containers": [{"image": OTHER_IMAGE}]}}},
+        }
+        replies = [_svc([_prod(PREV)]), {}, wrong]
+        fake = _Cloud(replies)
+        with (
+            patch.object(release_deploy, "cloud", fake),
+            patch.object(release_deploy, "smoke") as smoke,
+            self.assertRaisesRegex(RuntimeError, "did not run"),
+        ):
+            release_deploy.deploy(IMAGE, PREV)
+        smoke.assert_not_called()
+        self.assertFalse(any("deploy" in c for c in fake.commands))
+        self.assertEqual(self._traffic_moves(fake.commands), [])
+
+    def test_invalid_digest_writes_failure_summary(self):
+        fake = _Cloud([])
+        with (
+            patch.object(release_deploy, "cloud", fake),
+            self.assertRaisesRegex(RuntimeError, "digest"),
+        ):
+            release_deploy.deploy("not-an-image", PREV)
+        self.assertEqual(fake.commands, [])
+        with open(self.summary) as handle:
+            body = handle.read()
+        self.assertIn("failed", body)
+        self.assertIn("not reached", body)
+
+    def test_missing_env_writes_failure_summary(self):
+        del os.environ["CLOUD_SERVICE"]
+        fake = _Cloud([])
+        with (
+            patch.object(release_deploy, "cloud", fake),
+            self.assertRaisesRegex(RuntimeError, "CLOUD_SERVICE"),
+        ):
+            release_deploy.deploy(IMAGE, PREV)
+        self.assertEqual(fake.commands, [])
+        with open(self.summary) as handle:
+            self.assertIn("failed", handle.read())
 
 
 if __name__ == "__main__":

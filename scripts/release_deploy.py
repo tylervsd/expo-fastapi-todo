@@ -94,10 +94,13 @@ def _contains_image(obj, image):
     return False
 
 
-def _spec_image(service):
+def _revision_image(revision, candidate):
+    """Return candidate revision image; fail if identity is wrong."""
+    name = revision.get("metadata", {}).get("name")
+    if name != candidate:
+        raise RuntimeError(f"candidate revision not found: {candidate}")
     try:
-        containers = service["spec"]["template"]["spec"]["containers"]
-        return containers[0].get("image")
+        return revision["spec"]["containers"][0].get("image")
     except (KeyError, TypeError, IndexError):
         return None
 
@@ -123,25 +126,9 @@ def _write_summary(path, rows):
 
 def deploy(image: str, previous: str) -> None:
     """Run the migration, candidate, promotion, and restoration sequence."""
-    service = _req("CLOUD_SERVICE")
-    job = _req("CLOUD_MIGRATION_JOB")
-    registry = _req("CLOUD_IMAGE")
-    release = _req("RELEASE_ID")
-    commit = _req("GITHUB_SHA")
     summary_path = _req("GITHUB_STEP_SUMMARY")
-    parts = image.split("@", 1)
-    if len(parts) != 2 or parts[0] != registry or not _DIGEST_RE.match(parts[1]):
-        raise RuntimeError("image digest does not match CLOUD_IMAGE@sha256:<64 hex>")
-    for name in (service, job, previous):
-        if not _NAME_RE.match(name):
-            raise RuntimeError(f"invalid resource name: {name}")
-    if not _RELEASE_RE.match(release):
-        raise RuntimeError(f"invalid release ID: {release}")
-    candidate = f"{service}-{release}"
-    if len(candidate) > 63:
-        raise RuntimeError(f"candidate revision name too long: {candidate}")
-
     execution = "not reached"
+    candidate = "not reached"
     candidate_smoke = "not reached"
     stable_smoke = "not reached"
     observed = "unknown"
@@ -151,7 +138,26 @@ def deploy(image: str, previous: str) -> None:
     promotion_attempted = False
     candidate_created = False
     stable_url = ""
+    commit = os.environ.get("GITHUB_SHA", "unknown")
     try:
+        service = _req("CLOUD_SERVICE")
+        job = _req("CLOUD_MIGRATION_JOB")
+        registry = _req("CLOUD_IMAGE")
+        release = _req("RELEASE_ID")
+        commit = _req("GITHUB_SHA")
+        parts = image.split("@", 1)
+        if len(parts) != 2 or parts[0] != registry or not _DIGEST_RE.match(parts[1]):
+            raise RuntimeError(
+                "image digest does not match CLOUD_IMAGE@sha256:<64 hex>"
+            )
+        for name in (service, job, previous):
+            if not _NAME_RE.match(name):
+                raise RuntimeError(f"invalid resource name: {name}")
+        if not _RELEASE_RE.match(release):
+            raise RuntimeError(f"invalid release ID: {release}")
+        candidate = f"{service}-{release}"
+        if len(candidate) > 63:
+            raise RuntimeError(f"candidate revision name too long: {candidate}")
         described = cloud("run", "services", "describe", service)
         if serving_revision(described) != previous:
             raise RuntimeError("previous revision is no longer serving 100%")
@@ -175,9 +181,10 @@ def deploy(image: str, previous: str) -> None:
             "--no-traffic",
         )
         candidate_created = True
-        described = cloud("run", "services", "describe", service)
-        if _spec_image(described) != image:
+        revision = cloud("run", "revisions", "describe", candidate)
+        if _revision_image(revision, candidate) != image:
             raise RuntimeError("candidate revision image mismatch")
+        described = cloud("run", "services", "describe", service)
         if serving_revision(described) != previous:
             raise RuntimeError("traffic moved before candidate smoke")
         tag_url = _tag_url(described, release, candidate)
@@ -218,6 +225,8 @@ def deploy(image: str, previous: str) -> None:
                 )
                 described = cloud("run", "services", "describe", service)
                 observed = serving_revision(described)
+                if observed != previous:
+                    raise RuntimeError(f"restore unverified: traffic on {observed}")
                 smoke(stable_url)
                 restore_note = f"restored {previous}, stable smoke passed"
             except Exception as restore_exc:  # noqa: BLE001 - restore is best-effort
