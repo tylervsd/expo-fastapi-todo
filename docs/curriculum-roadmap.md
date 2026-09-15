@@ -207,7 +207,7 @@ Phases 7-9 build one guided-todo creation feature to teach backend-owned state t
 - **Learning experiment:** Deploy a revision that fails its smoke check, verify that it receives no production traffic, then restore the last known-good revision through traffic controls only.
 - **Non-goals:** Service-account JSON keys, Terraform plan/apply in application CI, Docker archive transport, custom release metadata, workflow rollback mode, arbitrary historical revision selection, multi-region delivery, and a general deployment platform.
 - **Spec gate:** Approve federation claims and conditions, pipeline permissions, digest deployment, migration compatibility, traffic policy, manual rollback trigger, environment protection, and summary evidence.
-- **Status:** Repository implementation is under review on `codex/phase-19-continuous-delivery`; live activation and rehearsal are pending (Task 6, learner-operated). See the [design](superpowers/specs/2026-09-14-continuous-delivery-design.md), [plan](superpowers/plans/2026-09-14-continuous-delivery.md), and [walkthrough](guides/19-continuous-delivery.md).
+- **Status:** Complete, with learner-confirmed live acceptance on 2026-09-15, including failure/rollback rehearsals and the final Terraform drift check. Release-image scanning is advisory; known findings remain. See the [design](superpowers/specs/2026-09-14-continuous-delivery-design.md), [plan](superpowers/plans/2026-09-14-continuous-delivery.md), and [walkthrough](guides/19-continuous-delivery.md).
 
 ## 20. Cloud Tasks and Cloud Scheduler
 

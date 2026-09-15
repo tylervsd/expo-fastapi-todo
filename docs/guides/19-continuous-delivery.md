@@ -1,9 +1,8 @@
 # Phase 19: Continuous delivery walkthrough
 
-Repository changes are **ready for review**; live cloud acceptance is
-**pending** (see [Acceptance record](#acceptance-record)). Nothing here runs
-until the learner deliberately activates delivery. Application CI never
-applies Terraform.
+Phase 19 is **complete**, with learner-confirmed live acceptance on
+2026-09-15 (see [Acceptance record](#acceptance-record)). Sandbox delivery is
+active. Application CI never applies Terraform.
 
 Spec: [Phase 19 design](../superpowers/specs/2026-09-14-continuous-delivery-design.md).
 Plan: [Phase 19 implementation plan](../superpowers/plans/2026-09-14-continuous-delivery.md).
@@ -197,19 +196,29 @@ then re-enable deliberately.
 
 ## Acceptance record
 
-Live acceptance is **pending**. The learner records evidence here;
-local tests alone do not establish it.
+Live acceptance is **complete**. On 2026-09-15, the learner confirmed all
+acceptance checks passed, including the final Terraform drift check.
+Failure and rollback rehearsal results below are learner-reported.
+
+The [successful release](https://github.com/tylervsd/expo-fastapi-todo/actions/runs/35027120294)
+deployed commit `dc742c14a41dd76f5b201a7ef4d73f94a307fd06`.
+Cloud Run was independently verified to route 100% of traffic to
+`fullstack-api-r35027120294-a1-dc742c14`.
+
+The release-image vulnerability scan is advisory by learner decision.
+Known image findings remain; phase completion does not mean the image is
+vulnerability-free.
 
 | Check | Result |
 | --- | --- |
-| Local identity bootstrap, environment protection, denied federation probe | pending |
-| Approved release: one image, matching migration/API digests, migration first | pending |
-| Zero-traffic candidate smoke, promotion, stable smoke, clean summary | pending |
-| Candidate failure leaves traffic unchanged | pending |
-| Post-promotion failure restores and verifies previous revision | pending |
-| Manual rollback with paused delivery and cleared pending work | pending |
-| Serialized mutations, safe reruns, superseded pending run | pending |
-| Final local Terraform plan: no drift from release-owned fields | pending |
+| Local identity bootstrap, environment protection, denied federation probe | Passed — learner confirmed 2026-09-15 |
+| Approved release: one image, matching migration/API digests, migration first | Passed — learner confirmed 2026-09-15 |
+| Zero-traffic candidate smoke, promotion, stable smoke, clean summary | Passed — learner confirmed 2026-09-15 |
+| Candidate failure leaves traffic unchanged | Passed — learner confirmed 2026-09-15 |
+| Post-promotion failure restores and verifies previous revision | Passed — learner confirmed 2026-09-15 |
+| Manual rollback with paused delivery and cleared pending work | Passed — learner confirmed 2026-09-15 |
+| Serialized mutations, safe reruns, superseded pending run | Passed — learner confirmed 2026-09-15 |
+| Final local Terraform plan: no drift from release-owned fields | Passed — learner confirmed 2026-09-15 |
 
 Rehearsal instructions (delivery paused throughout; `$CLOUD_*`
 from the [Bootstrap](#bootstrap) table, same verified digest from
