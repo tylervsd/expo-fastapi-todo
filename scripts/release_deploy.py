@@ -220,6 +220,7 @@ def deploy(image: str, previous: str) -> None:
         if _execution_image(executed) != image:
             raise RuntimeError("migration did not run the release digest")
         if worker_service:
+            worker_candidate_created = True
             cloud(
                 "run",
                 "deploy",
@@ -229,7 +230,6 @@ def deploy(image: str, previous: str) -> None:
                 "--tag=" + release,
                 "--no-traffic",
             )
-            worker_candidate_created = True
             worker_revision = cloud(
                 "run", "revisions", "describe", worker_candidate
             )
@@ -277,6 +277,7 @@ def deploy(image: str, previous: str) -> None:
                 raise RuntimeError(
                     f"worker stable smoke failed: {exc}"
                 ) from exc
+        candidate_created = True
         cloud(
             "run",
             "deploy",
@@ -286,7 +287,6 @@ def deploy(image: str, previous: str) -> None:
             "--tag=" + release,
             "--no-traffic",
         )
-        candidate_created = True
         revision = cloud("run", "revisions", "describe", candidate)
         if _revision_image(revision, candidate) != image:
             raise RuntimeError("candidate revision image mismatch")

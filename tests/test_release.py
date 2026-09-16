@@ -775,10 +775,6 @@ class DeploySequenceTest(unittest.TestCase):
             self.assertIn("failed", handle.read())
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 WORKER_SERVICE = "worker"
 INVOKER = "invoke@demo-proj.iam.gserviceaccount.com"
 WENV = {
@@ -842,6 +838,35 @@ class SmokeWorkerContractTest(unittest.TestCase):
         ):
             release_smoke.check_worker("not-a-url", WORKER_STABLE, INVOKER)
         acquire.assert_not_called()
+
+    def test_unrelated_https_url_mints_no_token_and_sends_no_request(self):
+        opener = _FakeOpener([])
+        with (
+            patch.object(release_smoke, "_OPENER", opener),
+            patch.object(
+                release_smoke, "_acquire_worker_token"
+            ) as acquire,
+            patch("subprocess.run") as run,
+            self.assertRaisesRegex(ValueError, "match"),
+        ):
+            release_smoke.check_worker(
+                "https://attacker.example", WORKER_STABLE, INVOKER
+            )
+        acquire.assert_not_called()
+        run.assert_not_called()
+        self.assertEqual(opener.requests, [])
+
+    def test_tagged_url_derived_from_audience_succeeds(self):
+        opener, acquire = self._run_worker(
+            [
+                ("respond", 200, {}, b'{"status": "ok"}'),
+                ("respond", 200, {}, b'{"status": "ok"}'),
+            ],
+            url=WORKER_TAG_URL,
+            audience=WORKER_STABLE,
+        )
+        self.assertEqual(len(opener.requests), 2)
+        acquire.assert_called_once_with(WORKER_STABLE, INVOKER)
 
     def test_tagged_audience_rejected_before_token(self):
         tagged = f"https://{REL}---worker-example.run.app"
@@ -910,6 +935,20 @@ class SmokeWorkerContractTest(unittest.TestCase):
                 WORKER_STABLE, WORKER_STABLE, INVOKER, attempts=2, delay=0
             )
         self.assertEqual(check.call_count, 2)
+
+    def test_smoke_worker_rejects_unrelated_url_without_retry(self):
+        with (
+            patch.object(release_smoke, "check_worker") as check,
+            self.assertRaises(ValueError),
+        ):
+            release_smoke.smoke_worker(
+                "https://attacker.example",
+                WORKER_STABLE,
+                INVOKER,
+                attempts=3,
+                delay=0,
+            )
+        check.assert_not_called()
 
     def test_smoke_worker_rejects_bad_audience_without_retry(self):
         with (
@@ -1104,6 +1143,66 @@ class WorkerDeploySequenceTest(unittest.TestCase):
         )
         self.assertLess(api_restore, worker_restore)
 
+    def test_worker_deploy_remote_success_local_failure_cleans_tag(self):
+        replies = [
+            _svc([_prod(PREV)]),
+            _wsvc([_prod(WORKER_PREV)]),
+            {},
+            _exec_ok(),
+            RuntimeError("worker deploy boom"),
+            {},
+        ]
+        fake = _Cloud(replies)
+        with (
+            patch.object(release_deploy, "cloud", fake),
+            patch.object(release_deploy, "smoke") as smoke,
+            patch.object(release_deploy, "smoke_worker") as worker_smoke,
+            self.assertRaisesRegex(RuntimeError, "worker deploy boom"),
+        ):
+            release_deploy.deploy(IMAGE, PREV)
+        smoke.assert_not_called()
+        worker_smoke.assert_not_called()
+        self.assertEqual(self._moves(fake.commands), [])
+        removes = [c for c in fake.commands if any(
+            a == "--remove-tags=" + REL for a in c)]
+        self.assertEqual(len(removes), 1)
+        self.assertIn(WORKER_SERVICE, removes[0])
+
+    def test_api_deploy_remote_success_local_failure_cleans_both_tags(self):
+        replies = self._replies_to_api_candidate()[:9] + [
+            RuntimeError("api deploy boom"),
+            {},
+            _wsvc([_prod(WORKER_PREV)]),
+            {},
+            {},
+        ]
+        fake = _Cloud(replies)
+        with (
+            patch.object(release_deploy, "cloud", fake),
+            patch.object(release_deploy, "smoke") as smoke,
+            patch.object(
+                release_deploy,
+                "smoke_worker",
+                side_effect=[None, None, None],
+            ),
+            self.assertRaisesRegex(RuntimeError, "api deploy boom"),
+        ):
+            release_deploy.deploy(IMAGE, PREV)
+        smoke.assert_not_called()
+        self.assertIn(
+            (
+                "run",
+                "services",
+                "update-traffic",
+                WORKER_SERVICE,
+                "--to-revisions=" + WORKER_PREV + "=100",
+            ),
+            fake.commands,
+        )
+        removes = [c for c in fake.commands if any(
+            a == "--remove-tags=" + REL for a in c)]
+        self.assertEqual(len(removes), 2)
+
     def test_remote_success_local_failure_still_restores_worker(self):
         replies = self._replies_to_api_candidate()[:8] + [
             RuntimeError("local describe boom"),
@@ -1169,3 +1268,7 @@ class WorkerDeploySequenceTest(unittest.TestCase):
             release_deploy.deploy(IMAGE, PREV)
         with open(self.summary) as handle:
             self.assertNotIn("worker", handle.read().lower())
+
+
+if __name__ == "__main__":
+    unittest.main()

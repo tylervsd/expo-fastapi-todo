@@ -204,6 +204,33 @@ def _acquire_worker_token(audience: str, invoker: str) -> str:
     return token
 
 
+def _validate_worker_url(url: str, audience: str) -> str:
+    """Return the normalized worker base URL bound to the audience origin.
+
+    Only the canonical audience origin itself or a Cloud Run tagged
+    hostname (`<tag>---<canonical-host>`) derived from it is allowed, so
+    an audience-scoped token is never sent to an unrelated host.
+    """
+    canonical = _validate_worker_audience(audience)
+    aud = urllib.parse.urlsplit(canonical)
+    base = _validate_base(url)
+    parts = urllib.parse.urlsplit(base)
+    if parts.scheme != "https" or not parts.hostname:
+        raise ValueError("worker URL must be an https URL")
+    aud_host = (aud.hostname or "").lower()
+    url_host = (parts.hostname or "").lower()
+    if (parts.port or 443) != (aud.port or 443):
+        raise ValueError("worker URL does not match worker audience")
+    if url_host == aud_host:
+        return base
+    suffix = "---" + aud_host
+    if url_host.endswith(suffix):
+        prefix = url_host[: -len(suffix)]
+        if prefix and "." not in prefix:
+            return base
+    raise ValueError("worker URL does not match worker audience")
+
+
 def _worker_get(base: str, endpoint: str, token: str) -> None:
     req = urllib.request.Request(
         base + endpoint,
@@ -229,7 +256,7 @@ def check_worker(url: str, audience: str, invoker: str) -> None:
     The URL and audience are verified before any token is minted, and the
     Authorization header is only ever sent to the verified worker URL.
     """
-    base = _validate_base(url)
+    base = _validate_worker_url(url, audience)
     token = _acquire_worker_token(audience, invoker)
     _worker_get(base, "/health", token)
     _worker_get(base, "/ready", token)
@@ -242,8 +269,7 @@ def smoke_worker(url: str, audience: str, invoker: str, *,
         raise ValueError("attempts must be a positive integer")
     if delay < 0:
         raise ValueError("delay must be non-negative")
-    _validate_base(url)
-    _validate_worker_audience(audience)
+    _validate_worker_url(url, audience)
     error = None
     for attempt in range(attempts):
         try:
