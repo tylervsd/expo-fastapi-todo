@@ -1160,11 +1160,12 @@ it("refreshes a queued suggestion after 3s and resolves ready without another PO
   }
 });
 
-it("keeps one queued GET in flight and stops after the 2-minute budget", async () => {
+it("keeps one queued GET in flight and stops within the 2-minute wall-clock budget", async () => {
   const api = makeApi();
   await renderHost(api);
   const { queuedGets, stopTimers } = await startQueuedSuggestionUnderFakeTimers(api);
   try {
+    const wallStartMs = Date.now();
     const firstTick = deferred<WorkflowSuggestion>();
     api.getSuggestion.mockReturnValueOnce(firstTick.promise);
     await act(async () => {
@@ -1179,14 +1180,25 @@ it("keeps one queued GET in flight and stops after the 2-minute budget", async (
     await act(async () => {
       firstTick.resolve(pendingSuggestion);
     });
-    // Unchanged pending responses never reset the budget: 40 ticks spend it.
-    for (let elapsed = 3000; elapsed < 120000; elapsed += 3000) {
+    // The 30s of network time counts against the same 2-minute budget:
+    // keep ticking until the session stops instead of assuming a fixed
+    // tick count.
+    let guard = 0;
+    while (
+      screen.queryByText(/Automatic status checks stopped/) === null &&
+      guard < 60
+    ) {
       await act(async () => {
         jest.advanceTimersByTime(3000);
       });
+      guard += 1;
     }
+    expect(screen.getByText(/Automatic status checks stopped/)).toBeTruthy();
+    // The old interval-counting budget allowed ~150s here; wall-clock
+    // accounting must stop within one tick of the 120s session.
+    expect(Date.now() - wallStartMs).toBeLessThanOrEqual(120000 + 3000);
     const getsAfterBudget = api.getSuggestion.mock.calls.length;
-    expect(getsAfterBudget).toBe(queuedGets + 40);
+    expect(getsAfterBudget).toBeLessThan(queuedGets + 40);
     await act(async () => {
       jest.advanceTimersByTime(60000);
     });
@@ -1322,6 +1334,90 @@ it("pauses queued refresh in background and resumes with a fresh budget on foreg
     expect(api.getSuggestion.mock.calls.length).toBe(getsAfterSecondBudget);
     expect(api.suggestWorkflow).toHaveBeenCalledTimes(1);
   } finally {
+    addSpy.mockRestore();
+    stopTimers();
+  }
+});
+
+it("discards an in-flight queued GET that resolves while backgrounded", async () => {
+  const handlers: ((state: AppStateStatus) => void)[] = [];
+  const addSpy = jest
+    .spyOn(AppState, "addEventListener")
+    .mockImplementation((_type, handler) => {
+      handlers.push(handler);
+      return { remove: jest.fn() } as unknown as { remove: () => void };
+    });
+  const api = makeApi();
+  await renderHost(api);
+  const { queuedGets, stopTimers } = await startQueuedSuggestionUnderFakeTimers(api);
+  try {
+    const crossingGet = deferred<WorkflowSuggestion>();
+    api.getSuggestion.mockReturnValueOnce(crossingGet.promise);
+    await act(async () => {
+      jest.advanceTimersByTime(3000);
+    });
+    expect(api.getSuggestion.mock.calls.length).toBe(queuedGets + 1);
+    await act(async () => {
+      handlers[0]("background");
+    });
+    // The backgrounded GET resolves ready while still backgrounded: the
+    // invalidated response must not seed the draft, unlock Apply, or
+    // schedule further polling.
+    await act(async () => {
+      crossingGet.resolve(readySuggestion);
+    });
+    expect(screen.queryByRole("button", { name: "Apply saved suggestions" })).toBeNull();
+    expect(screen.getByLabelText("Todo titles (one per line)")).not.toHaveProp(
+      "value",
+      "Choose a date\nInvite guests",
+    );
+    expect(screen.queryByText(/Automatic status checks stopped/)).toBeNull();
+    await act(async () => {
+      jest.advanceTimersByTime(60000);
+    });
+    expect(api.getSuggestion.mock.calls.length).toBe(queuedGets + 1);
+    // Foreground starts exactly one immediate fresh GET.
+    api.getSuggestion.mockResolvedValueOnce(readySuggestion);
+    await act(async () => {
+      handlers[0]("active");
+    });
+    expect(api.getSuggestion.mock.calls.length).toBe(queuedGets + 2);
+    expect(screen.getByRole("button", { name: "Apply saved suggestions" })).toBeTruthy();
+    expect(api.suggestWorkflow).toHaveBeenCalledTimes(1);
+  } finally {
+    addSpy.mockRestore();
+    stopTimers();
+  }
+});
+
+it("does not poll when mounted while backgrounded", async () => {
+  const handlers: ((state: AppStateStatus) => void)[] = [];
+  const addSpy = jest
+    .spyOn(AppState, "addEventListener")
+    .mockImplementation((_type, handler) => {
+      handlers.push(handler);
+      return { remove: jest.fn() } as unknown as { remove: () => void };
+    });
+  const previousState = AppState.currentState;
+  AppState.currentState = "background";
+  const api = makeApi();
+  await renderHost(api);
+  const { queuedGets, stopTimers } = await startQueuedSuggestionUnderFakeTimers(api);
+  try {
+    expect(handlers).toHaveLength(1);
+    await act(async () => {
+      jest.advanceTimersByTime(60000);
+    });
+    expect(api.getSuggestion.mock.calls.length).toBe(queuedGets);
+    // Foreground starts exactly one immediate fresh GET.
+    AppState.currentState = "active";
+    await act(async () => {
+      handlers[0]("active");
+    });
+    expect(api.getSuggestion.mock.calls.length).toBe(queuedGets + 1);
+    expect(api.suggestWorkflow).toHaveBeenCalledTimes(1);
+  } finally {
+    AppState.currentState = previousState;
     addSpy.mockRestore();
     stopTimers();
   }

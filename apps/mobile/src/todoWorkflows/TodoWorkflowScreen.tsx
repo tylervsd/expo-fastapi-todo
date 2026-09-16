@@ -62,6 +62,18 @@ const INVALID_RESPONSE = "The API returned invalid plan data.";
 const SUGGESTION_POLL_INTERVAL_MS = 3000;
 const SUGGESTION_POLL_BUDGET_MS = 120000;
 
+// Best-effort foreground read so a screen mounted while backgrounded
+// starts paused instead of polling. Missing runtimes degrade to polling.
+function readAppStateStatus(): string {
+  try {
+    const current = AppState?.currentState;
+    if (typeof current === "string" && current.length > 0) return current;
+  } catch {
+    // Fall through to active below.
+  }
+  return "active";
+}
+
 type StartRecord = Extract<PendingWorkflowWrite, { operation: "start" }>;
 type AdvanceRecord = Extract<PendingWorkflowWrite, { operation: "advance" }>;
 type SuggestRecord = Extract<PendingWorkflowWrite, { operation: "suggest" }>;
@@ -565,10 +577,16 @@ export function TodoWorkflowScreen({
     const currentStepId = snapshot.view.step_id;
     const pendingRequestId = suggestionRecord.request_id;
     const editCounter = tasksDraftEditCounterRef.current;
-    let elapsedMs = 0;
+    // Wall-clock session budget: Date.now is mocked by the fake-timer
+    // tests, so timer advances consume the same budget as real time.
+    let sessionStartMs = Date.now();
+    // Bumped whenever the app leaves the foreground so a stale tick
+    // continuation never stops (or schedules for) the fresh session.
+    let backgroundGeneration = 0;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let inFlight = false;
-    let paused = false;
+    // A screen mounted while backgrounded must not poll until foreground.
+    let paused = readAppStateStatus() !== "active";
     let stopped = false;
     const clearTimer = () => {
       if (timer !== null) {
@@ -593,6 +611,12 @@ export function TodoWorkflowScreen({
         stop();
         return;
       }
+      if (Date.now() - sessionStartMs >= SUGGESTION_POLL_BUDGET_MS) {
+        setAutoRefreshEndedFor(pendingRequestId);
+        stop();
+        return;
+      }
+      const tickGeneration = backgroundGeneration;
       inFlight = true;
       if (mountedRef.current && isSessionCurrent(captured)) {
         setSuggestionRefreshing(true);
@@ -607,6 +631,12 @@ export function TodoWorkflowScreen({
         }
       }
       if (stopped || paused || !mountedRef.current || !isSessionCurrent(captured)) return;
+      if (tickGeneration !== backgroundGeneration) {
+        // A background transition invalidated this GET: its result is
+        // already discarded by the sequence guard, so leave the fresh
+        // foreground session (or the paused quiet) untouched.
+        return;
+      }
       if (fetched === null) {
         // A network failure, a 404 that cleared the record, or a stale
         // identity: stop without POST retry and leave Check status to the
@@ -621,8 +651,7 @@ export function TodoWorkflowScreen({
         stop();
         return;
       }
-      elapsedMs += SUGGESTION_POLL_INTERVAL_MS;
-      if (elapsedMs >= SUGGESTION_POLL_BUDGET_MS) {
+      if (Date.now() - sessionStartMs >= SUGGESTION_POLL_BUDGET_MS) {
         setAutoRefreshEndedFor(pendingRequestId);
         stop();
         return;
@@ -630,8 +659,11 @@ export function TodoWorkflowScreen({
       scheduleTick();
     };
     // A fresh pending session owns a fresh budget: the stopped notice is
-    // derived per request ID in render, so no reset is needed here.
-    scheduleTick();
+    // derived per request ID in render, so no reset is needed here. When
+    // already backgrounded, wait for the foreground handler instead.
+    if (!paused) {
+      scheduleTick();
+    }
     // AppState comes from the existing cross-platform runtime, so the same
     // subscription pauses refresh on iOS background and on web hide.
     let subscription: { remove: () => void } | null = null;
@@ -644,13 +676,26 @@ export function TodoWorkflowScreen({
               // Foreground starts a new bounded session with one immediate
               // guarded GET; the tick serializes any in-flight request.
               paused = false;
-              elapsedMs = 0;
+              sessionStartMs = Date.now();
               setAutoRefreshEndedFor(null);
               clearTimer();
               if (!inFlight) void tick();
             }
           } else {
             paused = true;
+            // Invalidate the in-flight GET through the existing guards so
+            // a late backgrounded response can never update state, settle
+            // the waiter, or release locks. Clearing the local flag lets
+            // the next foreground start exactly one immediate fresh GET.
+            backgroundGeneration += 1;
+            suggestionFetchSequence.current += 1;
+            try {
+              suggestionAbortRef.current?.abort();
+            } catch {
+              // Aborting is best-effort; the sequence bump already
+              // discards the stale response.
+            }
+            inFlight = false;
             clearTimer();
           }
         });
