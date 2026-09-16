@@ -4,6 +4,8 @@ Core adoption is learner-completed: 25 resources imported and a no-change plan r
 
 Phase 19 adds an opt-in delivery identity (`github_delivery`, default `null`) with Workload Identity Federation and one deploy service account, plus narrow `ignore_changes` for release-owned Cloud Run image, revision, and traffic fields. Infrastructure changes stay local and reviewed; the release workflow owns only those ignored fields. See the [Phase 19 walkthrough](../../docs/guides/19-continuous-delivery.md).
 
+Phase 20 adds an opt-in async suggestion plane (`async_suggestions`, default `null`) in `sandbox/tasks.tf`: one Cloud Tasks queue (1/s, 2 concurrent, 5 attempts, 10s/60s backoff, full operation logging), one private IAM-protected Cloud Run worker (`app.worker`, min 0/max 1, concurrency 2, 60s timeout, 1 CPU/512MiB, Cloud SQL socket plus numeric database/provider secret versions), a shared Tasks/Scheduler invocation identity plus a worker runtime identity with least-privilege grants, and a paused five-minute Scheduler expiry job calling `/internal/suggestions/expire` with OIDC. Outputs `suggestion_worker_uri`, `suggestion_queue_name`, and `suggestion_invoker_email` are null when disabled. Bootstrap sets real values locally from a verified Phase 20 image digest and inventoried secret metadata; see the commented example in `sandbox/terraform.tfvars.example`. The deploy identity gains worker-scoped `run.developer`, act-as on the worker runtime identity, and Token Creator on the invocation identity for ID-token smoke only.
+
 This root adopts the Google sandbox by import. It owns explicitly declared
 Google resources after handoff; it never manages the project lifecycle,
 billing link, state bucket, Cloudflare Pages, Secret Manager payloads or
@@ -123,6 +125,10 @@ guess a title or import a conditional grant before inventory confirms it.
 | `google_sql_database.app` | Existing application database only; no users or credentials | `projects/project/instances/instance/databases/name`, `instances/instance/databases/name`, `project/instance/name`, `instance/name`, or `name` |
 | `google_cloud_run_v2_service.api` | Existing API image digest, runtime, SQL socket, traffic, and observed invocation/protection settings | `projects/project/locations/region/services/name`, `project/region/name`, or `region/name` |
 | `google_cloud_run_v2_job.migrate` | Existing migration job configuration; Terraform never starts an execution | `projects/project/locations/region/jobs/name`, `project/region/name`, or `region/name` |
+| `google_service_account.async_invoker[0]` / `google_service_account.async_worker[0]` | Phase 20 invocation/runtime identities when `async_suggestions` is non-null | `projects/project/serviceAccounts/email` |
+| `google_cloud_tasks_queue.suggestions[0]` | Phase 20 suggestion queue when `async_suggestions` is non-null | `projects/project/locations/region/queues/name`, `project/region/name`, or `region/name` |
+| `google_cloud_run_v2_service.worker[0]` | Phase 20 worker service when `async_suggestions` is non-null; release owns the image digest | `projects/project/locations/region/services/name`, `project/region/name`, or `region/name` |
+| `google_cloud_scheduler_job.suggestion_expiry[0]` | Phase 20 expiry schedule when `async_suggestions` is non-null; starts paused | `projects/project/locations/region/jobs/name`, `project/region/name`, or `region/name` |
 | `google_billing_budget.sandbox[0]` | Existing project-filtered budget when `budget` is non-null | `billingAccounts/billing-account/budgets/budget-id` |
 | `google_monitoring_uptime_check_config.api[0]` | Existing HTTPS health check when `monitoring` is non-null | `projects/project/uptimeCheckConfigs/check-id` |
 | `google_monitoring_alert_policy.api[0]` | Existing alert policy when `monitoring` is non-null | `projects/project/alertPolicies/policy-id` |

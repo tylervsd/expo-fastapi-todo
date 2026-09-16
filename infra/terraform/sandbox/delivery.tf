@@ -113,3 +113,41 @@ resource "google_service_account_iam_member" "deploy_runtime_user" {
 
   depends_on = [google_project_service.required]
 }
+
+# Phase 20 worker-scoped deployment grants. All require both delivery and
+# async configuration; CI gets no queue administration, worker secret payload
+# access, infrastructure apply, or state-bucket access.
+resource "google_cloud_run_v2_service_iam_member" "deploy_worker" {
+  count = var.github_delivery == null || var.async_suggestions == null ? 0 : 1
+
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_service.worker[0].name
+  role     = "roles/run.developer"
+  member   = "serviceAccount:${google_service_account.deploy[0].email}"
+
+  depends_on = [google_project_service.required]
+}
+
+# Lets the deploy job act as the worker runtime identity where required.
+resource "google_service_account_iam_member" "deploy_worker_user" {
+  count = var.github_delivery == null || var.async_suggestions == null ? 0 : 1
+
+  service_account_id = google_service_account.async_worker[0].name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${google_service_account.deploy[0].email}"
+
+  depends_on = [google_project_service.required]
+}
+
+# Lets the deploy job mint short-lived ID tokens as the invocation identity
+# for authenticated worker smoke only. This is the sole Token Creator grant.
+resource "google_service_account_iam_member" "deploy_invoker_token" {
+  count = var.github_delivery == null || var.async_suggestions == null ? 0 : 1
+
+  service_account_id = google_service_account.async_invoker[0].name
+  role               = "roles/iam.serviceAccountTokenCreator"
+  member             = "serviceAccount:${google_service_account.deploy[0].email}"
+
+  depends_on = [google_project_service.required]
+}

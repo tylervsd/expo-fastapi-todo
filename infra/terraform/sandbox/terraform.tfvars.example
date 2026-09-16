@@ -57,6 +57,8 @@ service_accounts = {
 enabled_services = [
   "artifactregistry.googleapis.com",
   "billingbudgets.googleapis.com",
+  "cloudscheduler.googleapis.com",
+  "cloudtasks.googleapis.com",
   "iam.googleapis.com",
   "iamcredentials.googleapis.com",
   "monitoring.googleapis.com",
@@ -204,6 +206,30 @@ migration_job = {
 # Delivery identity is opt-in. Keep null in committed config; the learner sets
 # real numeric GitHub IDs locally during bootstrap. Never commit real values.
 github_delivery = null
+
+# Async suggestion delivery is opt-in. Keep null in committed config; the
+# learner sets real bootstrap values locally after shipping a Phase
+# 20-compatible image (inline mode still active, no worker release target)
+# and verifying its digest. Secret keys must match inventoried secret
+# metadata; versions are numeric Secret Manager versions, never payloads.
+# The Cloud Tasks and Scheduler APIs must be present in enabled_services.
+# Scheduler starts paused; resume only after private smoke and enqueue checks.
+async_suggestions = null
+# Example bootstrap inputs (sanitized mock values only, never committed set):
+# async_suggestions = {
+#   worker_name             = "example-phase20-worker"
+#   worker_image            = "us-west1-docker.pkg.dev/example-phase18-project/example-api/api@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+#   queue_name              = "example-suggestions"
+#   scheduler_name          = "example-suggestion-expiry"
+#   invoker_account_id      = "example-sugg-invoker"
+#   worker_account_id       = "example-sugg-worker"
+#   scheduler_paused        = true
+#   database_secret_key     = "database_url"
+#   database_secret_version = "1"
+#   provider_secret_key     = "openrouter_api_key"
+#   provider_secret_version = "1"
+#   provider_model          = "openrouter/free"
+# }
 
 # Keep optional operations absent until inventory records existing IDs/settings or
 # a learner approves the separate additive budget/monitoring plan.
