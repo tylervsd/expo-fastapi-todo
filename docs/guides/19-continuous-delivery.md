@@ -310,6 +310,13 @@ rehearsed failure. Record run output and final traffic.
 
 ## Recovery
 
+Phase 20 note: this guide's pause/rollback covers the API service only. Once the
+Phase 20 worker exists, pause the Cloud Tasks queue and Scheduler alongside
+delivery, inspect suggestion claims before recovery, and restore both services
+(API then worker). A return to pre-Phase-20 code additionally requires stopping
+enqueue and draining/expiring outstanding work — it is not traffic-only rollback.
+See [Guide 20](20-cloud-tasks-scheduler.md#pause-and-recovery).
+
 Decide from observed cloud state before each operation:
 
 - Migration failure: candidate is never deployed; fix the migration
