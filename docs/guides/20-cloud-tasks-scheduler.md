@@ -123,14 +123,17 @@ First activation ships the compatible image **without** activating cloud mode.
    docker inspect --format='{{index .RepoDigests 0}}' <local-image-tag>
    ```
 
-2. Deploy it with inline mode still active (`SUGGESTION_EXECUTION` unset or
+2. Deploy the verified digest with inline mode still active (`SUGGESTION_EXECUTION` unset or
    `inline`) and no worker release target. Drain legacy inline requests
    (expected: service serves the digest, no `CLOUD_WORKER_SERVICE` set):
 
    ```sh
+   gcloud run deploy "$CLOUD_SERVICE" \
+     --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
+     --image="$IMAGE_DIGEST"
    gcloud run services describe "$CLOUD_SERVICE" \
      --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
-     --format='value(spec.template.spec.containers[0].image)'
+     --format='value(spec.template.spec.containers[0].image)'  # expect $IMAGE_DIGEST
    gh variable list | grep -E 'CLOUD_WORKER_SERVICE|DELIVERY_ENABLED'
    ```
 
@@ -146,15 +149,22 @@ First activation ships the compatible image **without** activating cloud mode.
    # Wait for the active deployment to finish; cancel only identified pending runs.
    ```
 
-4. Apply the reviewed Terraform locally with the verified image digest
-   (`async_suggestions.worker_image` must be an immutable digest).
-   Expected: plan shows only the reviewed async additions; apply succeeds:
+4. Apply the reviewed Terraform locally with the verified image digest.
+   Only the worker image is Terraform-owned (`async_suggestions.worker_image`
+   must be an immutable digest); the API service image stays release-owned
+   (deployed in step 2) under `ignore_changes`. Set the worker image to the
+   verified digest in the local reviewed (uncommitted) tfvars, then plan to a
+   file, confirm the digest is in the plan, and apply that exact plan.
+   Expected: plan shows only the reviewed async additions with `$IMAGE_DIGEST`
+   as the worker image; apply succeeds:
 
    ```sh
    terraform -chdir=infra/terraform/sandbox init -backend-config=backend.hcl
-   terraform -chdir=infra/terraform/sandbox plan
+   # Local reviewed tfvars must set async_suggestions.worker_image to $IMAGE_DIGEST. Then:
+   terraform -chdir=infra/terraform/sandbox plan -out=/tmp/sandbox-phase20.tfplan | tee /tmp/sandbox-phase20-plan.txt
+   grep -F "$IMAGE_DIGEST" /tmp/sandbox-phase20-plan.txt  # worker image must be the verified digest
    # Inspect the plan; reject unexpected replacements, deletes, or unrelated changes.
-   terraform -chdir=infra/terraform/sandbox apply
+   terraform -chdir=infra/terraform/sandbox apply /tmp/sandbox-phase20.tfplan
    terraform -chdir=infra/terraform/sandbox output suggestion_queue_name
    terraform -chdir=infra/terraform/sandbox output suggestion_worker_uri
    terraform -chdir=infra/terraform/sandbox output suggestion_invoker_email
@@ -222,12 +232,20 @@ First activation ships the compatible image **without** activating cloud mode.
    gh variable list | grep -E 'SUGGESTION|CLOUD_TASKS|CLOUD_WORKER|TASK_INVOKER|GOOGLE_CLOUD'
    ```
 
-9. Test enqueue on a disposable sandbox workflow, then resume Scheduler and
-   delivery only after private smoke and enqueue checks pass. Expected: the
+9. Release the cloud-mode configuration set in step 8 (variables take effect
+   on the next release: the workflow rolls the same verified digest to the
+   worker first, then the API — see [Guide 19 activation](19-continuous-delivery.md#activate-delivery)).
+   Only then test enqueue on a disposable sandbox workflow; resume Scheduler
+   and delivery only after private smoke and enqueue checks pass. Expected: the
+   release summary shows API + worker both serving `$IMAGE_DIGEST`; the
    disposable reservation leaves `queued` state and the worker log shows one
    claim; Scheduler flips to enabled; delivery re-enables:
 
    ```sh
+   gh workflow run release.yml --ref main
+   # Approve the sandbox environment prompt; wait for success and confirm the
+   # release summary shows the API and worker both serving $IMAGE_DIGEST.
+   gh run list --workflow release.yml
    # Submit one disposable suggestion request through the app, then watch it:
    gcloud tasks list --queue="$CLOUD_TASKS_QUEUE" \
      --project="$CLOUD_PROJECT" --location="$CLOUD_TASKS_LOCATION"
