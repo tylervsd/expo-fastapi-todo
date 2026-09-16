@@ -48,6 +48,8 @@ jobs:
       CLOUD_SERVICE: ${{ vars.CLOUD_SERVICE }}
       CLOUD_MIGRATION_JOB: ${{ vars.CLOUD_MIGRATION_JOB }}
       CLOUD_IMAGE: ${{ vars.CLOUD_IMAGE }}
+      CLOUD_WORKER_SERVICE: ${{ vars.CLOUD_WORKER_SERVICE }}
+      CLOUD_TASK_INVOKER_SERVICE_ACCOUNT: ${{ vars.CLOUD_TASK_INVOKER_SERVICE_ACCOUNT }}
       GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
       GCP_DEPLOY_SERVICE_ACCOUNT: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
     steps:
@@ -60,6 +62,10 @@ jobs:
           for var in CLOUD_PROJECT CLOUD_REGION CLOUD_SERVICE CLOUD_MIGRATION_JOB CLOUD_IMAGE GCP_WIF_PROVIDER GCP_DEPLOY_SERVICE_ACCOUNT; do
             [ -n "${!var:-}" ] || { echo "missing required environment: $var" >&2; exit 1; }
           done
+          if [ -n "${CLOUD_WORKER_SERVICE:-}" ] || [ -n "${CLOUD_TASK_INVOKER_SERVICE_ACCOUNT:-}" ]; then
+            [ -n "${CLOUD_WORKER_SERVICE:-}" ] || { echo "worker release needs CLOUD_WORKER_SERVICE" >&2; exit 1; }
+            [ -n "${CLOUD_TASK_INVOKER_SERVICE_ACCOUNT:-}" ] || { echo "worker release needs CLOUD_TASK_INVOKER_SERVICE_ACCOUNT" >&2; exit 1; }
+          fi
           [ "$(git rev-parse HEAD)" = "$GITHUB_SHA" ] || { echo "checkout SHA does not match $GITHUB_SHA" >&2; exit 1; }
 
       # Pinned at execution time from google-github-actions/setup-gcloud v3.
@@ -99,6 +105,11 @@ jobs:
           CANDIDATE="$CLOUD_SERVICE-$RELEASE_ID"
           echo "candidate revision: $CANDIDATE"
           [ "${#CANDIDATE}" -le 63 ] || { echo "candidate revision name exceeds 63 characters" >&2; exit 1; }
+          if [ -n "${CLOUD_WORKER_SERVICE:-}" ]; then
+            WORKER_CANDIDATE="$CLOUD_WORKER_SERVICE-$RELEASE_ID"
+            echo "worker candidate revision: $WORKER_CANDIDATE"
+            [ "${#WORKER_CANDIDATE}" -le 63 ] || { echo "worker candidate revision name exceeds 63 characters" >&2; exit 1; }
+          fi
 
       - name: Build release image once
         run: |
@@ -123,6 +134,7 @@ jobs:
           done
           [ "$READY" = "1" ] || { echo "local container health check timed out" >&2; exit 1; }
           [ "$(docker exec "$CONTAINER_ID" id -u)" = "10001" ] || { echo "container is not running as uid 10001" >&2; exit 1; }
+          docker exec "$CONTAINER_ID" python -c 'import app.worker' || { echo "worker entrypoint import failed" >&2; exit 1; }
 
       - name: Scan release image
         id: image_scan

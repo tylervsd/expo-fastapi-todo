@@ -325,3 +325,18 @@
   [[ "$output" == *"::warning::"* ]] || return 1
   [[ "$output" == *"exit-code: 1"* ]] || return 1
 }
+
+@test "release extends one digest to the private worker without a second build" {
+  workflow=.github/workflows/release.yml
+  grep -F 'CLOUD_WORKER_SERVICE' "$workflow" || return 1
+  grep -F 'CLOUD_TASK_INVOKER_SERVICE_ACCOUNT' "$workflow" || return 1
+  grep -F "import app.worker" "$workflow" || return 1
+  [ "$(grep -c 'docker buildx build' "$workflow")" -eq 1 ] || return 1
+  grep -F 'release_deploy.py "$IMAGE_DIGEST" "$PREVIOUS_REVISION"' "$workflow" || return 1
+  grep -F 'smoke_worker' scripts/release_deploy.py || return 1
+  grep -F 'smoke_worker' scripts/release_smoke.py || return 1
+  grep -F 'CLOUD_WORKER_SERVICE' scripts/release_deploy.py || return 1
+  grep -F 'print-identity-token' scripts/release_smoke.py || return 1
+  grep -F -- '--include-email' scripts/release_smoke.py || return 1
+  grep -F '::add-mask::' scripts/release_smoke.py || return 1
+}
