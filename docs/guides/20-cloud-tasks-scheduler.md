@@ -95,33 +95,153 @@ Every bound in one place:
 First activation ships the compatible image **without** activating cloud mode.
 `CLOUD_WORKER_SERVICE` absent preserves the exact Phase 19 path.
 
+> Authorization gate: every `gcloud`/`terraform`/`gh` command below is an
+> operator instruction for a learner-authorized session. None of them has
+> been run on this branch; live activation stays pending until the learner
+> authorizes it. Set the required variables first — angle brackets are
+> learner input, never committed values:
+>
+> ```sh
+> export CLOUD_PROJECT="<sandbox-project-id>"
+> export CLOUD_REGION="<sandbox-region>"          # Cloud Run + Scheduler location
+> export CLOUD_TASKS_LOCATION="<tasks-location>"  # usually the same region
+> export CLOUD_TASKS_QUEUE="<suggestions-queue>"   # var.async_suggestions.queue_name
+> export SCHEDULER_JOB="<suggestion-expiry-job>"   # var.async_suggestions.scheduler_name
+> export CLOUD_SERVICE="<api-service-name>"        # var.api.service_name
+> export WORKER_SERVICE="<phase20-worker-name>"    # var.async_suggestions.worker_name
+> export INVOKER_SA="<invoker-sa-email>"           # output suggestion_invoker_email
+> export WORKER_URL="https://<worker-host>.run.app" # output suggestion_worker_uri (bare origin)
+> export IMAGE_DIGEST="<registry-path>@sha256:<64-hex>"  # verified compatible image
+> ```
+
 1. Build and verify one Phase 20-compatible image. Confirm the worker entry
-   point inside the built container:
-   `docker exec <container> python -c 'import app.worker'`.
+   point inside the built container, and record the immutable digest
+   (expected: import succeeds, digest ends in `@sha256:<64-hex>`):
+
+   ```sh
+   docker exec <container> python -c 'import app.worker'
+   docker inspect --format='{{index .RepoDigests 0}}' <local-image-tag>
+   ```
+
 2. Deploy it with inline mode still active (`SUGGESTION_EXECUTION` unset or
-   `inline`) and no worker release target. Drain legacy inline requests.
+   `inline`) and no worker release target. Drain legacy inline requests
+   (expected: service serves the digest, no `CLOUD_WORKER_SERVICE` set):
+
+   ```sh
+   gcloud run services describe "$CLOUD_SERVICE" \
+     --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
+     --format='value(spec.template.spec.containers[0].image)'
+   gh variable list | grep -E 'CLOUD_WORKER_SERVICE|DELIVERY_ENABLED'
+   ```
+
 3. Pause delivery with the Guide 19 process (`DELIVERY_ENABLED=false`,
    disable `release.yml`, inspect runs; never cancel an active mutation to
-   free the lock).
+   free the lock). Expected: variable reads `false`, workflow disabled, no
+   active mutation cancelled:
+
+   ```sh
+   gh variable set DELIVERY_ENABLED --body false
+   gh workflow disable release.yml
+   gh run list --workflow release.yml
+   # Wait for the active deployment to finish; cancel only identified pending runs.
+   ```
+
 4. Apply the reviewed Terraform locally with the verified image digest
    (`async_suggestions.worker_image` must be an immutable digest).
+   Expected: plan shows only the reviewed async additions; apply succeeds:
+
+   ```sh
+   terraform -chdir=infra/terraform/sandbox init -backend-config=backend.hcl
+   terraform -chdir=infra/terraform/sandbox plan
+   # Inspect the plan; reject unexpected replacements, deletes, or unrelated changes.
+   terraform -chdir=infra/terraform/sandbox apply
+   terraform -chdir=infra/terraform/sandbox output suggestion_queue_name
+   terraform -chdir=infra/terraform/sandbox output suggestion_worker_uri
+   terraform -chdir=infra/terraform/sandbox output suggestion_invoker_email
+   ```
+
 5. Verify IAM: no `allUsers`/`allAuthenticatedUsers` on the worker; the
    invocation account holds `roles/run.invoker` on the worker only; the API
    runtime holds queue-scoped `roles/cloudtasks.enqueuer` plus
    `roles/iam.serviceAccountUser` on the invocation identity; the worker
    runtime holds only Cloud SQL access plus the two numeric secret versions.
+   Expected: no public members; exactly the scoped bindings:
+
+   ```sh
+   gcloud run services get-iam-policy "$WORKER_SERVICE" \
+     --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
+     --format=json | grep -E 'allUsers|allAuthenticatedUsers|run.invoker' || echo "no public bindings"
+   gcloud run services get-iam-policy "$WORKER_SERVICE" \
+     --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
+     --flatten='bindings[].members' --format='value(bindings.members)' | grep "$INVOKER_SA"
+   gcloud tasks queues get-iam-policy "$CLOUD_TASKS_QUEUE" \
+     --project="$CLOUD_PROJECT" --location="$CLOUD_TASKS_LOCATION"
+   gcloud iam service-accounts get-iam-policy "$INVOKER_SA" --project="$CLOUD_PROJECT"
+   ```
+
 6. Smoke private invocation with a short-lived ID token from the invocation
    account against the canonical `run.app` root audience (never reuse an
    OAuth access token; mask the token; include the email claim).
+   Expected: `/health` returns `{"status": "ok"`; unauthenticated call fails:
+
+   ```sh
+   TOKEN=$(gcloud auth print-identity-token --impersonate-service-account="$INVOKER_SA" --audiences="$WORKER_URL")
+   curl -sS -H "Authorization: Bearer $TOKEN" "$WORKER_URL/health"
+   unset TOKEN
+   curl -sS -o /dev/null -w '%{http_code}\n' "$WORKER_URL/health"  # expect 401/403
+   ```
+
 7. Verify `GET /ready` (bounded `SELECT 1`) and an empty-object
    `POST /internal/suggestions/expire` returning `{"expired": N}`.
+   Expected: `{"status": "ready"}` (or `ok`) and a JSON expired count:
+
+   ```sh
+   TOKEN=$(gcloud auth print-identity-token --impersonate-service-account="$INVOKER_SA" --audiences="$WORKER_URL")
+   curl -sS -H "Authorization: Bearer $TOKEN" "$WORKER_URL/ready"
+   curl -sS -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+     -d '{}' "$WORKER_URL/internal/suggestions/expire"
+   unset TOKEN
+   ```
+
 8. Set cloud-mode API configuration (`SUGGESTION_EXECUTION=cloud_tasks`,
    `GOOGLE_CLOUD_PROJECT`, `CLOUD_TASKS_LOCATION`, `CLOUD_TASKS_QUEUE`,
    `SUGGESTION_WORKER_URL` as a bare `https://<host>.run.app` origin,
    `TASK_INVOKER_SERVICE_ACCOUNT`) and the worker release variables
    (`CLOUD_WORKER_SERVICE`, `CLOUD_TASK_INVOKER_SERVICE_ACCOUNT`).
-9. Resume Scheduler and delivery only after private smoke and enqueue checks
-   pass. Startup fails on unknown mode or incomplete cloud config; cloud mode
+   Expected: each variable echoes back the intended value before any release:
+
+   ```sh
+   gh variable set SUGGESTION_EXECUTION --body cloud_tasks
+   gh variable set GOOGLE_CLOUD_PROJECT --body "$CLOUD_PROJECT"
+   gh variable set CLOUD_TASKS_LOCATION --body "$CLOUD_TASKS_LOCATION"
+   gh variable set CLOUD_TASKS_QUEUE --body "$CLOUD_TASKS_QUEUE"
+   gh variable set SUGGESTION_WORKER_URL --body "$WORKER_URL"
+   gh variable set TASK_INVOKER_SERVICE_ACCOUNT --body "$INVOKER_SA"
+   gh variable set CLOUD_WORKER_SERVICE --body "$WORKER_SERVICE"
+   gh variable set CLOUD_TASK_INVOKER_SERVICE_ACCOUNT --body "$INVOKER_SA"
+   gh variable list | grep -E 'SUGGESTION|CLOUD_TASKS|CLOUD_WORKER|TASK_INVOKER|GOOGLE_CLOUD'
+   ```
+
+9. Test enqueue on a disposable sandbox workflow, then resume Scheduler and
+   delivery only after private smoke and enqueue checks pass. Expected: the
+   disposable reservation leaves `queued` state and the worker log shows one
+   claim; Scheduler flips to enabled; delivery re-enables:
+
+   ```sh
+   # Submit one disposable suggestion request through the app, then watch it:
+   gcloud tasks list --queue="$CLOUD_TASKS_QUEUE" \
+     --project="$CLOUD_PROJECT" --location="$CLOUD_TASKS_LOCATION"
+   gcloud logging read 'resource.type="cloud_run_revision" AND textPayload:"suggestion"' \
+     --project="$CLOUD_PROJECT" --freshness=30m --limit=20
+   gcloud scheduler jobs resume "$SCHEDULER_JOB" \
+     --project="$CLOUD_PROJECT" --location="$CLOUD_REGION"
+   gcloud tasks queues resume "$CLOUD_TASKS_QUEUE" \
+     --project="$CLOUD_PROJECT" --location="$CLOUD_TASKS_LOCATION"
+   gh workflow enable release.yml
+   gh variable set DELIVERY_ENABLED --body true
+   ```
+
+   Startup fails on unknown mode or incomplete cloud config; cloud mode
    never falls back to inline on enqueue error.
 
 A return to pre-Phase-20 code is not ordinary traffic-only rollback: stop
@@ -162,11 +282,49 @@ gcloud tasks list --queue="$CLOUD_TASKS_QUEUE" \
 gcloud logging read 'resource.type="cloud_tasks_queue"' --freshness=1h --limit=20
 ```
 
+Queue metrics live in Cloud Monitoring under the `cloudtasks.googleapis.com`
+metric namespace. List available queue time series, then read dispatch,
+attempt, and backlog signals (expected: one time-series entry per metric;
+empty output means no dispatch activity in the window, not a broken query):
+
+```sh
+gcloud monitoring time-series list \
+  --project="$CLOUD_PROJECT" \
+  --filter='metric.type=starts_with("cloudtasks.googleapis.com/queue/")' \
+  --format='value(metric.type)' | sort -u
+gcloud monitoring time-series list \
+  --project="$CLOUD_PROJECT" \
+  --filter='metric.type="cloudtasks.googleapis.com/queue/task_attempt_dispatch_count"' \
+  --format='table(metric.labels.queue_name, points.value.int64Value)'
+gcloud monitoring time-series list \
+  --project="$CLOUD_PROJECT" \
+  --filter='metric.type="cloudtasks.googleapis.com/queue/task_attempt_count"' \
+  --format='table(metric.labels.queue_name, points.value.int64Value)'
+gcloud monitoring time-series list \
+  --project="$CLOUD_PROJECT" \
+  --filter='metric.type="cloudtasks.googleapis.com/queue/depth"' \
+  --format='table(metric.labels.queue_name, points.value.int64Value)'
+```
+
+Console alternative: Monitoring → Metrics Explorer → resource type
+`Cloud Tasks Queue`, then plot `Task attempt dispatch count`
+(dispatches), `Task attempt count` (attempt outcomes), and queue depth
+(backlog). Filter by `queue_name`; group by response code where offered to
+separate `400`/`422` validation failures from `503` retries.
+
 A poison task is a task whose body repeatedly fails validation (`400`/`422`
 in worker logs) and burns queue attempts without progress. Identify it by the
-task name in the worker logs, inspect its attempts with `gcloud tasks
-describe`, then delete that one task explicitly — never purge the queue to
-fix one bad task. Queue exhaustion has no application callback or
+task name in the worker logs, inspect its attempts, then delete that one
+task explicitly — never purge the queue to fix one bad task:
+
+```sh
+gcloud tasks describe "<task-full-name>" \
+  --queue="$CLOUD_TASKS_QUEUE" \
+  --project="$CLOUD_PROJECT" --location="$CLOUD_TASKS_LOCATION"
+gcloud tasks delete "<task-full-name>" \
+  --queue="$CLOUD_TASKS_QUEUE" \
+  --project="$CLOUD_PROJECT" --location="$CLOUD_TASKS_LOCATION"
+``` Queue exhaustion has no application callback or
 dead-letter queue; Scheduler expiry (`failed/timeout`) is the eventual
 database transition.
 
@@ -212,17 +370,77 @@ gcloud scheduler jobs pause "$SCHEDULER_JOB" \
 
 Recovery order for compatible (Phase 20) revisions: restore attempted
 promotions API-then-worker to the captured revisions from the release
-summary, attempting both restores even if the first fails; verify each with
-its smoke (`scripts/release_smoke.py` for the API, authenticated
-`/health` + `/ready` for the worker); remove only this release's tags; keep
-delivery paused until the failure is fixed. Migration downgrades are never
-part of rollback — the expanded database stays.
+summary, attempting both restores even if the first fails. `API_PREVIOUS`
+and `WORKER_PREVIOUS` come from the release summary; inspect each target
+before cutover. Expected: each describe shows the recorded revision on the
+expected sandbox service; each smoke passes; traffic ends on the previous
+revisions with only this release's tags removed:
 
-Returning to pre-Phase-20 code additionally requires: confirming no
-unclaimed pending cloud rows remain (run the expire sweep or wait out the
-15-minute lifetime), expiring or draining claimed work, disabling cloud
-enqueue, and restoring inline stable configuration — all while delivery is
-paused.
+```sh
+# 0. Inspect claims before any recovery mutation: what already ran
+#    (provider_started_at set) must not be re-driven by hand.
+gcloud logging read 'resource.type="cloud_run_revision" AND textPayload:"suggestion"' \
+  --project="$CLOUD_PROJECT" --freshness=2h --limit=50
+TOKEN=$(gcloud auth print-identity-token --impersonate-service-account="$INVOKER_SA" --audiences="$WORKER_URL")
+curl -sS -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{}' "$WORKER_URL/internal/suggestions/expire"
+unset TOKEN
+# 1. Restore the API, then the worker — attempt both even if the first fails.
+gcloud run revisions describe "$API_PREVIOUS" \
+  --project="$CLOUD_PROJECT" --region="$CLOUD_REGION"
+gcloud run services update-traffic "$CLOUD_SERVICE" \
+  --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
+  --to-revisions="$API_PREVIOUS=100"
+gcloud run revisions describe "$WORKER_PREVIOUS" \
+  --project="$CLOUD_PROJECT" --region="$CLOUD_REGION"
+gcloud run services update-traffic "$WORKER_SERVICE" \
+  --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
+  --to-revisions="$WORKER_PREVIOUS=100"
+# 2. Verify each with its smoke (API stable URL, worker authenticated probes).
+python3 scripts/release_smoke.py "$STABLE_URL"
+TOKEN=$(gcloud auth print-identity-token --impersonate-service-account="$INVOKER_SA" --audiences="$WORKER_URL")
+curl -sS -H "Authorization: Bearer $TOKEN" "$WORKER_URL/health"
+curl -sS -H "Authorization: Bearer $TOKEN" "$WORKER_URL/ready"
+unset TOKEN
+# 3. Remove only this release's tags; keep delivery paused until fixed.
+gcloud run services update-traffic "$CLOUD_SERVICE" \
+  --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
+  --remove-tags="$RELEASE_ID"
+gcloud run services update-traffic "$WORKER_SERVICE" \
+  --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
+  --remove-tags="$RELEASE_ID"
+```
+
+Migration downgrades are never part of rollback — the expanded database
+stays.
+
+Returning to pre-Phase-20 code additionally requires stopping enqueue,
+pausing queue and Scheduler, draining or expiring outstanding work, then
+restoring inline stable configuration — all while delivery stays paused.
+Expected: queue and Scheduler paused, no unclaimed pending rows left,
+variables read back `inline`/empty, delivery still disabled:
+
+```sh
+gh variable set DELIVERY_ENABLED --body false
+gh workflow disable release.yml
+gcloud tasks queues pause "$CLOUD_TASKS_QUEUE" \
+  --project="$CLOUD_PROJECT" --location="$CLOUD_TASKS_LOCATION"
+gcloud scheduler jobs pause "$SCHEDULER_JOB" \
+  --project="$CLOUD_PROJECT" --location="$CLOUD_REGION"
+# Drain or expire outstanding work: run the expire sweep with a worker token,
+# or wait out the 15-minute pending lifetime, then confirm the queue is empty.
+TOKEN=$(gcloud auth print-identity-token --impersonate-service-account="$INVOKER_SA" --audiences="$WORKER_URL")
+curl -sS -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{}' "$WORKER_URL/internal/suggestions/expire"
+unset TOKEN
+gcloud tasks list --queue="$CLOUD_TASKS_QUEUE" \
+  --project="$CLOUD_PROJECT" --location="$CLOUD_TASKS_LOCATION"
+# Disable cloud enqueue and restore the inline stable configuration.
+gh variable set SUGGESTION_EXECUTION --body inline
+gh variable delete CLOUD_WORKER_SERVICE || true
+gh variable delete CLOUD_TASK_INVOKER_SERVICE_ACCOUNT || true
+gh variable list | grep -E 'SUGGESTION_EXECUTION|CLOUD_WORKER_SERVICE|DELIVERY_ENABLED'
+```
 
 ## Acceptance record
 
@@ -253,8 +471,8 @@ credentials; they are not deployed proof.
 - Delete disposable sandbox workflows and their suggestion rows through the
   existing app flows; cleanup never deletes rows itself — it only marks
   expired pending rows `failed/timeout`.
-- Delete identified poison tasks individually (`gcloud tasks delete`); never
-  purge the queue.
+- Delete identified poison tasks individually (full per-task command in
+  [Local verification](#local-verification)); never purge the queue.
 - After the rehearsal, run a local Terraform plan confirming no
   release-field drift, then update phase completion status using repository
   conventions. Keep unobserved cases pending.
