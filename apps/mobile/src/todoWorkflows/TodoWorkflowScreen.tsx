@@ -2304,15 +2304,41 @@ function TaskBreakdownTemplate({
           <Text accessibilityLiveRegion="polite" style={styles.status}>
             Suggestions are unavailable. You can enter todo titles manually.
           </Text>
-          <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Try suggestions again"
-          disabled={disabled}
-          style={styles.refreshButton}
-          onPress={onSuggest}
-        >
-            <Text style={styles.refreshButtonText}>Try suggestions again</Text>
-          </Pressable>
+          {!newSuggestionWarning ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Try suggestions again"
+              disabled={disabled}
+              style={styles.refreshButton}
+              onPress={onStartAnother}
+            >
+              <Text style={styles.refreshButtonText}>Try suggestions again</Text>
+            </Pressable>
+          ) : (
+            <View style={styles.screen}>
+              <Text accessibilityLiveRegion="polite" style={styles.status}>
+                Trying suggestions again may bill the earlier request too.
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Try suggestions again anyway"
+                disabled={disabled}
+                style={styles.addButton}
+                onPress={onConfirmStartAnother}
+              >
+                <Text style={styles.addButtonText}>Try suggestions again anyway</Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Cancel retry"
+                disabled={disabled}
+                style={styles.refreshButton}
+                onPress={onCancelStartAnother}
+              >
+                <Text style={styles.refreshButtonText}>Cancel</Text>
+              </Pressable>
+            </View>
+          )}
         </View>
       )}
       {suggestion?.status === "ready" && !suggesting && (

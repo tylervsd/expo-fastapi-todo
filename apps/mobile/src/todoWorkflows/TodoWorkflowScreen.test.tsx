@@ -1075,6 +1075,43 @@ it("starts another pending request with a new UUID after an explicit warning", a
   });
 });
 
+it("warns before retrying a failed suggestion with a new UUID", async () => {
+  const api = makeApi();
+  let requestNumber = 0;
+  api.getWorkflow.mockResolvedValue(collectWorkflow);
+  await renderHost(api, createAppQueryClient(), {
+    generateRequestId: () => (requestNumber++ === 0 ? REQUEST_ID : REQUEST_ID_2),
+    initialWorkflowId: WORKFLOW_ID,
+  });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Suggest todos" })).toHaveProp(
+    "accessibilityState",
+    expect.objectContaining({ disabled: false }),
+  ));
+  api.suggestWorkflow.mockResolvedValueOnce(pendingSuggestion).mockResolvedValueOnce({
+    ...readySuggestion,
+    request_id: REQUEST_ID_2,
+  });
+  api.getSuggestion.mockResolvedValueOnce(pendingSuggestion);
+  await fireEvent.press(screen.getByRole("button", { name: "Suggest todos" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Start another request" })).toBeTruthy());
+  api.getSuggestion.mockResolvedValueOnce(failedSuggestion).mockResolvedValueOnce({
+    ...readySuggestion,
+    request_id: REQUEST_ID_2,
+  });
+  await fireEvent.press(screen.getByRole("button", { name: "Check status" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Try suggestions again" })).toBeTruthy());
+  await fireEvent.press(screen.getByRole("button", { name: "Try suggestions again" }));
+  expect(api.suggestWorkflow).toHaveBeenCalledTimes(1);
+  expect(screen.getByText(/may bill the earlier request/)).toBeTruthy();
+  await fireEvent.press(screen.getByRole("button", { name: "Try suggestions again anyway" }));
+  await waitFor(() => expect(api.suggestWorkflow).toHaveBeenCalledTimes(2));
+  expect(api.suggestWorkflow.mock.calls[1][1]).toEqual({
+    request_id: REQUEST_ID_2,
+    expected_revision: 2,
+    step_id: `${WORKFLOW_ID}:COLLECT_TASKS`,
+  });
+});
+
 it("retains a deferred second suggestion request until reconciliation", async () => {
   const secondRequest = deferred<WorkflowSuggestion>();
   const api = makeApi();
