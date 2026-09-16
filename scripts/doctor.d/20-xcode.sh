@@ -15,11 +15,13 @@ check_xcode_version() {
     return
   }
   version_first_line=$(printf '%s\n' "$version_output" | sed -n '1p')
-  case "$version_first_line" in
-    'Xcode 26.6') doctor_pass 'Xcode 26.6 selected' ;;
-    '') doctor_fail 'requires Xcode 26.6; detected <no output>' ;;
-    *) doctor_fail "requires Xcode 26.6; detected $version_first_line" ;;
-  esac
+  if printf '%s\n' "$version_first_line" | grep -Eq '^Xcode (26\.6|27\.[0-9]+([.][0-9]+)*)$'; then
+    doctor_pass "$version_first_line selected"
+  elif [ -z "$version_first_line" ]; then
+    doctor_fail 'requires Xcode 26.6 or 27.x; detected <no output>'
+  else
+    doctor_fail "requires Xcode 26.6 or 27.x; detected $version_first_line"
+  fi
 }
 
 check_xcode_first_launch() {
@@ -40,12 +42,12 @@ check_xcode_simulator() {
     return
   }
 
-  if ! printf '%s\n' "$runtimes" | grep -Eq '^[[:space:]]*iOS 26([.[:space:](]|$)'; then
-    doctor_fail 'requires an available iOS 26 simulator runtime'
+  if ! printf '%s\n' "$runtimes" | grep -Eq '^[[:space:]]*iOS (26|27)([.[:space:](]|$)'; then
+    doctor_fail 'requires an available iOS 26 or 27 simulator runtime'
     return
   fi
   if printf '%s\n' "$devices" | grep -Eq '^[[:space:]]*iPhone 17 Pro[[:space:]]+\('; then
-    doctor_pass 'iOS 26 simulator includes iPhone 17 Pro'
+    doctor_pass 'iOS 26 or 27 simulator includes iPhone 17 Pro'
   else
     doctor_fail 'requires an available iPhone 17 Pro simulator device'
   fi
