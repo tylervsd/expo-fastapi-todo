@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -44,6 +44,9 @@ class CloudTasksConfig:
     queue: str
     worker_url: str
     invoker_email: str
+
+
+EnqueueRunner = Callable[[int, str], None]
 
 
 def _require_nonempty(value: object, *, name: str) -> str:
@@ -119,18 +122,16 @@ def _require_task_identity(suggestion_id: object, fingerprint: object) -> None:
         raise EnqueueUnavailable("suggestion enqueue is unavailable")
 
 
-def enqueue_suggestion(suggestion_id: int, fingerprint: str) -> None:
-    """Create (or deduplicate) the delivery task for a committed reservation.
+def enqueue_suggestion_with_config(
+    config: CloudTasksConfig, suggestion_id: int, fingerprint: str
+) -> None:
+    """Create (or deduplicate) the delivery task using a startup-bound config.
 
     Only `AlreadyExists` is accepted as duplicate success; every other
     failure raises sanitized `EnqueueUnavailable`. Never logs the credential
     or the task body.
     """
     _require_task_identity(suggestion_id, fingerprint)
-    try:
-        config = read_cloud_config()
-    except ValueError as exc:
-        raise EnqueueUnavailable("suggestion enqueue is unavailable") from exc
     body = json.dumps({"version": TASK_VERSION, "suggestion_id": suggestion_id}).encode()
     if len(body) > MAX_TASK_BODY_BYTES:
         raise EnqueueUnavailable("suggestion enqueue is unavailable")
@@ -171,3 +172,30 @@ def enqueue_suggestion(suggestion_id: int, fingerprint: str) -> None:
         raise
     except Exception as exc:
         raise EnqueueUnavailable("suggestion enqueue is unavailable") from exc
+
+
+def build_enqueue_runner(config: CloudTasksConfig) -> EnqueueRunner:
+    """Bind the default enqueue runner to the immutable startup config."""
+
+    def _runner(suggestion_id: int, fingerprint: str) -> None:
+        enqueue_suggestion_with_config(config, suggestion_id, fingerprint)
+
+    return _runner
+
+
+def enqueue_suggestion(suggestion_id: int, fingerprint: str) -> None:
+    """Create (or deduplicate) the delivery task for a committed reservation.
+
+    Public two-argument seam: reads the current environment for standalone
+    use. The application binds its default runner to the startup-validated
+    config via `build_enqueue_runner` so requests never re-read routing.
+    Only `AlreadyExists` is accepted as duplicate success; every other
+    failure raises sanitized `EnqueueUnavailable`. Never logs the credential
+    or the task body.
+    """
+    _require_task_identity(suggestion_id, fingerprint)
+    try:
+        config = read_cloud_config()
+    except ValueError as exc:
+        raise EnqueueUnavailable("suggestion enqueue is unavailable") from exc
+    enqueue_suggestion_with_config(config, suggestion_id, fingerprint)

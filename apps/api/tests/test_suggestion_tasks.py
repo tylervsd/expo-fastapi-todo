@@ -556,3 +556,75 @@ def test_cloud_mode_with_incomplete_config_fails_startup(
     monkeypatch.delenv("CLOUD_TASKS_QUEUE")
     with pytest.raises(ValueError):
         create_app(session_factory)
+
+
+def test_default_enqueue_runner_uses_startup_config_snapshot(
+    database_session: Session, session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    fake_tasks: type[FakeTasksClient],
+) -> None:
+    """Env changes after create_app must not affect default enqueue routing."""
+
+    from app.main import create_app
+
+    del database_session
+    use_cloud_env(monkeypatch)
+    with TestClient(
+        create_app(
+            session_factory,
+            suggestion_callable=failing_provider,  # type: ignore[arg-type]
+        )
+    ) as client:
+        # Mutate every routing value after startup; the bound default
+        # runner must still use the startup snapshot.
+        monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "changed-project")
+        monkeypatch.setenv("CLOUD_TASKS_LOCATION", "europe-west1")
+        monkeypatch.setenv("CLOUD_TASKS_QUEUE", "changed-queue")
+        monkeypatch.setenv(
+            "SUGGESTION_WORKER_URL", "https://changed-xyz-uc.a.run.app"
+        )
+        monkeypatch.setenv(
+            "TASK_INVOKER_SERVICE_ACCOUNT",
+            "changed@changed.iam.gserviceaccount.com",
+        )
+        headers = auth_headers(client)
+        body = start_collecting(client, headers)
+        request_id = uuid4()
+        response = post_suggestion(
+            client, headers, body, body["workflow_id"], request_id
+        )
+        assert response.status_code == 202
+    assert len(FakeTasksClient.instances) == 1
+    (call,) = FakeTasksClient.instances[0].calls
+    task = call["request"]["task"]
+    assert call["request"]["parent"] == (
+        "projects/demo-project/locations/us-central1/queues/suggestion-queue"
+    )
+    assert task.http_request.url == (
+        "https://suggestion-worker-abc123-uc.a.run.app/internal/suggestions"
+    )
+    assert task.http_request.oidc_token.audience == (
+        "https://suggestion-worker-abc123-uc.a.run.app"
+    )
+    assert task.http_request.oidc_token.service_account_email == (
+        "task-invoker@demo-project.iam.gserviceaccount.com"
+    )
+
+
+def test_injected_enqueue_callable_still_used_in_cloud_mode(
+    database_session: Session, session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The public two-argument injection seam still overrides the default."""
+
+    del database_session
+    enqueue = FakeEnqueue(session_factory)
+    with cloud_client(session_factory, monkeypatch, enqueue) as client:
+        headers = auth_headers(client)
+        body = start_collecting(client, headers)
+        request_id = uuid4()
+        response = post_suggestion(
+            client, headers, body, body["workflow_id"], request_id
+        )
+        assert response.status_code == 202
+    assert len(enqueue.calls) == 1

@@ -85,6 +85,7 @@ from app.suggestion_service import (
 )
 from app.suggestion_tasks import (
     EnqueueUnavailable,
+    build_enqueue_runner,
     enqueue_suggestion,
     read_cloud_config,
 )
@@ -420,10 +421,13 @@ def create_app(
         raise ValueError(
             f"unknown SUGGESTION_EXECUTION mode: {execution_mode!r}"
         )
+    cloud_tasks_config = None
     if execution_mode == "cloud_tasks":
-        # Validated once at startup; incomplete config fails startup and
-        # never falls back to inline.
-        read_cloud_config()
+        # Validated once at startup; the validated config is retained and
+        # the default enqueue runner is bound to it, so per-request env
+        # changes can never alter routing. Incomplete config fails
+        # startup and never falls back to inline.
+        cloud_tasks_config = read_cloud_config()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -440,10 +444,15 @@ def create_app(
                 engine.dispose()
 
     app = FastAPI(title="Expo FastAPI Todo API", lifespan=lifespan)
+    app.state.cloud_tasks_config = cloud_tasks_config
     suggestion_runner: SuggestionCallable = (
         suggestion_callable or request_todo_suggestions
     )
-    enqueue_runner: EnqueueCallable = enqueue_callable or enqueue_suggestion
+    enqueue_runner: EnqueueCallable = enqueue_callable or (
+        build_enqueue_runner(cloud_tasks_config)
+        if cloud_tasks_config is not None
+        else enqueue_suggestion
+    )
     agent_chooser: ChoiceCallable = agent_choice or choose_clarification
 
     def get_session() -> Iterator[Session]:
