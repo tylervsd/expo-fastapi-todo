@@ -862,3 +862,474 @@ def test_migration_legacy_rows_stay_readable_but_not_claimable(
             text("DELETE FROM users WHERE username = :username"),
             {"username": username},
         )
+
+
+# ---------------------------------------------------------------------------
+# Task 3 (TDD red): private worker entry point (app.worker) endpoint tests.
+#
+# These fail at collection until `app.worker.create_worker_app` exists, then
+# fail on behavior until the bounded claim/execute/finalize/expire handler
+# lands. They use the same PostgreSQL fixtures and cloud-reservation helpers
+# as the Task 1 service tests above.
+
+
+def worker_client(session_factory, provider):
+    from fastapi.testclient import TestClient
+
+    from app.worker import create_worker_app
+
+    return TestClient(
+        create_worker_app(
+            session_factory=session_factory, suggestion_callable=provider
+        )
+    )
+
+
+class RecordingProvider:
+    """Credential-free provider seam: (goal, config, clarification=...) -> titles."""
+
+    def __init__(self, titles=("Book venue", "Invite guests"), delay: float = 0.0):
+        self.titles = tuple(titles)
+        self.delay = delay
+        self.calls: list[tuple[object, object]] = []
+
+    async def __call__(self, goal, config, clarification=None):
+        if self.delay:
+            import asyncio as _asyncio
+
+            await _asyncio.sleep(self.delay)
+        self.calls.append((goal, clarification))
+        return self.titles
+
+
+class FailingProvider:
+    def __init__(self, error: Exception):
+        self.error = error
+        self.calls: list[object] = []
+
+    async def __call__(self, goal, config, clarification=None):
+        self.calls.append(goal)
+        raise self.error
+
+
+def post_task(client, suggestion_id: int, raw: bytes | None = None):
+    if raw is None:
+        return client.post(
+            "/internal/suggestions",
+            json={"version": 1, "suggestion_id": suggestion_id},
+        )
+    return client.post(
+        "/internal/suggestions",
+        content=raw,
+        headers={"Content-Type": "application/json"},
+    )
+
+
+def test_worker_health_ready_and_private_route_surface(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    from app.worker import create_worker_app
+
+    provider = RecordingProvider()
+    app = create_worker_app(
+        session_factory=session_factory, suggestion_callable=provider
+    )
+    paths = sorted(
+        {route.path for route in app.routes if hasattr(route, "path")}
+    )
+    assert paths == [
+        "/health",
+        "/internal/suggestions",
+        "/internal/suggestions/expire",
+        "/ready",
+    ]
+    with worker_client(session_factory, provider) as client:
+        assert client.get("/health").json() == {"status": "ok"}
+        assert client.get("/ready").status_code == 200
+        # No public auth, todo, agent, or workflow routes are mounted here.
+        assert client.get("/todos").status_code == 404
+        assert client.post("/agent", json={}).status_code == 404
+        assert (
+            client.post(
+                "/todo-workflows/00000000-0000-0000-0000-000000000000/suggestions",
+                json={},
+            ).status_code
+            == 404
+        )
+        assert client.get("/todo-workflows").status_code == 404
+
+
+def test_worker_rejects_malformed_bodies(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    provider = RecordingProvider()
+    cases: list[tuple[bytes, int]] = [
+        (b"", 422),
+        (b"not json", 422),
+        (b"{}", 422),
+        (b"[1, 2]", 422),
+        (b'"just a string"', 422),
+        (b'{"version": true, "suggestion_id": 1}', 422),
+        (b'{"version": 1, "suggestion_id": true}', 422),
+        (b'{"version": "1", "suggestion_id": 1}', 422),
+        (b'{"version": 1.0, "suggestion_id": 1}', 422),
+        (b'{"version": 1, "suggestion_id": 0}', 422),
+        (b'{"version": 1, "suggestion_id": -5}', 422),
+        (b'{"version": 1, "suggestion_id": 1, "extra": 1}', 422),
+        (b'{"version": 2, "suggestion_id": 1}', 400),
+        (b'{"version": 0, "suggestion_id": 1}', 400),
+    ]
+    with worker_client(session_factory, provider) as client:
+        for raw, expected in cases:
+            response = post_task(client, 1, raw)
+            assert response.status_code == expected, raw
+        assert client.get("/internal/suggestions").status_code == 405
+    assert provider.calls == []
+
+
+def test_worker_rejects_oversized_body(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    provider = RecordingProvider()
+    base = b'{"version": 1, "suggestion_id": 1}'
+    assert len(base) <= 1024
+    oversized = base + b" " * (1025 - len(base))
+    assert len(oversized) == 1025
+    with worker_client(session_factory, provider) as client:
+        response = post_task(client, 1, oversized)
+        assert response.status_code == 413
+    assert provider.calls == []
+
+
+def reserve_for_worker(session_factory, clarification=None):
+    owner_id = setup_owner(session_factory, username=f"worker-{uuid4()}")
+    workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
+    request_id, _ = reserve_cloud(
+        session_factory,
+        owner_id,
+        workflow_id,
+        revision,
+        step_id,
+        clarification=clarification,
+    )
+    suggestion_id = cloud_row_id(session_factory, owner_id, workflow_id, request_id)
+    return suggestion_id
+
+
+def test_worker_executes_claim_to_ready_without_todos(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    provider = RecordingProvider()
+    suggestion_id = reserve_for_worker(session_factory)
+    with worker_client(session_factory, provider) as client:
+        response = post_task(client, suggestion_id)
+        assert response.status_code == 204
+        assert response.content == b""
+    assert len(provider.calls) == 1
+    status, _ = row_status(session_factory, suggestion_id)
+    assert status == SuggestionStatus.READY.value
+    with session_factory() as session:
+        saved = session.scalar(
+            select(WorkflowSuggestionRequestRow.proposed_titles).where(
+                WorkflowSuggestionRequestRow.id == suggestion_id
+            )
+        )
+    assert list(saved) == ["Book venue", "Invite guests"]
+
+
+def test_worker_duplicate_and_concurrent_deliveries_call_provider_once(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    import threading
+
+    provider = RecordingProvider(delay=0.2)
+    suggestion_id = reserve_for_worker(session_factory)
+    with worker_client(session_factory, provider) as client:
+        barrier = threading.Barrier(4)
+        statuses: list[int] = []
+
+        def deliver() -> None:
+            barrier.wait(timeout=10)
+            statuses.append(post_task(client, suggestion_id).status_code)
+
+        threads = [threading.Thread(target=deliver) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+
+        assert len(provider.calls) == 1
+        assert set(statuses) <= {204, 503}
+        assert 204 in statuses
+        # A lost success acknowledgement followed by repeat delivery returns
+        # 204 with the same saved titles and no further provider call.
+        repeat = post_task(client, suggestion_id)
+        assert repeat.status_code == 204
+    assert len(provider.calls) == 1
+    with session_factory() as session:
+        saved = session.scalar(
+            select(WorkflowSuggestionRequestRow.proposed_titles).where(
+                WorkflowSuggestionRequestRow.id == suggestion_id
+            )
+        )
+    assert list(saved) == ["Book venue", "Invite guests"]
+
+
+def test_worker_live_claim_returns_503_without_provider_call(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    provider = RecordingProvider()
+    suggestion_id = reserve_for_worker(session_factory)
+    with session_factory() as session:
+        assert claim_suggestion(session, suggestion_id) is not None
+    with worker_client(session_factory, provider) as client:
+        response = post_task(client, suggestion_id)
+        assert response.status_code == 503
+    assert provider.calls == []
+    status, _ = row_status(session_factory, suggestion_id)
+    assert status == SuggestionStatus.PENDING.value
+
+
+def test_worker_terminal_stale_legacy_expired_missing_never_call_provider(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    provider = RecordingProvider()
+
+    ready_id = reserve_for_worker(session_factory)
+    with session_factory() as session:
+        claim = claim_suggestion(session, ready_id)
+        assert claim is not None
+        assert (
+            finish_claimed_suggestion(
+                session,
+                claim,
+                titles=("Book venue", "Invite guests"),
+                error_code=None,
+            )
+            is not None
+        )
+
+    stale_owner = setup_owner(session_factory, username=f"stale-{uuid4()}")
+    stale_wf, stale_rev, stale_step = make_collecting(session_factory, stale_owner)
+    older_id, _ = reserve_cloud(
+        session_factory, stale_owner, stale_wf, stale_rev, stale_step
+    )
+    older_row = cloud_row_id(session_factory, stale_owner, stale_wf, older_id)
+    reserve_cloud(session_factory, stale_owner, stale_wf, stale_rev, stale_step)
+
+    legacy_owner = setup_owner(session_factory, username=f"legacy-{uuid4()}")
+    legacy_wf, legacy_rev, legacy_step = make_collecting(session_factory, legacy_owner)
+    legacy_request = uuid4()
+    with session_factory() as session:
+        assert isinstance(
+            reserve_suggestion(
+                session, legacy_owner, legacy_wf, legacy_request, legacy_rev, legacy_step
+            ),
+            SuggestionReservation,
+        )
+    legacy_row = cloud_row_id(session_factory, legacy_owner, legacy_wf, legacy_request)
+
+    expired_id = reserve_for_worker(session_factory)
+    with session_factory() as session:
+        session.execute(
+            text(
+                "UPDATE todo_workflow_suggestion_requests "
+                "SET queued_at = now() - interval '20 minutes', "
+                "expires_at = now() - interval '5 minutes' "
+                "WHERE id = :id"
+            ),
+            {"id": expired_id},
+        )
+        session.commit()
+
+    with worker_client(session_factory, provider) as client:
+        assert post_task(client, ready_id).status_code == 204
+        assert post_task(client, older_row).status_code == 204
+        assert post_task(client, legacy_row).status_code == 204
+        assert post_task(client, expired_id).status_code == 204
+        assert post_task(client, 999999999).status_code == 204
+    assert provider.calls == []
+    assert row_status(session_factory, ready_id)[0] == SuggestionStatus.READY.value
+    assert row_status(session_factory, older_row)[0] == (
+        SuggestionStatus.SUPERSEDED.value
+    )
+    assert row_status(session_factory, legacy_row)[0] == (
+        SuggestionStatus.PENDING.value
+    )
+    assert row_status(session_factory, expired_id) == (
+        SuggestionStatus.FAILED.value,
+        SuggestionErrorCode.TIMEOUT.value,
+    )
+
+
+def test_worker_known_provider_failure_persists_failed(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    from app.suggestion_provider import ProviderUnavailable
+
+    provider = FailingProvider(ProviderUnavailable("synthetic provider outage"))
+    suggestion_id = reserve_for_worker(session_factory)
+    with worker_client(session_factory, provider) as client:
+        assert post_task(client, suggestion_id).status_code == 204
+        # The persisted failure is terminal: a repeat delivery is a no-op.
+        assert post_task(client, suggestion_id).status_code == 204
+    assert len(provider.calls) == 1
+    assert row_status(session_factory, suggestion_id) == (
+        SuggestionStatus.FAILED.value,
+        SuggestionErrorCode.PROVIDER_UNAVAILABLE.value,
+    )
+
+
+def test_worker_failure_before_commit_retries_without_provider_then_times_out(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    from sqlalchemy.exc import OperationalError
+
+    import app.worker as worker_module
+
+    provider = RecordingProvider()
+    suggestion_id = reserve_for_worker(session_factory)
+    real_finish = worker_module.finish_claimed_suggestion
+    calls = {"count": 0}
+
+    def fail_once(session, claim, *, titles, error_code):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise OperationalError("SELECT", None, Exception("synthetic outage"))
+        return real_finish(session, claim, titles=titles, error_code=error_code)
+
+    with worker_client(session_factory, provider) as client:
+        monkeypatch = pytest.MonkeyPatch()
+        with monkeypatch.context() as patch:
+            patch.setattr(worker_module, "finish_claimed_suggestion", fail_once)
+            assert post_task(client, suggestion_id).status_code == 503
+        assert len(provider.calls) == 1
+        # Retry while the claim is live: 503 without another provider call.
+        assert post_task(client, suggestion_id).status_code == 503
+        assert len(provider.calls) == 1
+        # Past the claim window the duplicate records a timeout; expiry then
+        # finds no further pending expired work.
+        with session_factory() as session:
+            session.execute(
+                text(
+                    "UPDATE todo_workflow_suggestion_requests "
+                    "SET queued_at = now() - interval '10 minutes', "
+                    "expires_at = queued_at + interval '15 minutes', "
+                    "provider_started_at = now() - interval '3 minutes' "
+                    "WHERE id = :id"
+                ),
+                {"id": suggestion_id},
+            )
+            session.commit()
+        assert post_task(client, suggestion_id).status_code == 204
+        assert len(provider.calls) == 1
+        assert row_status(session_factory, suggestion_id) == (
+            SuggestionStatus.FAILED.value,
+            SuggestionErrorCode.TIMEOUT.value,
+        )
+        assert client.post("/internal/suggestions/expire", json={}).json() == {
+            "expired": 0
+        }
+
+
+def test_worker_expire_route_sweeps_once_and_rejects_nonempty(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    provider = RecordingProvider()
+    expired_ids = [reserve_for_worker(session_factory) for _ in range(2)]
+    live_id = reserve_for_worker(session_factory)
+    with session_factory() as session:
+        for row_id in expired_ids:
+            session.execute(
+                text(
+                    "UPDATE todo_workflow_suggestion_requests "
+                    "SET queued_at = now() - interval '20 minutes', "
+                    "expires_at = now() - interval '5 minutes' "
+                    "WHERE id = :id"
+                ),
+                {"id": row_id},
+            )
+        session.commit()
+    with worker_client(session_factory, provider) as client:
+        assert client.post("/internal/suggestions/expire", json={"x": 1}).status_code in (
+            400,
+            422,
+        )
+        assert client.post("/internal/suggestions/expire").status_code in (400, 422)
+        assert client.get("/internal/suggestions/expire").status_code == 405
+        response = client.post("/internal/suggestions/expire", json={})
+        assert response.status_code == 200
+        assert response.json() == {"expired": 2}
+        assert client.post("/internal/suggestions/expire", json={}).json() == {
+            "expired": 0
+        }
+    for row_id in expired_ids:
+        assert row_status(session_factory, row_id) == (
+            SuggestionStatus.FAILED.value,
+            SuggestionErrorCode.TIMEOUT.value,
+        )
+    assert row_status(session_factory, live_id)[0] == SuggestionStatus.PENDING.value
+    assert provider.calls == []
+
+
+def test_worker_logs_omit_sensitive_fields(
+    database_session: Session, session_factory: sessionmaker[Session],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    del database_session
+    import logging
+
+    from app.suggestion_provider import ProviderUnavailable
+
+    clarification = Clarification("date", "next Saturday")
+    good_id = reserve_for_worker(session_factory, clarification=clarification)
+    bad_provider = FailingProvider(
+        ProviderUnavailable("synthetic outage seekrit-token-abc")
+    )
+    bad_id = reserve_for_worker(session_factory)
+    with caplog.at_level(logging.INFO, logger="app.worker"):
+        with worker_client(session_factory, RecordingProvider()) as client:
+            assert post_task(client, good_id).status_code == 204
+        with worker_client(session_factory, bad_provider) as client:
+            assert post_task(client, bad_id).status_code == 204
+            assert post_task(client, 999999999).status_code == 204
+            assert post_task(client, 1, b"not json").status_code == 422
+    assert caplog.records, "worker must log delivery outcomes"
+    redacted = caplog.text
+    assert "Plan birthday party" not in redacted
+    assert "next Saturday" not in redacted
+    assert "seekrit-token-abc" not in redacted
+    assert "synthetic outage" not in redacted
+    assert "Book venue" not in redacted
+
+
+def test_worker_unexpected_error_returns_sanitized_503(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    import app.worker as worker_module
+
+    provider = RecordingProvider()
+    suggestion_id = reserve_for_worker(session_factory)
+
+    def explode(session, suggestion_id_arg):
+        raise RuntimeError("credentials exploded: seekrit-db-detail")
+
+    with worker_client(session_factory, provider) as client:
+        monkeypatch = pytest.MonkeyPatch()
+        with monkeypatch.context() as patch:
+            patch.setattr(worker_module, "claim_suggestion", explode)
+            response = post_task(client, suggestion_id)
+            assert response.status_code == 503
+            assert "seekrit-db-detail" not in response.text
+    assert provider.calls == []
