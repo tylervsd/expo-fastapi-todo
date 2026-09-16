@@ -528,7 +528,7 @@ git diff --check
   Add any changed Python test/script checks to existing CI rather than a parallel
   workflow. Record unavailable tools/services as gaps.
 
-- [ ] **6. Request whole-branch Sol medium review.** Review exact spec coverage,
+- [x] **6. Request whole-branch Sol medium review.** (Done: final branch review found one mobile billing-warning blocker; fix commit `06acdca` passed focused validation and scoped re-review.) Review exact spec coverage,
   permanent claims, lock ordering, transaction gap, no automatic paid retries,
   worker IAM, two-service failure handling and frontend agent recovery. Fix
   findings and rerun affected checks. Commit guide/status changes with
