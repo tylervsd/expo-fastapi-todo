@@ -596,6 +596,84 @@ def test_expire_and_finish_race_is_safe_without_sleeping(
     assert todo_count(session_factory, owner_id) == 0
 
 
+def test_concurrent_reserve_and_finalize_do_not_deadlock(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    owner_id = setup_owner(session_factory)
+    workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
+    request_id, _ = reserve_cloud(
+        session_factory, owner_id, workflow_id, revision, step_id
+    )
+    suggestion_id = cloud_row_id(session_factory, owner_id, workflow_id, request_id)
+    with session_factory() as session:
+        claim = claim_suggestion(session, suggestion_id)
+    assert claim is not None
+
+    # Finalization must take locks in the same workflow-then-row order as
+    # reservation, claim, and cleanup; the old row-first order deadlocked
+    # against a concurrent reservation (one transaction aborted as the
+    # deadlock victim).
+    barrier = threading.Barrier(2)
+    results: dict[str, object] = {}
+    new_request_id = uuid4()
+
+    def run_reserve() -> None:
+        with session_factory() as session:
+            barrier.wait(timeout=10)
+            try:
+                results["reserved"] = reserve_suggestion(
+                    session,
+                    owner_id,
+                    workflow_id,
+                    new_request_id,
+                    revision,
+                    step_id,
+                    queued=True,
+                )
+            except Exception as exc:  # noqa: BLE001 - deadlock must surface here
+                results["reserved"] = exc
+
+    def run_finish() -> None:
+        with session_factory() as session:
+            barrier.wait(timeout=10)
+            try:
+                results["finished"] = finish_claimed_suggestion(
+                    session,
+                    claim,
+                    titles=("Book venue", "Invite guests"),
+                    error_code=None,
+                )
+            except Exception as exc:  # noqa: BLE001 - deadlock must surface here
+                results["finished"] = exc
+
+    threads = [
+        threading.Thread(target=run_reserve),
+        threading.Thread(target=run_finish),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    reserved = results["reserved"]
+    finished = results["finished"]
+    assert not isinstance(reserved, Exception), reserved
+    assert not isinstance(finished, Exception), finished
+    assert isinstance(reserved, SuggestionReservation)
+    if finished is None:
+        # The reservation won the race and superseded the claimed row, so the
+        # late finish with the original claim marker is a no-op.
+        status, _ = row_status(session_factory, suggestion_id)
+        assert status == SuggestionStatus.SUPERSEDED.value
+    else:
+        assert isinstance(finished, SuggestionSnapshot)
+        assert finished.status is SuggestionStatus.READY
+        status, _ = row_status(session_factory, suggestion_id)
+        assert status == SuggestionStatus.READY.value
+    assert todo_count(session_factory, owner_id) == 0
+
+
 def test_clarification_snapshot_round_trip_and_fail_closed(
     database_session: Session, session_factory: sessionmaker[Session]
 ) -> None:

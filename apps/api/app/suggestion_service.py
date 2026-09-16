@@ -614,9 +614,25 @@ def finish_claimed_suggestion(
             raise ValueError("suggestion titles must be canonical")
         canonical_titles = validated.titles
 
+    # Discover ownership with a plain read first, then close that read
+    # transaction before taking locks in the existing workflow-then-row
+    # order. No provider or cloud call runs in any of these transactions.
+    with session.begin():
+        discovered = session.execute(
+            select(
+                WorkflowSuggestionRequestRow.owner_id,
+                WorkflowSuggestionRequestRow.workflow_id,
+            ).where(WorkflowSuggestionRequestRow.id == claim.suggestion_id)
+        ).one_or_none()
+    if discovered is None:
+        return None
+    owner_id, workflow_id = discovered
+    if owner_id != claim.owner_id:
+        return None
     # No provider or cloud call runs inside this transaction; only the
     # guarded result write below touches the database.
     with session.begin():
+        workflow = lock_workflow(session, workflow_id, owner_id)
         row = session.scalar(
             select(WorkflowSuggestionRequestRow)
             .where(WorkflowSuggestionRequestRow.id == claim.suggestion_id)
@@ -625,6 +641,7 @@ def finish_claimed_suggestion(
         if (
             row is None
             or row.owner_id != claim.owner_id
+            or row.workflow_id != workflow_id
             or row.provider_started_at is None
             or row.provider_started_at != claim.provider_started_at
             or row.status != SuggestionStatus.PENDING.value
@@ -640,7 +657,6 @@ def finish_claimed_suggestion(
             or now >= row.provider_started_at + SUGGESTION_CLAIM_TTL
         ):
             return None
-        workflow = lock_workflow(session, row.workflow_id, row.owner_id)
         latest = _latest_suggestion(session, row.owner_id, row.workflow_id)
         if (
             not _validate_claimed_workflow(workflow, row)
