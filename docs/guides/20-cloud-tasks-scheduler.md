@@ -240,15 +240,18 @@ First activation ships the compatible image **without** activating cloud mode.
    deploys one image from `main` to the worker first, then the API — see
    [Guide 19 activation](19-continuous-delivery.md#activate-delivery)).
    The deploy job only runs when `DELIVERY_ENABLED == 'true'`, so re-enable
-   before dispatching; keep the queue and Scheduler paused until release and
-   enqueue verification succeed. The workflow-produced digest — not the step 1
+   before dispatching; keep the queue and Scheduler paused through release and
+   queued-task verification, then resume the queue so the disposable task can
+   dispatch, and resume Scheduler only after the worker claim is verified.
+   The workflow-produced digest — not the step 1
    `$IMAGE_DIGEST` — is the single canonical verified digest for API + worker +
    Terraform: capture it from the release summary, confirm both services serve
    it, and reconcile the Terraform worker image to it. Only then test enqueue
    on a disposable sandbox workflow. Expected: the release summary shows API +
    worker both serving the same workflow-produced digest; the disposable
    reservation leaves `queued` state and the worker log shows one claim;
-   Scheduler and queue flip to enabled only after those checks pass:
+   resume the queue after queued-task verification so dispatch can occur, and
+   flip Scheduler to enabled only after the claim check passes:
 
    ```sh
    gh workflow enable release.yml
@@ -269,14 +272,20 @@ First activation ships the compatible image **without** activating cloud mode.
    # digest: set async_suggestions.worker_image to $RELEASE_DIGEST in the local
    # reviewed tfvars, re-plan to a file, grep the digest, apply that exact planfile.
    # Submit one disposable suggestion request through the app, then watch it:
+   # 1. Verify the queued task exists while the queue is still paused.
    gcloud tasks list --queue="$CLOUD_TASKS_QUEUE" \
      --project="$CLOUD_PROJECT" --location="$CLOUD_TASKS_LOCATION"
-   gcloud logging read 'resource.type="cloud_run_revision" AND textPayload:"suggestion"' \
-     --project="$CLOUD_PROJECT" --freshness=30m --limit=20
-   gcloud scheduler jobs resume "$SCHEDULER_JOB" \
-     --project="$CLOUD_PROJECT" --location="$CLOUD_REGION"
+   # 2. Resume the queue so the paused task can dispatch (a paused queue
+   #    cannot dispatch, so no worker claim can occur before this step).
    gcloud tasks queues resume "$CLOUD_TASKS_QUEUE" \
      --project="$CLOUD_PROJECT" --location="$CLOUD_TASKS_LOCATION"
+   # 3. Verify the worker claim after dispatch.
+   gcloud logging read 'resource.type="cloud_run_revision" AND textPayload:"suggestion"' \
+     --project="$CLOUD_PROJECT" --freshness=30m --limit=20
+   # 4. Resume Scheduler only after the claim is verified; keep it paused
+   #    until then.
+   gcloud scheduler jobs resume "$SCHEDULER_JOB" \
+     --project="$CLOUD_PROJECT" --location="$CLOUD_REGION"
    ```
 
    Startup fails on unknown mode or incomplete cloud config; cloud mode
