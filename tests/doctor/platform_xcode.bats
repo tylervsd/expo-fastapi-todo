@@ -20,6 +20,22 @@ setup() {
   [[ "$output" == *"PASS [platform.macos] macOS 26.6.2"* ]]
 }
 
+@test "macOS 27 passes" {
+  fake_command sw_vers "printf '%s\\n' '27.0.1'"
+  . "$PROJECT_ROOT/scripts/doctor.d/10-platform.sh"
+  run doctor_run_registered platform.macos
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"PASS [platform.macos] macOS 27.0.1"* ]]
+}
+
+@test "malformed macOS 26 release fails" {
+  fake_command sw_vers "printf '%s\\n' '26.preview'"
+  . "$PROJECT_ROOT/scripts/doctor.d/10-platform.sh"
+  run doctor_run_registered platform.macos
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"requires macOS 26.x or 27.x; detected 26.preview"* ]]
+}
+
 @test "wrong architecture fails with remediation" {
   fake_command sw_vers "printf '%s\\n' '26.6.2'"
   fake_command uname "printf '%s\\n' 'x86_64'"
@@ -45,7 +61,7 @@ setup() {
   . "$PROJECT_ROOT/scripts/doctor.d/20-xcode.sh"
   run doctor_run_registered xcode.version
   [ "$status" -eq 1 ] || return 1
-  [[ "$output" == *"requires Xcode 26.6; detected Xcode 26.60"* ]]
+  [[ "$output" == *"requires Xcode 26.6 or 27.x; detected Xcode 26.60"* ]]
 }
 
 @test "malformed Xcode version reports only its first line" {
@@ -54,7 +70,7 @@ setup() {
   . "$PROJECT_ROOT/scripts/doctor.d/20-xcode.sh"
   run doctor_run_registered xcode.version
   [ "$status" -eq 1 ] || return 1
-  [[ "$output" == *"requires Xcode 26.6; detected unexpected version output"* ]] || return 1
+  [[ "$output" == *"requires Xcode 26.6 or 27.x; detected unexpected version output"* ]] || return 1
   [[ "$output" != *"secret-value"* ]]
 }
 
@@ -68,13 +84,22 @@ setup() {
   [[ "$output" != *"secret-value"* ]]
 }
 
+@test "Xcode 27 minor release passes" {
+  fake_command xcode-select "printf '%s\\n' '/Applications/Xcode.app/Contents/Developer'"
+  fake_command xcodebuild "printf '%s\\n' 'Xcode 27.1' 'Build version 18B75'"
+  . "$PROJECT_ROOT/scripts/doctor.d/20-xcode.sh"
+  run doctor_run_registered xcode.version
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"PASS [xcode.version] Xcode 27.1 selected"* ]]
+}
+
 @test "empty Xcode version output uses a safe placeholder" {
   fake_command xcode-select "printf '%s\\n' '/Applications/Xcode.app/Contents/Developer'"
   fake_command xcodebuild 'exit 0'
   . "$PROJECT_ROOT/scripts/doctor.d/20-xcode.sh"
   run doctor_run_registered xcode.version
   [ "$status" -eq 1 ] || return 1
-  [[ "$output" == *"requires Xcode 26.6; detected <no output>"* ]]
+  [[ "$output" == *"requires Xcode 26.6 or 27.x; detected <no output>"* ]]
 }
 
 @test "available designated simulator passes without booting it" {
@@ -84,7 +109,7 @@ setup() {
   . "$PROJECT_ROOT/scripts/doctor.d/20-xcode.sh"
   run doctor_run_registered xcode.simulator
   [ "$status" -eq 0 ]
-  [[ "$output" == *"PASS [xcode.simulator] iOS 26 simulator includes iPhone 17 Pro"* ]]
+  [[ "$output" == *"PASS [xcode.simulator] iOS 26 or 27 simulator includes iPhone 17 Pro"* ]]
   run grep -Fx 'xcrun simctl list runtimes available' "$INVOCATION_LOG"
   [ "$status" -eq 0 ]
   run grep -Fx 'xcrun simctl list devices available' "$INVOCATION_LOG"
@@ -96,12 +121,20 @@ setup() {
   [ "$status" -eq 1 ]
 }
 
+@test "available iOS 27 simulator passes" {
+  fake_command xcrun "printf '%s\\n' 'iOS 27.0 (27.0 - 24A100)' 'iPhone 17 Pro (AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE) (Shutdown)'"
+  . "$PROJECT_ROOT/scripts/doctor.d/20-xcode.sh"
+  run doctor_run_registered xcode.simulator
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"PASS [xcode.simulator] iOS 26 or 27 simulator includes iPhone 17 Pro"* ]]
+}
+
 @test "iOS 260 runtime does not satisfy iOS 26" {
   fake_command xcrun "printf '%s\\n' 'iOS 260.0 (260.0 - 99A)'"
   . "$PROJECT_ROOT/scripts/doctor.d/20-xcode.sh"
   run doctor_run_registered xcode.simulator
   [ "$status" -eq 1 ]
-  [[ "$output" == *"requires an available iOS 26 simulator runtime"* ]]
+  [[ "$output" == *"requires an available iOS 26 or 27 simulator runtime"* ]]
 }
 
 @test "iPhone 17 Pro Max does not satisfy iPhone 17 Pro" {
