@@ -615,6 +615,24 @@ describe("todo workflow transport", () => {
     expect(isWorkflowSuggestionClarification(clarification)).toBe(false);
   });
 
+  it("accepts a queued 202 pending snapshot without a provider round-trip", async () => {
+    const queued: WorkflowSuggestion = {
+      ...readySuggestion,
+      status: "pending",
+      proposed_titles: [],
+    };
+    const fetchImpl = jest.fn().mockResolvedValue(response(202, queued));
+    const request = {
+      request_id: requestId,
+      expected_revision: 2,
+      step_id: `${workflowId}:COLLECT_TASKS`,
+    };
+
+    await expect(
+      suggestWorkflowTodos(workflowId, request, { apiUrl, fetchImpl })
+    ).resolves.toEqual(queued);
+  });
+
   it("accepts a ready replay with 200 and rejects unknown suggestion contracts", async () => {
     const request = {
       request_id: requestId,

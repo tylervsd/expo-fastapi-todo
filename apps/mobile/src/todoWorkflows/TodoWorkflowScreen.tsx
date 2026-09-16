@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import {
   AccessibilityInfo,
+  AppState,
   Platform,
   Pressable,
   SafeAreaView,
@@ -56,6 +57,10 @@ const DISCARD_WARNING =
 const UNKNOWN_START_FAILURE = "Could not start planning. Retry the saved request.";
 const UNKNOWN_ADVANCE_FAILURE = "Could not update the plan. Retry the saved request.";
 const INVALID_RESPONSE = "The API returned invalid plan data.";
+// Bounded queued-suggestion refresh: one guarded GET per tick, at most one
+// in flight, within a 2-minute budget per mounted workflow session.
+const SUGGESTION_POLL_INTERVAL_MS = 3000;
+const SUGGESTION_POLL_BUDGET_MS = 120000;
 
 type StartRecord = Extract<PendingWorkflowWrite, { operation: "start" }>;
 type AdvanceRecord = Extract<PendingWorkflowWrite, { operation: "advance" }>;
@@ -99,6 +104,11 @@ export function TodoWorkflowScreen({
   const [tasksDraftEditCounter, setTasksDraftEditCounter] = useState(0);
   const [suggestionRecord, setSuggestionRecord] = useState<WorkflowSuggestion | null>(null);
   const [suggestionFetching, setSuggestionFetching] = useState(false);
+  const [suggestionRefreshing, setSuggestionRefreshing] = useState(false);
+  // Request ID whose bounded auto-refresh already stopped (budget spent or
+  // failed refresh). Keyed by request so a newer queued session derives a
+  // fresh notice without any effect-body reset.
+  const [autoRefreshEndedFor, setAutoRefreshEndedFor] = useState<string | null>(null);
   const [suggestionError, setSuggestionError] = useState<string | null>(null);
   const [replaceSuggestions, setReplaceSuggestions] = useState(false);
   const [newSuggestionWarning, setNewSuggestionWarning] = useState(false);
@@ -451,7 +461,11 @@ export function TodoWorkflowScreen({
         return null;
       }
       if (error instanceof Error && error.name === "AbortError") return null;
-      setSuggestionRecord(null);
+      // A failed refresh keeps a queued display (and its Check status
+      // recovery) instead of blanking it: the last confirmed pending state
+      // is still the authoritative evidence, and the error copy explains
+      // the stall. Other statuses keep the existing fail-closed clear.
+      setSuggestionRecord((current) => (current?.status === "pending" ? current : null));
       setSuggestionError(error instanceof TodoApiError ? error.message : "Could not load todo suggestions.");
       return null;
     }
@@ -521,6 +535,152 @@ export function TodoWorkflowScreen({
     // a suggestion GET never changes either value.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workflowId, snapshot?.revision, snapshot?.view.step_id, fresh, sessionEpoch]);
+
+  // Bounded automatic refresh for a queued (202/pending) suggestion. One
+  // local cancellable timeout loop: each tick awaits the existing guarded
+  // GET before scheduling the next, so at most one poll GET is in flight.
+  // The elapsed budget lives in this closure — never derived from the
+  // changing suggestion object — so an unchanged pending GET cannot reset
+  // the 2-minute session. Stops on a terminal result, network failure,
+  // logout, workflow change, background, or unmount; foreground resumes
+  // with one immediate GET and a fresh bounded session. Never POSTs: after
+  // the budget or a failure the manual Check status control owns recovery.
+  useEffect(() => {
+    if (
+      workflowId === null ||
+      !fresh ||
+      snapshot === undefined ||
+      snapshot.view.type !== "task_breakdown" ||
+      suggestionRecord === null ||
+      suggestionRecord.status !== "pending" ||
+      suggestionRecord.workflow_id !== workflowId ||
+      suggestionRecord.base_revision !== snapshot.revision ||
+      suggestionRecord.step_id !== snapshot.view.step_id
+    ) {
+      return;
+    }
+    const captured = sessionEpoch;
+    const id = workflowId;
+    const revision = snapshot.revision;
+    const currentStepId = snapshot.view.step_id;
+    const pendingRequestId = suggestionRecord.request_id;
+    const editCounter = tasksDraftEditCounterRef.current;
+    let elapsedMs = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let inFlight = false;
+    let paused = false;
+    let stopped = false;
+    const clearTimer = () => {
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
+    const stop = () => {
+      stopped = true;
+      clearTimer();
+    };
+    const scheduleTick = () => {
+      clearTimer();
+      timer = setTimeout(() => {
+        void tick();
+      }, SUGGESTION_POLL_INTERVAL_MS);
+    };
+    const tick = async () => {
+      timer = null;
+      if (stopped || paused || inFlight) return;
+      if (!mountedRef.current || !isSessionCurrent(captured)) {
+        stop();
+        return;
+      }
+      inFlight = true;
+      if (mountedRef.current && isSessionCurrent(captured)) {
+        setSuggestionRefreshing(true);
+      }
+      let fetched: WorkflowSuggestion | null = null;
+      try {
+        fetched = await fetchSuggestionRecord(id, captured, revision, currentStepId, editCounter);
+      } finally {
+        inFlight = false;
+        if (mountedRef.current && isSessionCurrent(captured)) {
+          setSuggestionRefreshing(false);
+        }
+      }
+      if (stopped || paused || !mountedRef.current || !isSessionCurrent(captured)) return;
+      if (fetched === null) {
+        // A network failure, a 404 that cleared the record, or a stale
+        // identity: stop without POST retry and leave Check status to the
+        // user. The shared fetch already surfaced the error copy.
+        setAutoRefreshEndedFor(pendingRequestId);
+        stop();
+        return;
+      }
+      if (fetched.status !== "pending") {
+        // Terminal ready/failed/superseded: the shared fetch path already
+        // settled the waiter, the pending record, and the draft guards.
+        stop();
+        return;
+      }
+      elapsedMs += SUGGESTION_POLL_INTERVAL_MS;
+      if (elapsedMs >= SUGGESTION_POLL_BUDGET_MS) {
+        setAutoRefreshEndedFor(pendingRequestId);
+        stop();
+        return;
+      }
+      scheduleTick();
+    };
+    // A fresh pending session owns a fresh budget: the stopped notice is
+    // derived per request ID in render, so no reset is needed here.
+    scheduleTick();
+    // AppState comes from the existing cross-platform runtime, so the same
+    // subscription pauses refresh on iOS background and on web hide.
+    let subscription: { remove: () => void } | null = null;
+    try {
+      if (typeof AppState?.addEventListener === "function") {
+        subscription = AppState.addEventListener("change", (state) => {
+          if (stopped || !mountedRef.current || !isSessionCurrent(captured)) return;
+          if (state === "active") {
+            if (paused) {
+              // Foreground starts a new bounded session with one immediate
+              // guarded GET; the tick serializes any in-flight request.
+              paused = false;
+              elapsedMs = 0;
+              setAutoRefreshEndedFor(null);
+              clearTimer();
+              if (!inFlight) void tick();
+            }
+          } else {
+            paused = true;
+            clearTimer();
+          }
+        });
+      }
+    } catch {
+      subscription = null;
+    }
+    return () => {
+      // Clearing the timer plus a sequence bump invalidates an in-flight
+      // GET through the existing guards; the tick re-checks them too.
+      stop();
+      suggestionFetchSequence.current += 1;
+      subscription?.remove();
+    };
+    // Primitive suggestion identity (not the record object) keeps an
+    // unchanged pending GET from restarting the budget; the revision/step
+    // trigger matches the probe effect above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    workflowId,
+    snapshot?.revision,
+    snapshot?.view.step_id,
+    fresh,
+    sessionEpoch,
+    suggestionRecord?.status,
+    suggestionRecord?.request_id,
+    suggestionRecord?.workflow_id,
+    suggestionRecord?.base_revision,
+    suggestionRecord?.step_id,
+  ]);
 
   // The pending-record read and the authoritative suggestion GET can finish
   // in either order on restart. Re-run the resolution check when the stored
@@ -1160,6 +1320,11 @@ export function TodoWorkflowScreen({
     suggestionPending ||
     suggestionFetching ||
     (persisting && livePending?.operation === "suggest");
+  // The stopped notice belongs to the exact queued request that spent the
+  // budget or failed: a newer request derives a fresh notice on its own.
+  const suggestionAutoRefreshEnded =
+    suggestionRecord?.status === "pending" &&
+    autoRefreshEndedFor === suggestionRecord.request_id;
 
   useEffect(() => {
     if (workflowQuery.data?.view.type === "completion") {
@@ -1661,6 +1826,8 @@ export function TodoWorkflowScreen({
             }}
             suggestion={suggestionRecord}
             suggestionError={suggestionError}
+            suggestionRefreshing={suggestionRefreshing}
+            suggestionAutoRefreshEnded={suggestionAutoRefreshEnded}
             suggestionControlsDisabled={suggestionControlDisabled}
             suggestionStatusDisabled={suggestionStatusDisabled}
             replaceSuggestions={replaceSuggestions}
@@ -1937,6 +2104,8 @@ function TaskBreakdownTemplate({
   onCancelReplace,
   suggestion,
   suggestionError,
+  suggestionRefreshing,
+  suggestionAutoRefreshEnded,
   suggestionControlsDisabled,
   suggestionStatusDisabled,
   replaceSuggestions,
@@ -1962,6 +2131,8 @@ function TaskBreakdownTemplate({
   onCancelReplace: () => void;
   suggestion: WorkflowSuggestion | null;
   suggestionError: string | null;
+  suggestionRefreshing: boolean;
+  suggestionAutoRefreshEnded: boolean;
   suggestionControlsDisabled: boolean;
   suggestionStatusDisabled: boolean;
   replaceSuggestions: boolean;
@@ -2017,7 +2188,7 @@ function TaskBreakdownTemplate({
       >
         <Text style={styles.refreshButtonText}>Suggest todos</Text>
       </Pressable>
-      {suggesting && (
+      {suggesting && !suggestionRefreshing && (
         <Text accessibilityLiveRegion="polite" style={styles.status}>
           Getting todo suggestions…
         </Text>
@@ -2027,11 +2198,16 @@ function TaskBreakdownTemplate({
           {suggestionError}
         </Text>
       )}
-      {suggestion?.status === "pending" && !suggesting && (
+      {suggestion?.status === "pending" && (!suggesting || suggestionRefreshing) && (
         <View style={styles.screen}>
           <Text accessibilityLiveRegion="polite" style={styles.status}>
-            Suggestions are still being generated. The earlier request may still finish.
+            Suggestions are queued and checking automatically. The earlier request may still finish.
           </Text>
+          {suggestionAutoRefreshEnded && (
+            <Text accessibilityLiveRegion="polite" style={styles.status}>
+              Automatic status checks stopped. Use Check status to look again.
+            </Text>
+          )}
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Check status"

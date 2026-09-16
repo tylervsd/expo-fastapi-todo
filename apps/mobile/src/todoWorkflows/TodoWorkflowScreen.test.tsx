@@ -1,7 +1,7 @@
 import * as mockReact from "react";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react-native";
 import { QueryClientProvider, timeoutManager, type QueryClient } from "@tanstack/react-query";
-import { StyleSheet } from "react-native";
+import { AppState, StyleSheet, type AppStateStatus } from "react-native";
 import { createAppQueryClient } from "../../App";
 import {
   TodoApiError,
@@ -1105,6 +1105,277 @@ it("retains a deferred second suggestion request until reconciliation", async ()
   api.getSuggestion.mockResolvedValueOnce(newerSuggestion);
   await fireEvent.press(screen.getByRole("button", { name: "Check status" }));
   await waitFor(() => expect(store.read(USER_ID)).resolves.toBeNull());
+});
+
+// Phase 20 queued-suggestion refresh: reach the collect step on real timers,
+// then freeze time so the 3s tick / 120s budget is fully deterministic. The
+// POST phase runs under fake timers with an act flush: every seamed promise
+// resolves as a microtask, so no waitFor (which needs real timers) is used
+// after the switch.
+const startQueuedSuggestionUnderFakeTimers = async (api: MockWorkflowApi) => {
+  await driveToCollect(api);
+  api.getWorkflow.mockResolvedValue(collectWorkflow);
+  jest.useFakeTimers();
+  api.suggestWorkflow.mockResolvedValueOnce(pendingSuggestion);
+  api.getSuggestion.mockResolvedValue(pendingSuggestion);
+  await act(async () => {
+    fireEvent.press(screen.getByRole("button", { name: "Suggest todos" }));
+  });
+  expect(screen.getByRole("button", { name: "Check status" })).toBeTruthy();
+  return {
+    queuedGets: api.getSuggestion.mock.calls.length,
+    stopTimers: () => jest.useRealTimers(),
+  };
+};
+
+it("refreshes a queued suggestion after 3s and resolves ready without another POST", async () => {
+  const api = makeApi();
+  await renderHost(api);
+  const { queuedGets, stopTimers } = await startQueuedSuggestionUnderFakeTimers(api);
+  try {
+    expect(screen.getByText(/queued and checking automatically/)).toBeTruthy();
+    await act(async () => {
+      jest.advanceTimersByTime(2999);
+    });
+    expect(api.getSuggestion.mock.calls.length).toBe(queuedGets);
+    api.getSuggestion.mockResolvedValueOnce(readySuggestion);
+    await act(async () => {
+      jest.advanceTimersByTime(1);
+    });
+    expect(api.getSuggestion.mock.calls.length).toBe(queuedGets + 1);
+    expect(screen.getByRole("button", { name: "Apply saved suggestions" })).toBeTruthy();
+    expect(screen.getByLabelText("Todo titles (one per line)")).toHaveProp(
+      "value",
+      "Choose a date\nInvite guests",
+    );
+    expect(screen.queryByRole("button", { name: "Retry saved request" })).toBeNull();
+    expect(api.suggestWorkflow).toHaveBeenCalledTimes(1);
+    const getsAfterReady = api.getSuggestion.mock.calls.length;
+    await act(async () => {
+      jest.advanceTimersByTime(60000);
+    });
+    expect(api.getSuggestion.mock.calls.length).toBe(getsAfterReady);
+  } finally {
+    stopTimers();
+  }
+});
+
+it("keeps one queued GET in flight and stops after the 2-minute budget", async () => {
+  const api = makeApi();
+  await renderHost(api);
+  const { queuedGets, stopTimers } = await startQueuedSuggestionUnderFakeTimers(api);
+  try {
+    const firstTick = deferred<WorkflowSuggestion>();
+    api.getSuggestion.mockReturnValueOnce(firstTick.promise);
+    await act(async () => {
+      jest.advanceTimersByTime(3000);
+    });
+    expect(api.getSuggestion.mock.calls.length).toBe(queuedGets + 1);
+    // A slow first GET blocks the next tick: still exactly one in flight.
+    await act(async () => {
+      jest.advanceTimersByTime(30000);
+    });
+    expect(api.getSuggestion.mock.calls.length).toBe(queuedGets + 1);
+    await act(async () => {
+      firstTick.resolve(pendingSuggestion);
+    });
+    // Unchanged pending responses never reset the budget: 40 ticks spend it.
+    for (let elapsed = 3000; elapsed < 120000; elapsed += 3000) {
+      await act(async () => {
+        jest.advanceTimersByTime(3000);
+      });
+    }
+    const getsAfterBudget = api.getSuggestion.mock.calls.length;
+    expect(getsAfterBudget).toBe(queuedGets + 40);
+    await act(async () => {
+      jest.advanceTimersByTime(60000);
+    });
+    expect(api.getSuggestion.mock.calls.length).toBe(getsAfterBudget);
+    expect(screen.getByText(/Automatic status checks stopped/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Check status" })).toBeTruthy();
+    expect(api.suggestWorkflow).toHaveBeenCalledTimes(1);
+  } finally {
+    stopTimers();
+  }
+});
+
+it.each([
+  ["failed", failedSuggestion],
+  ["superseded", supersededSuggestion],
+] as const)(
+  "stops queued refresh when a refresh finds a %s suggestion",
+  async (_status, terminal) => {
+    const api = makeApi();
+    await renderHost(api);
+    const { queuedGets, stopTimers } = await startQueuedSuggestionUnderFakeTimers(api);
+    try {
+      api.getSuggestion.mockResolvedValueOnce(terminal);
+      await act(async () => {
+        jest.advanceTimersByTime(3000);
+      });
+      expect(api.getSuggestion.mock.calls.length).toBe(queuedGets + 1);
+      expect(screen.queryByRole("button", { name: "Retry saved request" })).toBeNull();
+      expect(api.suggestWorkflow).toHaveBeenCalledTimes(1);
+      const getsAfterTerminal = api.getSuggestion.mock.calls.length;
+      await act(async () => {
+        jest.advanceTimersByTime(60000);
+      });
+      expect(api.getSuggestion.mock.calls.length).toBe(getsAfterTerminal);
+    } finally {
+      stopTimers();
+    }
+  },
+);
+
+it("stops queued refresh on unmount", async () => {
+  const api = makeApi();
+  const { view } = await renderHost(api);
+  const { queuedGets, stopTimers } = await startQueuedSuggestionUnderFakeTimers(api);
+  try {
+    await act(async () => {
+      view.unmount();
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(30000);
+    });
+    expect(api.getSuggestion.mock.calls.length).toBe(queuedGets);
+    expect(api.suggestWorkflow).toHaveBeenCalledTimes(1);
+  } finally {
+    stopTimers();
+  }
+});
+
+it("stops queued refresh after logout", async () => {
+  let epoch = 0;
+  const api = makeApi();
+  await renderHost(api, createAppQueryClient(), {
+    sessionEpoch: epoch,
+    isSessionCurrent: (captured) => captured === epoch,
+  });
+  const { queuedGets, stopTimers } = await startQueuedSuggestionUnderFakeTimers(api);
+  try {
+    epoch = 1;
+    await act(async () => {
+      jest.advanceTimersByTime(30000);
+    });
+    expect(api.getSuggestion.mock.calls.length).toBe(queuedGets);
+    expect(api.suggestWorkflow).toHaveBeenCalledTimes(1);
+  } finally {
+    stopTimers();
+  }
+});
+
+it("stops queued refresh when the workflow advances", async () => {
+  const api = makeApi();
+  const { client } = await renderHost(api);
+  const { queuedGets, stopTimers } = await startQueuedSuggestionUnderFakeTimers(api);
+  try {
+    api.getWorkflow.mockResolvedValue(reviewWorkflow);
+    await act(async () => {
+      client.setQueryData(workflowQueryKey(USER_ID, WORKFLOW_ID), reviewWorkflow);
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(30000);
+    });
+    expect(api.getSuggestion.mock.calls.length).toBe(queuedGets);
+    expect(api.suggestWorkflow).toHaveBeenCalledTimes(1);
+  } finally {
+    stopTimers();
+  }
+});
+
+it("pauses queued refresh in background and resumes with a fresh budget on foreground", async () => {
+  const handlers: ((state: AppStateStatus) => void)[] = [];
+  const addSpy = jest
+    .spyOn(AppState, "addEventListener")
+    .mockImplementation((_type, handler) => {
+      handlers.push(handler);
+      return { remove: jest.fn() } as unknown as { remove: () => void };
+    });
+  const api = makeApi();
+  await renderHost(api);
+  const { queuedGets, stopTimers } = await startQueuedSuggestionUnderFakeTimers(api);
+  try {
+    expect(handlers).toHaveLength(1);
+    await act(async () => {
+      handlers[0]("background");
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(60000);
+    });
+    expect(api.getSuggestion.mock.calls.length).toBe(queuedGets);
+    // Foreground resumes with one immediate GET and a new bounded session.
+    await act(async () => {
+      handlers[0]("active");
+    });
+    expect(api.getSuggestion.mock.calls.length).toBe(queuedGets + 1);
+    for (let elapsed = 3000; elapsed < 120000; elapsed += 3000) {
+      await act(async () => {
+        jest.advanceTimersByTime(3000);
+      });
+    }
+    const getsAfterSecondBudget = api.getSuggestion.mock.calls.length;
+    expect(getsAfterSecondBudget).toBe(queuedGets + 40);
+    await act(async () => {
+      jest.advanceTimersByTime(60000);
+    });
+    expect(api.getSuggestion.mock.calls.length).toBe(getsAfterSecondBudget);
+    expect(api.suggestWorkflow).toHaveBeenCalledTimes(1);
+  } finally {
+    addSpy.mockRestore();
+    stopTimers();
+  }
+});
+
+it("stops queued refresh after a network failure and keeps Check status without a POST retry", async () => {
+  const api = makeApi();
+  await renderHost(api);
+  const { queuedGets, stopTimers } = await startQueuedSuggestionUnderFakeTimers(api);
+  try {
+    api.getSuggestion.mockRejectedValueOnce(
+      new TodoApiError("unavailable", "Could not load todo suggestions."),
+    );
+    await act(async () => {
+      jest.advanceTimersByTime(3000);
+    });
+    expect(api.getSuggestion.mock.calls.length).toBe(queuedGets + 1);
+    expect(screen.getByText("Could not load todo suggestions.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Check status" })).toBeTruthy();
+    const getsAfterFailure = api.getSuggestion.mock.calls.length;
+    await act(async () => {
+      jest.advanceTimersByTime(60000);
+    });
+    expect(api.getSuggestion.mock.calls.length).toBe(getsAfterFailure);
+    expect(api.suggestWorkflow).toHaveBeenCalledTimes(1);
+  } finally {
+    stopTimers();
+  }
+});
+
+it("preserves an edited draft when a late queued refresh turns ready", async () => {
+  const api = makeApi();
+  await renderHost(api);
+  const { stopTimers } = await startQueuedSuggestionUnderFakeTimers(api);
+  try {
+    await act(async () => {
+      fireEvent.changeText(
+        screen.getByLabelText("Todo titles (one per line)"),
+        "My own task",
+      );
+    });
+    api.getSuggestion.mockResolvedValueOnce(readySuggestion);
+    await act(async () => {
+      jest.advanceTimersByTime(3000);
+    });
+    expect(screen.getByLabelText("Todo titles (one per line)")).toHaveProp(
+      "value",
+      "My own task",
+    );
+    expect(screen.getByRole("button", { name: "Apply saved suggestions" })).toBeTruthy();
+    expect(api.suggestWorkflow).toHaveBeenCalledTimes(1);
+  } finally {
+    stopTimers();
+  }
 });
 
 it("requires explicit replacement before applying saved suggestions over edits", async () => {
