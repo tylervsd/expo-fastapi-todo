@@ -155,6 +155,9 @@ First activation ships the compatible image **without** activating cloud mode.
    (deployed in step 2) under `ignore_changes`. Set the worker image to the
    verified digest in the local reviewed (uncommitted) tfvars, then plan to a
    file, confirm the digest is in the plan, and apply that exact plan.
+   This `$IMAGE_DIGEST` proves the infrastructure path; step 9's release
+   builds its own image from `main`, and that workflow-produced digest becomes
+   the single canonical verified digest (API + worker + reconciled Terraform).
    Expected: plan shows only the reviewed async additions with `$IMAGE_DIGEST`
    as the worker image; apply succeeds:
 
@@ -232,20 +235,39 @@ First activation ships the compatible image **without** activating cloud mode.
    gh variable list | grep -E 'SUGGESTION|CLOUD_TASKS|CLOUD_WORKER|TASK_INVOKER|GOOGLE_CLOUD'
    ```
 
-9. Release the cloud-mode configuration set in step 8 (variables take effect
-   on the next release: the workflow rolls the same verified digest to the
-   worker first, then the API — see [Guide 19 activation](19-continuous-delivery.md#activate-delivery)).
-   Only then test enqueue on a disposable sandbox workflow; resume Scheduler
-   and delivery only after private smoke and enqueue checks pass. Expected: the
-   release summary shows API + worker both serving `$IMAGE_DIGEST`; the
-   disposable reservation leaves `queued` state and the worker log shows one
-   claim; Scheduler flips to enabled; delivery re-enables:
+9. Re-enable delivery, then release the cloud-mode configuration set in step 8
+   (variables take effect on the next release: the workflow builds, scans, and
+   deploys one image from `main` to the worker first, then the API — see
+   [Guide 19 activation](19-continuous-delivery.md#activate-delivery)).
+   The deploy job only runs when `DELIVERY_ENABLED == 'true'`, so re-enable
+   before dispatching; keep the queue and Scheduler paused until release and
+   enqueue verification succeed. The workflow-produced digest — not the step 1
+   `$IMAGE_DIGEST` — is the single canonical verified digest for API + worker +
+   Terraform: capture it from the release summary, confirm both services serve
+   it, and reconcile the Terraform worker image to it. Only then test enqueue
+   on a disposable sandbox workflow. Expected: the release summary shows API +
+   worker both serving the same workflow-produced digest; the disposable
+   reservation leaves `queued` state and the worker log shows one claim;
+   Scheduler and queue flip to enabled only after those checks pass:
 
    ```sh
+   gh workflow enable release.yml
+   gh variable set DELIVERY_ENABLED --body true
+   gh variable list | grep -E 'DELIVERY_ENABLED'
    gh workflow run release.yml --ref main
-   # Approve the sandbox environment prompt; wait for success and confirm the
-   # release summary shows the API and worker both serving $IMAGE_DIGEST.
+   # Approve the sandbox environment prompt; wait for success.
    gh run list --workflow release.yml
+   # Capture the canonical digest from the release summary (`digest:` line).
+   RELEASE_DIGEST="<registry-path>@sha256:<64-hex>"  # copy from the release summary
+   gcloud run services describe "$CLOUD_SERVICE" \
+     --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
+     --format='value(spec.template.spec.containers[0].image)'  # expect $RELEASE_DIGEST
+   gcloud run services describe "$WORKER_SERVICE" \
+     --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
+     --format='value(spec.template.spec.containers[0].image)'  # expect $RELEASE_DIGEST
+   # Reconcile Terraform when the canonical digest differs from the step 4
+   # digest: set async_suggestions.worker_image to $RELEASE_DIGEST in the local
+   # reviewed tfvars, re-plan to a file, grep the digest, apply that exact planfile.
    # Submit one disposable suggestion request through the app, then watch it:
    gcloud tasks list --queue="$CLOUD_TASKS_QUEUE" \
      --project="$CLOUD_PROJECT" --location="$CLOUD_TASKS_LOCATION"
@@ -255,8 +277,6 @@ First activation ships the compatible image **without** activating cloud mode.
      --project="$CLOUD_PROJECT" --location="$CLOUD_REGION"
    gcloud tasks queues resume "$CLOUD_TASKS_QUEUE" \
      --project="$CLOUD_PROJECT" --location="$CLOUD_TASKS_LOCATION"
-   gh workflow enable release.yml
-   gh variable set DELIVERY_ENABLED --body true
    ```
 
    Startup fails on unknown mode or incomplete cloud config; cloud mode
