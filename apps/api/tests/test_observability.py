@@ -179,6 +179,45 @@ def test_production_uvicorn_handlers_cannot_bypass_formatter(
         assert record["message"] == "Third-party log record redacted."
 
 
+def test_generic_third_party_handlers_cannot_bypass_formatter(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Generic third-party loggers with their own plain handler and
+    # propagate=False must also route through the safe root handler.
+    vendor_logger = logging.getLogger("some.vendor.lib")
+    raw = io.StringIO()
+    plain = logging.StreamHandler(raw)
+    plain.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
+    vendor_logger.addHandler(plain)
+    vendor_logger.propagate = False
+    try:
+        configure_logging("test-service")
+        assert vendor_logger.handlers == []
+        assert vendor_logger.propagate is True
+        # Routing generics must not re-enable duplicate access logs.
+        access_logger = logging.getLogger("uvicorn.access")
+        assert access_logger.disabled or not access_logger.isEnabledFor(
+            logging.INFO
+        )
+        vendor_logger.info("query %s", QUERY_SECRET)
+        try:
+            raise ValueError(EXCEPTION_SECRET)
+        except ValueError:
+            vendor_logger.exception("vendor boom")
+    finally:
+        vendor_logger.handlers = []
+        vendor_logger.propagate = True
+    assert QUERY_SECRET not in raw.getvalue()
+    assert EXCEPTION_SECRET not in raw.getvalue()
+    records = read_json_lines(capsys.readouterr().out)
+    assert_no_sentinels(records)
+    assert "Traceback" not in json.dumps(records)
+    assert records
+    for record in records:
+        assert record["event"] == "third_party_log"
+        assert record["message"] == "Third-party log record redacted."
+
+
 def test_third_party_records_are_redacted(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

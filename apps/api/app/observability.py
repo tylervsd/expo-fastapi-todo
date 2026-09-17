@@ -235,6 +235,29 @@ def route_uvicorn_through_safe_formatter() -> None:
         logger.disabled = False
 
 
+def route_third_party_loggers_through_safe_formatter() -> None:
+    """Route existing third-party loggers through the root formatter.
+
+    Any library may install its own plain-text handler with
+    ``propagate=False`` (uvicorn does in production), which would bypass
+    the sanitizing JSON formatter on the root logger. Clear handlers and
+    re-enable propagation on every existing non-application logger so
+    records can only flow through the root policy. ``uvicorn.access`` is
+    skipped here: duplicate access output stays disabled via
+    ``disable_uvicorn_access_logs`` (called after this routing).
+    """
+    for name, existing in list(logging.root.manager.loggerDict.items()):
+        if not isinstance(existing, logging.Logger):
+            continue
+        if name == APP_LOGGER_NAME or name.startswith("app."):
+            continue
+        if name in ("uvicorn.access",):
+            continue
+        existing.handlers = []
+        existing.propagate = True
+        existing.disabled = False
+
+
 def configure_logging(service: str) -> logging.Logger:
     """Configure application JSON logging; idempotent across factories.
 
@@ -261,6 +284,7 @@ def configure_logging(service: str) -> logging.Logger:
         if isinstance(existing, logging.Logger):
             existing.disabled = False
     route_uvicorn_through_safe_formatter()
+    route_third_party_loggers_through_safe_formatter()
     disable_uvicorn_access_logs()
     return logging.getLogger(APP_LOGGER_NAME)
 
@@ -394,5 +418,6 @@ __all__ = [
     "google_trace_name",
     "log_event",
     "log_unexpected_fault",
+    "route_third_party_loggers_through_safe_formatter",
     "route_uvicorn_through_safe_formatter",
 ]

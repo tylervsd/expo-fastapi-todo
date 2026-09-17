@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -883,6 +884,65 @@ def test_failing_readiness_probe_emits_span(
     assert attrs["http.status_code"] == 503
     assert attrs["outcome"] == "server_error"
     assert_no_sentinels(span_to_text(span))
+
+
+def test_failing_probe_exception_flushes_before_raise(
+    exporter: InMemorySpanExporter,
+) -> None:
+    # Exception-based failing probes must flush (bounded, off-loop) before
+    # the exception is observed: finished spans are visible immediately.
+    state = init_tracing("probe-exc", exporter=exporter, sample_rate=1.0)
+    try:
+        flush_calls: list[str] = []
+        original_flush = state.flush
+
+        def counting_flush(
+            timeout_seconds: float = REQUEST_FLUSH_TIMEOUT_SECONDS,
+        ) -> bool:
+            flush_calls.append("flush")
+            return original_flush(timeout_seconds)
+
+        state.flush = counting_flush  # type: ignore[method-assign]
+
+        async def boom(scope: object, receive: object, send: object) -> None:
+            raise RuntimeError(f"probe fault {EXCEPTION_SECRET}")
+
+        stack = TracingMiddleware(boom, state_provider=lambda: state)  # type: ignore[arg-type]
+
+        async def receive() -> dict[str, object]:
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message: object) -> None:
+            return None
+
+        scope = {
+            "type": "http",
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": "/ready",
+            "raw_path": b"/ready",
+            "query_string": b"",
+            "headers": [],
+            "client": ("test", 1),
+            "server": ("test", 80),
+            "route": SimpleNamespace(path="/ready"),
+        }
+
+        async def run() -> None:
+            await stack(scope, receive, send)  # type: ignore[operator]
+
+        with pytest.raises(RuntimeError, match="probe fault"):
+            asyncio.run(run())
+        # Flush ran before the re-raise reached the caller, so the
+        # post-hoc span is already exported without further shutdown.
+        assert flush_calls, "expected bounded flush before re-raise"
+        spans = exporter.get_finished_spans()
+        assert len(spans) == 1
+        assert spans[0].name == "GET /ready"
+        assert_no_sentinels(span_to_text(spans[0]))
+    finally:
+        shutdown_tracing(state)
 
 
 def test_thread_counts_stay_bounded_under_outage() -> None:

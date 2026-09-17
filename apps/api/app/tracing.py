@@ -708,6 +708,9 @@ class TracingMiddleware:
                     await self.app(scope, receive, send)
             except BaseException:
                 self._record_failed_probe_span(state, scope, boundary)
+                await run_in_threadpool(
+                    state.flush, REQUEST_FLUSH_TIMEOUT_SECONDS
+                )
                 raise
             status_code = int(scope.get("phase21.response_status", 500))
             if status_code >= 400:
