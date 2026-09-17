@@ -58,6 +58,7 @@ from app.database import (
     create_session_factory,
     get_database_url,
 )
+from app.observability import RequestLoggingMiddleware, configure_logging
 from app.passwords import DUMMY_PASSWORD_HASH, hash_password, verify_password
 from app.suggestion_provider import (
     InvalidSuggestionOutput,
@@ -93,6 +94,12 @@ from app.title_validation import canonicalize_title
 from app.todo_repository import TodoRow, delete_todo, set_completed, set_title
 from app.todo_repository import create_todo as create_todo_row
 from app.todo_repository import list_todos as list_todo_rows
+from app.tracing import (
+    ResponseStatusMiddleware,
+    TracingMiddleware,
+    init_tracing,
+    shutdown_tracing,
+)
 from app.workflow_domain import (
     MAX_WORKFLOW_REVISION,
     AnswerMultipleSteps,
@@ -437,13 +444,32 @@ def create_app(
             engine = create_database_engine(get_database_url())
             factory = create_session_factory(engine)
         app.state.session_factory = factory
+        # Lifespan-owned tracer/exporter setup: initialized once per
+        # process lifetime, closed on shutdown. Tests inject an in-memory
+        # exporter via app.state.tracing_exporter before startup.
+        app.state.tracing_state = init_tracing(
+            "todo-api",
+            exporter=getattr(app.state, "tracing_exporter", None),
+        )
         try:
             yield
         finally:
+            shutdown_tracing(getattr(app.state, "tracing_state", None))
+            app.state.tracing_state = None
             if engine is not None:
                 engine.dispose()
 
+    configure_logging("todo-api")
     app = FastAPI(title="Expo FastAPI Todo API", lifespan=lifespan)
+    # Telemetry middlewares wrap the router inside CORS so preflights stay
+    # out of spans/logs. First-added is innermost: status recorder, then
+    # request logging (sees the active span), then tracing (outermost).
+    app.add_middleware(ResponseStatusMiddleware)
+    app.add_middleware(RequestLoggingMiddleware, service="todo-api")
+    app.add_middleware(
+        TracingMiddleware,
+        state_provider=lambda: getattr(app.state, "tracing_state", None),
+    )
     app.state.cloud_tasks_config = cloud_tasks_config
     suggestion_runner: SuggestionCallable = (
         suggestion_callable or request_todo_suggestions

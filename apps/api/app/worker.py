@@ -29,6 +29,7 @@ from app.database import (
     create_session_factory,
     get_database_url,
 )
+from app.observability import RequestLoggingMiddleware, configure_logging
 from app.suggestion_provider import (
     InvalidSuggestionOutput,
     OpenRouterConfig,
@@ -47,6 +48,12 @@ from app.suggestion_service import (
     claim_suggestion,
     expire_suggestions,
     finish_claimed_suggestion,
+)
+from app.tracing import (
+    ResponseStatusMiddleware,
+    TracingMiddleware,
+    init_tracing,
+    shutdown_tracing,
 )
 
 logger = logging.getLogger(__name__)
@@ -81,18 +88,33 @@ def create_worker_app(
             engine = create_database_engine(get_database_url())
             factory = create_session_factory(engine)
         app.state.session_factory = factory
+        # Lifespan-owned tracer/exporter setup, closed on shutdown. Tests
+        # inject an in-memory exporter via app.state.tracing_exporter.
+        app.state.tracing_state = init_tracing(
+            "todo-worker",
+            exporter=getattr(app.state, "tracing_exporter", None),
+        )
         try:
             yield
         finally:
+            shutdown_tracing(getattr(app.state, "tracing_state", None))
+            app.state.tracing_state = None
             if engine is not None:
                 engine.dispose()
 
+    configure_logging("todo-worker")
     app = FastAPI(
         title="Suggestion worker",
         lifespan=lifespan,
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
+    )
+    app.add_middleware(ResponseStatusMiddleware)
+    app.add_middleware(RequestLoggingMiddleware, service="todo-worker")
+    app.add_middleware(
+        TracingMiddleware,
+        state_provider=lambda: getattr(app.state, "tracing_state", None),
     )
     if session_factory is not None:
         app.state.session_factory = session_factory
