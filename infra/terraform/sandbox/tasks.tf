@@ -114,6 +114,17 @@ resource "google_cloud_run_v2_service" "worker" {
         }
       }
 
+      # Cloud Trace export switch, mirroring the API seam: set only when
+      # observability is enabled. The worker has no caller-supplied env
+      # maps, so no manual-collision guard is needed here.
+      dynamic "env" {
+        for_each = var.observability == null ? [] : [true]
+        content {
+          name  = "TRACE_EXPORT_ENABLED"
+          value = "true"
+        }
+      }
+
       dynamic "env" {
         for_each = local.async_worker_secrets
         content {

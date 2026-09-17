@@ -9,7 +9,9 @@
 #
 # Runtime telemetry identity (service name, revision, exporter) lives in the
 # application; var.observability.trace_sample_rate sets TRACE_SAMPLE_RATE on
-# the API and worker runtimes below (0.1 default, 1.0 bounded drills) without
+# the API and worker runtimes below (0.1 default, 1.0 bounded drills), and
+# enabling this file sets TRACE_EXPORT_ENABLED=true on both runtimes so
+# Cloud Trace export starts atomically with the trace IAM grants, without
 # touching release ownership. Enabling this file never changes Cloud Run CPU
 # allocation, instance limits, images, revisions, or traffic: request-based
 # CPU and release ownership are preserved.
@@ -39,9 +41,9 @@ locals {
   # (suggestion_task_rejected malformed/oversized) travel as redacted
   # direct_log entries because direct logger calls never serialize the
   # caller message; only the allowlisted outcome travels. Enqueue
-  # unavailability has no dedicated event: the API raises 503 on the
-  # suggestion request route, so the http_request clause matches
-  # server_error outcomes on that route template only.
+  # unavailability matches both the dedicated suggestion_enqueue event
+  # and the 503 raised on the suggestion request route, so a dropped
+  # enqueue is actionable even if its log line is sampled separately.
   observability_failure_filter = join(" ", [
     "resource.type=\"cloud_run_revision\"",
     "AND (",
@@ -49,6 +51,7 @@ locals {
     "OR (jsonPayload.event=\"maintenance_finished\" AND (jsonPayload.outcome=\"failed\" OR jsonPayload.outcome=\"unavailable\"))",
     "OR (jsonPayload.event=\"suggestion_delivery\" AND (jsonPayload.outcome=\"claim_unavailable\" OR jsonPayload.outcome=\"claim_failed\" OR jsonPayload.outcome=\"invalid_stored_row\" OR jsonPayload.outcome=\"finalize_unavailable\" OR jsonPayload.outcome=\"finalize_failed\"))",
     "OR (jsonPayload.event=\"direct_log\" AND (jsonPayload.outcome=\"malformed\" OR jsonPayload.outcome=\"oversized\"))",
+    "OR (jsonPayload.event=\"suggestion_enqueue\" AND jsonPayload.outcome=\"unavailable\")",
     "OR (jsonPayload.event=\"http_request\" AND jsonPayload.outcome=\"server_error\" AND jsonPayload.route=\"/todo-workflows/{workflow_id}/suggestions\")",
     "OR (jsonPayload.event=\"agent_finished\" AND jsonPayload.outcome=\"agent_failed\")",
     "OR (jsonPayload.event=\"unexpected_fault\")",

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from typing import ClassVar
 from uuid import UUID, uuid4
 
@@ -153,7 +154,10 @@ def test_enqueue_builds_exact_task_request(
     from app import suggestion_tasks
 
     use_cloud_env(monkeypatch)
-    suggestion_tasks.enqueue_suggestion(123, "a" * 64)
+    assert (
+        suggestion_tasks.enqueue_suggestion(123, "a" * 64)
+        == suggestion_tasks.ENQUEUE_ACCEPTED
+    )
 
     assert len(FakeTasksClient.instances) == 1
     (call,) = FakeTasksClient.instances[0].calls
@@ -210,7 +214,10 @@ def test_enqueue_treats_already_exists_as_success(
 
     use_cloud_env(monkeypatch)
     FakeTasksClient.behaviors = [AlreadyExists("task exists")]
-    suggestion_tasks.enqueue_suggestion(9, "c" * 64)
+    assert (
+        suggestion_tasks.enqueue_suggestion(9, "c" * 64)
+        == suggestion_tasks.ENQUEUE_DEDUPLICATED
+    )
 
 
 def test_enqueue_sanitizes_other_failures(
@@ -232,8 +239,11 @@ def test_enqueue_sanitizes_other_failures(
 class FakeEnqueue:
     """Injected enqueue seam observing the committed row on a new connection."""
 
-    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+    def __init__(
+        self, session_factory: sessionmaker[Session], outcome: str = "accepted"
+    ) -> None:
         self.session_factory = session_factory
+        self.outcome = outcome
         self.calls: list[tuple[int, str, str | None]] = []
 
     def __call__(
@@ -241,7 +251,7 @@ class FakeEnqueue:
         suggestion_id: int,
         fingerprint: str,
         trace_parent: str | None = None,
-    ) -> None:
+    ) -> str:
         from app.workflow_repository import WorkflowSuggestionRequestRow
 
         with self.session_factory() as session:
@@ -257,6 +267,7 @@ class FakeEnqueue:
             # it was given and the row carries the committed value.
             assert trace_parent == row.trace_parent
         self.calls.append((suggestion_id, fingerprint, trace_parent))
+        return self.outcome
 
 
 def cloud_client(
@@ -496,6 +507,202 @@ def test_cloud_enqueue_unavailable_keeps_saved_reservation(
         rows = session.scalars(select(WorkflowSuggestionRequestRow)).all()
         assert len(rows) == 1
         assert rows[0].status == "pending"
+
+
+def test_cloud_new_request_emits_reserved_and_enqueue_accepted(
+    database_session: Session, session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A fresh cloud reservation logs one reserved plus one accepted enqueue."""
+    from app.suggestion_tasks import task_name_for
+
+    del database_session
+    enqueue = FakeEnqueue(session_factory)
+    with caplog.at_level(logging.INFO, logger="app"), cloud_client(
+        session_factory, monkeypatch, enqueue
+    ) as client:
+        headers = auth_headers(client)
+        body = start_collecting(client, headers)
+        request_id = uuid4()
+        response = post_suggestion(
+            client, headers, body, body["workflow_id"], request_id
+        )
+        assert response.status_code == 202
+    reserved = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "suggestion_reserved"
+    ]
+    assert len(reserved) == 1
+    assert getattr(reserved[0], "outcome", None) == "reserved"
+    assert getattr(reserved[0], "workflow_id", None) == body["workflow_id"]
+    assert getattr(reserved[0], "suggestion_request_id", None) == str(request_id)
+    enqueued = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "suggestion_enqueue"
+    ]
+    assert len(enqueued) == 1
+    assert getattr(enqueued[0], "outcome", None) == "accepted"
+    assert getattr(enqueued[0], "suggestion_request_id", None) == str(request_id)
+    suggestion_id = getattr(enqueued[0], "suggestion_id", None)
+    assert isinstance(suggestion_id, int)
+    (row_id, fingerprint, _trace_parent) = enqueue.calls[0]
+    assert suggestion_id == row_id
+    assert getattr(enqueued[0], "task_id", None) == task_name_for(
+        row_id, fingerprint
+    )
+
+
+def test_cloud_same_id_replay_emits_no_second_reserved(
+    database_session: Session, session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A same-ID replay retries enqueue but never logs another reservation."""
+    del database_session
+    enqueue = FakeEnqueue(session_factory)
+    with caplog.at_level(logging.INFO, logger="app"), cloud_client(
+        session_factory, monkeypatch, enqueue
+    ) as client:
+        headers = auth_headers(client)
+        body = start_collecting(client, headers)
+        request_id = uuid4()
+        first = post_suggestion(
+            client, headers, body, body["workflow_id"], request_id
+        )
+        second = post_suggestion(
+            client, headers, body, body["workflow_id"], request_id
+        )
+        assert first.status_code == 202
+        assert second.status_code == 202
+    reserved = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "suggestion_reserved"
+    ]
+    assert len(reserved) == 1, "replay must not duplicate the reservation event"
+    enqueued = [
+        getattr(record, "outcome", None)
+        for record in caplog.records
+        if getattr(record, "event", None) == "suggestion_enqueue"
+    ]
+    assert enqueued == ["accepted", "accepted"], enqueued
+
+
+def test_cloud_enqueue_deduplicated_event(
+    database_session: Session, session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A deduplicated enqueue attempt logs the bounded deduplicated outcome."""
+    del database_session
+    enqueue = FakeEnqueue(session_factory, outcome="deduplicated")
+    with caplog.at_level(logging.INFO, logger="app"), cloud_client(
+        session_factory, monkeypatch, enqueue
+    ) as client:
+        headers = auth_headers(client)
+        body = start_collecting(client, headers)
+        response = post_suggestion(
+            client, headers, body, body["workflow_id"], uuid4()
+        )
+        assert response.status_code == 202
+    enqueued = [
+        getattr(record, "outcome", None)
+        for record in caplog.records
+        if getattr(record, "event", None) == "suggestion_enqueue"
+    ]
+    assert enqueued == ["deduplicated"], enqueued
+
+
+def test_cloud_enqueue_unavailable_event(
+    database_session: Session, session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A failed enqueue logs unavailable while keeping the saved reservation."""
+    from app import suggestion_tasks
+    from app.main import create_app
+
+    del database_session
+    use_cloud_env(monkeypatch)
+
+    def unavailable(
+        suggestion_id: int, fingerprint: str, trace_parent: str | None = None
+    ) -> str:
+        del suggestion_id, fingerprint, trace_parent
+        raise suggestion_tasks.EnqueueUnavailable("queue is down")
+
+    with caplog.at_level(logging.INFO, logger="app"), TestClient(
+        create_app(
+            session_factory,
+            suggestion_callable=failing_provider,  # type: ignore[arg-type]
+            enqueue_callable=unavailable,  # type: ignore[arg-type]
+        )
+    ) as client:
+        headers = auth_headers(client)
+        body = start_collecting(client, headers)
+        request_id = uuid4()
+        response = post_suggestion(
+            client, headers, body, body["workflow_id"], request_id
+        )
+        assert response.status_code == 503
+    reserved = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "suggestion_reserved"
+    ]
+    assert len(reserved) == 1
+    enqueued = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "suggestion_enqueue"
+    ]
+    assert len(enqueued) == 1
+    assert getattr(enqueued[0], "outcome", None) == "unavailable"
+    assert getattr(enqueued[0], "suggestion_request_id", None) == str(request_id)
+    assert isinstance(getattr(enqueued[0], "suggestion_id", None), int)
+    assert isinstance(getattr(enqueued[0], "task_id", None), str)
+
+
+def test_inline_new_request_emits_reserved_without_enqueue(
+    database_session: Session, session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Inline reservations log reserved; no enqueue leg exists inline."""
+    from app.main import create_app
+
+    del database_session
+    monkeypatch.delenv("SUGGESTION_EXECUTION", raising=False)
+    provider = InlineTitles()
+    with caplog.at_level(logging.INFO, logger="app"), TestClient(
+        create_app(
+            session_factory,
+            suggestion_callable=provider,  # type: ignore[arg-type]
+        )
+    ) as client:
+        headers = auth_headers(client)
+        body = start_collecting(client, headers)
+        request_id = uuid4()
+        response = client.post(
+            f"/todo-workflows/{body['workflow_id']}/suggestions",
+            json={
+                "request_id": str(request_id),
+                "expected_revision": body["revision"],
+                "step_id": body["view"]["step_id"],
+            },
+            headers=headers,
+        )
+        assert response.status_code == 201
+    reserved = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "suggestion_reserved"
+    ]
+    assert len(reserved) == 1
+    assert getattr(reserved[0], "suggestion_request_id", None) == str(request_id)
+    assert [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "suggestion_enqueue"
+    ] == []
 
 
 def test_cloud_cross_owner_post_is_denied_without_enqueue(

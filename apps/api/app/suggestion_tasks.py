@@ -32,6 +32,13 @@ TASK_DISPATCH_DEADLINE_SECONDS = 60
 
 TASK_NAME_PREFIX = "suggest-v1-"
 
+# Bounded enqueue outcomes for the `suggestion_enqueue` log event.
+# `accepted` means Cloud Tasks created the delivery task; `deduplicated`
+# means the deterministic task name already existed (same-ID replay or
+# lost-response repair), which the adapter treats as success.
+ENQUEUE_ACCEPTED = "accepted"
+ENQUEUE_DEDUPLICATED = "deduplicated"
+
 # Application-owned lineage header. Carries the same validated stored
 # traceparent as `traceparent` so application lineage survives a managed
 # intermediary that rewrites standard headers. Diagnostic only: never
@@ -52,7 +59,7 @@ class CloudTasksConfig:
     invoker_email: str
 
 
-EnqueueRunner = Callable[[int, str, str | None], None]
+EnqueueRunner = Callable[[int, str, str | None], str]
 
 
 def _require_nonempty(value: object, *, name: str) -> str:
@@ -153,9 +160,11 @@ def enqueue_suggestion_with_config(
     suggestion_id: int,
     fingerprint: str,
     trace_parent: str | None = None,
-) -> None:
+) -> str:
     """Create (or deduplicate) the delivery task using a startup-bound config.
 
+    Returns `ENQUEUE_ACCEPTED` when Cloud Tasks creates the task and
+    `ENQUEUE_DEDUPLICATED` when the deterministic name already exists.
     Only `AlreadyExists` is accepted as duplicate success; every other
     failure raises sanitized `EnqueueUnavailable`. Never logs the credential
     or the task body. `trace_parent` is the stored row context, forwarded
@@ -203,11 +212,12 @@ def enqueue_suggestion_with_config(
             timeout=CREATE_TASK_TIMEOUT_SECONDS,
         )
     except AlreadyExists:
-        return
+        return ENQUEUE_DEDUPLICATED
     except EnqueueUnavailable:
         raise
     except Exception as exc:
         raise EnqueueUnavailable("suggestion enqueue is unavailable") from exc
+    return ENQUEUE_ACCEPTED
 
 
 def build_enqueue_runner(config: CloudTasksConfig) -> EnqueueRunner:
@@ -215,21 +225,22 @@ def build_enqueue_runner(config: CloudTasksConfig) -> EnqueueRunner:
 
     def _runner(
         suggestion_id: int, fingerprint: str, trace_parent: str | None = None
-    ) -> None:
-        enqueue_suggestion_with_config(config, suggestion_id, fingerprint, trace_parent)
+    ) -> str:
+        return enqueue_suggestion_with_config(config, suggestion_id, fingerprint, trace_parent)
 
     return _runner
 
 
 def enqueue_suggestion(
     suggestion_id: int, fingerprint: str, trace_parent: str | None = None
-) -> None:
+) -> str:
     """Create (or deduplicate) the delivery task for a committed reservation.
 
     Public seam: reads the current environment for standalone
     use. The application binds its default runner to the startup-validated
     config via `build_enqueue_runner` so requests never re-read routing.
-    Only `AlreadyExists` is accepted as duplicate success; every other
+    Returns `ENQUEUE_ACCEPTED` or `ENQUEUE_DEDUPLICATED`; only
+    `AlreadyExists` is accepted as duplicate success while every other
     failure raises sanitized `EnqueueUnavailable`. Never logs the credential
     or the task body.
     """
@@ -238,4 +249,4 @@ def enqueue_suggestion(
         config = read_cloud_config()
     except ValueError as exc:
         raise EnqueueUnavailable("suggestion enqueue is unavailable") from exc
-    enqueue_suggestion_with_config(config, suggestion_id, fingerprint, trace_parent)
+    return enqueue_suggestion_with_config(config, suggestion_id, fingerprint, trace_parent)

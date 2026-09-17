@@ -70,6 +70,8 @@ EVENT_MESSAGES = {
     "third_party_log": "Third-party log record redacted.",
     "direct_log": "Direct log record redacted.",
     "suggestion_task": "Suggestion task processed.",
+    "suggestion_reserved": "Suggestion reservation committed.",
+    "suggestion_enqueue": "Suggestion enqueue attempted.",
     "suggestion_delivery": "Suggestion delivery acknowledged.",
     "suggestion_finished": "Suggestion reached a terminal outcome.",
     "maintenance_finished": "Suggestion maintenance sweep finished.",

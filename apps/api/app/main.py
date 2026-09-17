@@ -59,7 +59,7 @@ from app.database import (
     create_session_factory,
     get_database_url,
 )
-from app.observability import RequestLoggingMiddleware, configure_logging
+from app.observability import RequestLoggingMiddleware, configure_logging, log_event
 from app.passwords import DUMMY_PASSWORD_HASH, hash_password, verify_password
 from app.suggestion_provider import (
     InvalidSuggestionOutput,
@@ -78,6 +78,7 @@ from app.suggestion_service import (
     StaleSuggestion,
     SuggestionErrorCode,
     SuggestionInProgress,
+    SuggestionReservation,
     SuggestionSnapshot,
     SuggestionStatus,
     finish_suggestion,
@@ -86,10 +87,13 @@ from app.suggestion_service import (
     reserve_suggestion,
 )
 from app.suggestion_tasks import (
+    ENQUEUE_ACCEPTED,
+    ENQUEUE_DEDUPLICATED,
     EnqueueUnavailable,
     build_enqueue_runner,
     enqueue_suggestion,
     read_cloud_config,
+    task_name_for,
 )
 from app.title_validation import canonicalize_title
 from app.todo_repository import TodoRow, delete_todo, set_completed, set_title
@@ -424,7 +428,7 @@ class EnqueueCallable(Protocol):
         suggestion_id: int,
         fingerprint: str,
         trace_parent: str | None = None,
-    ) -> None: ...
+    ) -> str | None: ...
 
 
 @contextmanager
@@ -936,6 +940,17 @@ def create_app(
             # and reconcile below. (Inline pending never reaches here: it
             # raises SuggestionInProgress in reserve_suggestion.)
 
+        if isinstance(reservation, SuggestionReservation):
+            # One newly committed reservation only: a same-ID replay
+            # returns a SuggestionSnapshot above (or raises), never
+            # another reservation, so this event never duplicates.
+            log_event(
+                "suggestion_reserved",
+                outcome="reserved",
+                workflow_id=str(workflow_id),
+                suggestion_request_id=str(payload.request_id),
+            )
+
         if execution_mode == "cloud_tasks":
             # Cloud mode never calls the provider. The reservation above
             # already committed; end database work, enqueue off the event
@@ -980,15 +995,41 @@ def create_app(
                             "suggestion_id": row.id,
                         },
                         links=replay_links,
-                    ): 
-                        await run_in_threadpool(
+                    ):
+                        enqueue_result = await run_in_threadpool(
                             enqueue_runner,
                             row.id,
                             row.request_fingerprint,
                             stored_trace_parent,
                         )
                 except EnqueueUnavailable as exc:
+                    # The reservation stays saved for retry; acceptance is
+                    # not proof of eventual execution.
+                    log_event(
+                        "suggestion_enqueue",
+                        outcome="unavailable",
+                        workflow_id=str(workflow_id),
+                        suggestion_request_id=str(payload.request_id),
+                        suggestion_id=row.id,
+                        task_id=task_name_for(row.id, row.request_fingerprint),
+                    )
                     raise enqueue_unavailable() from exc
+                # Injected legacy callables return None; the real runner
+                # returns accepted/deduplicated. Unknown values stay
+                # accepted: the transport succeeded either way.
+                enqueue_outcome = (
+                    enqueue_result
+                    if enqueue_result in (ENQUEUE_ACCEPTED, ENQUEUE_DEDUPLICATED)
+                    else ENQUEUE_ACCEPTED
+                )
+                log_event(
+                    "suggestion_enqueue",
+                    outcome=enqueue_outcome,
+                    workflow_id=str(workflow_id),
+                    suggestion_request_id=str(payload.request_id),
+                    suggestion_id=row.id,
+                    task_id=task_name_for(row.id, row.request_fingerprint),
+                )
             try:
                 current = get_current_suggestion(session, user.id, workflow_id)
             except UnsupportedWorkflowDefinition as exc:

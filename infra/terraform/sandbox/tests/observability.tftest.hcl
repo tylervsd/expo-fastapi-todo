@@ -244,6 +244,10 @@ run "observability_disabled" {
     condition     = !contains([for e in google_cloud_run_v2_service.api.template[0].containers[0].env : e.name], "TRACE_SAMPLE_RATE")
     error_message = "The API must not carry TRACE_SAMPLE_RATE when observability is disabled."
   }
+  assert {
+    condition     = !contains([for e in google_cloud_run_v2_service.api.template[0].containers[0].env : e.name], "TRACE_EXPORT_ENABLED")
+    error_message = "The API must not carry TRACE_EXPORT_ENABLED when observability is disabled."
+  }
 }
 
 run "trace_iam_least_privilege" {
@@ -446,6 +450,10 @@ run "failure_alert" {
   assert {
     condition     = strcontains(google_monitoring_alert_policy.app_failure[0].conditions[0].condition_matched_log[0].filter, "jsonPayload.event=\"direct_log\"")
     error_message = "Rejected worker tasks travel as redacted direct logs; the filter must match that event."
+  }
+  assert {
+    condition     = strcontains(google_monitoring_alert_policy.app_failure[0].conditions[0].condition_matched_log[0].filter, "jsonPayload.event=\"suggestion_enqueue\"")
+    error_message = "The failure filter must include the dedicated enqueue-unavailability event."
   }
   assert {
     condition     = strcontains(google_monitoring_alert_policy.app_failure[0].conditions[0].condition_matched_log[0].filter, "jsonPayload.event=\"http_request\"")
@@ -782,6 +790,64 @@ run "allows_manual_trace_sample_rate_when_disabled" {
   assert {
     condition     = ({ for e in google_cloud_run_v2_service.api.template[0].containers[0].env : e.name => e.value if e.value != null })["TRACE_SAMPLE_RATE"] == "0.5"
     error_message = "The API must keep a manually set TRACE_SAMPLE_RATE when observability is disabled."
+  }
+}
+
+run "trace_export_env" {
+  command = plan
+
+  assert {
+    condition     = ({ for e in google_cloud_run_v2_service.api.template[0].containers[0].env : e.name => e.value if e.value != null })["TRACE_EXPORT_ENABLED"] == "true"
+    error_message = "The API runtime must receive TRACE_EXPORT_ENABLED true when observability is enabled."
+  }
+  assert {
+    condition     = ({ for e in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : e.name => e.value if e.value != null })["TRACE_EXPORT_ENABLED"] == "true"
+    error_message = "The worker runtime must receive TRACE_EXPORT_ENABLED true when observability is enabled."
+  }
+}
+
+run "trace_export_absent_without_observability" {
+  command = plan
+  variables {
+    observability = null
+  }
+
+  assert {
+    condition     = !contains([for e in google_cloud_run_v2_service.api.template[0].containers[0].env : e.name], "TRACE_EXPORT_ENABLED")
+    error_message = "The API must not carry TRACE_EXPORT_ENABLED when observability is null."
+  }
+  assert {
+    condition     = !contains([for e in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : e.name], "TRACE_EXPORT_ENABLED")
+    error_message = "The worker must not carry TRACE_EXPORT_ENABLED when observability is null."
+  }
+}
+
+run "rejects_manual_trace_export_enabled_plain_env" {
+  command         = plan
+  expect_failures = [google_cloud_run_v2_service.api]
+  variables {
+    api = merge(var.api, { plain_env = merge(var.api.plain_env, { TRACE_EXPORT_ENABLED = "true" }) })
+  }
+}
+
+run "rejects_manual_trace_export_enabled_secret_env" {
+  command         = plan
+  expect_failures = [google_cloud_run_v2_service.api]
+  variables {
+    api = merge(var.api, { secret_env = merge(var.api.secret_env, { TRACE_EXPORT_ENABLED = { secret_key = "database_url", version = "1" } }) })
+  }
+}
+
+run "allows_manual_trace_export_enabled_when_disabled" {
+  command = plan
+  variables {
+    observability = null
+    api           = merge(var.api, { plain_env = merge(var.api.plain_env, { TRACE_EXPORT_ENABLED = "true" }) })
+  }
+
+  assert {
+    condition     = ({ for e in google_cloud_run_v2_service.api.template[0].containers[0].env : e.name => e.value if e.value != null })["TRACE_EXPORT_ENABLED"] == "true"
+    error_message = "The API must keep a manually set TRACE_EXPORT_ENABLED when observability is disabled."
   }
 }
 

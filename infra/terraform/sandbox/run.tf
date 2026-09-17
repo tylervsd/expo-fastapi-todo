@@ -61,6 +61,19 @@ resource "google_cloud_run_v2_service" "api" {
         }
       }
 
+      # Cloud Trace export switch: the application only builds its
+      # production exporter when TRACE_EXPORT_ENABLED is set, so the
+      # variable stays unset (no export) when observability is disabled.
+      # It lands in the same apply as the trace IAM grants, so export
+      # starts only with writer rights in place.
+      dynamic "env" {
+        for_each = var.observability == null ? [] : [true]
+        content {
+          name  = "TRACE_EXPORT_ENABLED"
+          value = "true"
+        }
+      }
+
       dynamic "env" {
         for_each = var.api.secret_env
         content {
@@ -176,6 +189,14 @@ resource "google_cloud_run_v2_service" "api" {
     precondition {
       condition     = var.observability == null || !contains(keys(var.api.secret_env), "TRACE_SAMPLE_RATE")
       error_message = "api.secret_env must not set TRACE_SAMPLE_RATE when observability is enabled; var.observability.trace_sample_rate owns it."
+    }
+    precondition {
+      condition     = var.observability == null || !contains(keys(var.api.plain_env), "TRACE_EXPORT_ENABLED")
+      error_message = "api.plain_env must not set TRACE_EXPORT_ENABLED when observability is enabled; observability owns it (always \"true\" when enabled)."
+    }
+    precondition {
+      condition     = var.observability == null || !contains(keys(var.api.secret_env), "TRACE_EXPORT_ENABLED")
+      error_message = "api.secret_env must not set TRACE_EXPORT_ENABLED when observability is enabled; observability owns it (always \"true\" when enabled)."
     }
     ignore_changes = [
       template[0].containers[0].image,
