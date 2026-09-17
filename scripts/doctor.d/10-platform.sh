@@ -5,10 +5,10 @@ check_platform_macos() {
     doctor_fail 'unable to determine macOS version'
     return
   }
-  if [ "$version" = '26.6.2' ]; then
+  if printf '%s\n' "$version" | grep -Eq '^(26|27)(\.[0-9]+)+$'; then
     doctor_pass "macOS $version"
   else
-    doctor_fail "requires macOS 26.6.2; detected $version"
+    doctor_fail "requires macOS 26.x or 27.x; detected $version"
   fi
 }
 
