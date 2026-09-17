@@ -1,6 +1,6 @@
 # Phase 21: Observability, alerts, and cost control
 
-**Status:** Revised for the learner-approved tracing focus; proposed learner walkthrough. Phase 21 code and Terraform additions do not exist yet; steps describing them become executable after implementation and deployment.
+**Status:** Revised for the learner-approved tracing focus; proposed learner walkthrough. Phase 21 implementation (Tasks 1–4) is complete locally on `codex/phase-21-observability` through commit `57dd321`, each task review-clean. Local verification observed on 2026-09-17: `pnpm test:api` 688 passed, `pnpm lint:api` clean, Terraform `fmt`/`validate` clean with `test` 43 passed, web E2E 4 passed. Live deployment and learner walkthrough acceptance are pending and require explicit authorization. Phase 20's pending iOS and fault-drill gaps remain open.
 
 **Design:** [Proposed design](../superpowers/specs/2026-09-17-observability-design.md).
 
@@ -46,6 +46,8 @@ terraform -chdir=infra/terraform/sandbox test
 
 Initialize the Terraform root with the existing guide's setup if needed. The Terraform tests use mocks; they must not apply resources. Provider tests use fakes and tracing tests use an in-memory exporter; neither requires credentials or a paid call.
 
+**Observed 2026-09-17 (local worktree, Task 5 integration run):** `pnpm test:api` — 688 passed; `pnpm lint:api` — clean; `terraform fmt -check` / `validate` — clean; `terraform test` — 43 passed, 0 failed (21 pre-existing + 22 observability); web E2E (`pnpm test:e2e:web`) — 4 passed. The worktree's default test ports (5433/5434) were held by other worktrees' containers, so isolated throwaway PostgreSQL 18.6 containers on `127.0.0.1:5435` (`TEST_DATABASE_URL`) and `127.0.0.1:5436` (`E2E_DATABASE_URL`) were used instead; no other worktree's containers were touched. The pinned Terraform binary would not execute in place (macOS launcher verification); a byte-identical copy reported v1.14.7 and ran the checks.
+
 Read one captured JSON line and identify its event, request ID, operation ID, duration, and outcome. Follow a fake provider failure into a saved `failed` result. Confirm that its task response can still be 204. Then inspect a late completion: it must say `discarded`, not falsely report a saved result.
 
 Inspect the in-memory trace test: separate API and worker tracer providers must still produce one trace ID, distinct span IDs, and correct parent relationships using only durable context and task headers. Repeat delivery and enqueue repair; no additional provider execution is allowed. Test legacy/malformed context fallback without changing business outcomes.
@@ -69,6 +71,8 @@ Use the learner-approved cloud apply procedure. Verify the resulting resource na
 Keep the current cloud budget amount. If approved, use 50%, 80%, and 100% actual-spend notifications. Keep and record the existing provider-account spending controls; this phase introduces no new per-user allowance or prescribed provider cap. Do not place a management key or secret payload into Terraform.
 
 Enable trace export only after runtime IAM/API setup. Use `TRACE_SAMPLE_RATE=1.0` for the bounded acceptance window, then restore `0.1`. Verify spans arrive after a single request followed by idle time; do not rely on another request waking an exporter thread. Record export overhead and flush behavior.
+
+**Rollback (compatible revisions):** restore both services to the recorded previous revisions API-then-worker following [Guide 20's compatible recovery](20-cloud-tasks-scheduler.md#pause-and-recovery); attempt both restores even if the first fails. The trace-context migration (`2026091701`) is additive and nullable — keep the column during rollback; old revisions ignore it and old reservations remain valid. Never downgrade the database. After drills, restore `TRACE_SAMPLE_RATE` to `0.1`, queue/Scheduler to running/enabled, and confirm a final no-drift plan.
 
 **Checkpoint:** You can open Cloud Trace, the dashboard, matching log queries, alert policy, and runbook from supplied links.
 
@@ -185,12 +189,12 @@ Open the project billing view and provider-key usage separately. Compare dates, 
 
 | Check | Result | Evidence/date |
 | --- | --- | --- |
-| Structured stdout/stderr privacy and context tests | Pending | Implementation not started |
+| Structured stdout/stderr privacy and context tests | Local pass | 688-test API suite observed 2026-09-17, including serialized-output redaction, context isolation, SSE/threadpool/shutdown checks; live Cloud Run log-output check pending |
 | One API → database → task → worker → provider → saved result waterfall | Pending | Requires deployed Phase 21 and trace URL |
-| Queue delay and repeated-delivery context | Pending | Record local and live evidence separately |
-| Replay/legacy context and unchanged business behavior | Pending | Requires integration tests |
-| Span/log privacy and sampling behavior | Pending | Requires serialized output checks |
-| Bounded export and idle/shutdown delivery | Pending | Requires local and Cloud Run checks |
+| Queue delay and repeated-delivery context | Local pass (harness); live pending | Local duplicate/retry/queue-wait tests pass; live queue-delay drill and trace evidence pending |
+| Replay/legacy context and unchanged business behavior | Local pass | Same-ID replay link, legacy/malformed fallback, and unchanged business outcomes covered by API tests observed 2026-09-17 |
+| Span/log privacy and sampling behavior | Local pass | Sentinel redaction and sampled-out-failure logging covered by API tests observed 2026-09-17; Cloud Trace attribute check pending |
+| Bounded export and idle/shutdown delivery | Local pass | 2 s flush budget, unreachable-exporter, idle/shutdown delivery covered by API tests observed 2026-09-17; Cloud Run idle check pending |
 | Backlog email and recovery | Pending | Requires authorized drill |
 | Saved expiry failure and actionable email | Pending | Requires authorized drill |
 | SQL threshold email and restoration | Pending | Requires authorized drill |

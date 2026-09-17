@@ -228,7 +228,7 @@ Phases 7-9 build one guided-todo creation feature to teach backend-owned state t
 - **Learning experiment:** Follow a suggestion in one application waterfall, then inject a traceable failure and use the alert's trace/log/runbook links to diagnose and recover.
 - **Non-goals:** AI token/cost accounting or per-user analytics (Phase 26/28), daily quota enforcement (separate future decision), frontend RUM, managed-service internal spans, logging user content, commercial observability platforms, exhaustive SRE policy, and multi-region SLOs.
 - **Spec gate:** Approve span/event names, propagation and retry semantics, sampling/export behavior, privacy/retention, alert thresholds/recipients, service objectives, existing cost controls, and runbooks.
-- **Status:** Tracing-focused direction selected on 2026-09-17; [design](superpowers/specs/2026-09-17-observability-design.md), [plan](superpowers/plans/2026-09-17-observability.md), and [learner walkthrough](guides/21-observability.md) updated. Implementation and live acceptance have not started.
+- **Status:** Tracing-focused direction selected on 2026-09-17; [design](superpowers/specs/2026-09-17-observability-design.md), [plan](superpowers/plans/2026-09-17-observability.md), and [learner walkthrough](guides/21-observability.md) updated. Implementation complete locally (Tasks 1–4, each review-clean through `57dd321`); local verification observed 2026-09-17 (`pnpm test:api` 688 passed, Terraform `test` 43 passed, web E2E 4 passed). Live deployment and learner acceptance have not started.
 
 ## 22. Cloud KMS and encryption lifecycle
 
