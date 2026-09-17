@@ -1,9 +1,9 @@
 # Phase 20: Cloud Tasks delivery and scheduled expiry
 
-**Status:** Repository-ready; live rehearsal pending. Implementation (Tasks 1–6)
-is merged on this branch; no live cloud activation, paid provider rehearsal, or
-disruptive drill has been observed. Every acceptance row below stays pending
-until a learner-authorized rehearsal records real evidence.
+**Status:** Complete with learner sign-off on 2026-09-16 (2026-09-17 UTC).
+Cloud delivery is deployed and a real queued suggestion completed on web.
+The acceptance record distinguishes observed results from unperformed iOS
+and fault-injection drills; those are not claimed as passed.
 
 **Spec:** [Phase 20 design](../superpowers/specs/2026-09-15-cloud-tasks-scheduler-design.md)
 **Plan:** [Phase 20 plan](../superpowers/plans/2026-09-15-cloud-tasks-scheduler.md)
@@ -96,9 +96,9 @@ First activation ships the compatible image **without** activating cloud mode.
 `CLOUD_WORKER_SERVICE` absent preserves the exact Phase 19 path.
 
 > Authorization gate: every `gcloud`/`terraform`/`gh` command below is an
-> operator instruction for a learner-authorized session. None of them has
-> been run on this branch; live activation stays pending until the learner
-> authorizes it. Set the required variables first — angle brackets are
+> operator instruction for a learner-authorized session. The completed
+> sandbox activation is recorded below. Set the required variables first —
+> angle brackets are
 > learner input, never committed values:
 >
 > ```sh
@@ -538,14 +538,24 @@ gh variable list --env sandbox
 
 ## Acceptance record
 
-**Status: pending.** No live rehearsal has been conducted on this branch.
-Local PostgreSQL/fake suites (Tasks 1–4, 6) prove behavior without cloud
-credentials; they are not deployed proof.
+**Status: complete with learner sign-off, 2026-09-16 (2026-09-17 UTC).**
+Implementation merged in PR #24; deployment fixes merged in PR #25.
+The learner confirmed a real queued suggestion completed after queue resume
+and a page reload resolved the stale frontend error. Unobserved cases below
+remain pending and are not prerequisites claimed as passed by this sign-off.
+
+Release evidence: [successful two-service release](https://github.com/tylervsd/expo-fastapi-todo/actions/runs/35175134217).
+Both services serve digest `sha256:0d1ee314c16c4b777ea97a5e035f6c0f4c449b2ab0789fb11b47d05c6f09894a`.
+Queue is RUNNING; Scheduler activation applied through Terraform and verified ENABLED.
+Delivery restored; final Terraform plan reports no changes.
+API revision: `fullstack-api-r35175134217-a1-e3301872`.
+Worker revision: `fullstack-suggestion-worker-r35175134217-a1-e3301872`.
+
 
 | Spec acceptance case | Result | Evidence / run URL | Date | Limitation |
 | --- | --- | --- | --- | --- |
 | Authenticated invocation succeeds; denied identity is rejected | Pending | — | — | Requires live IAM drill |
-| Real queued request completes and is reviewed on web | Pending | — | — | Requires live rehearsal |
+| Real queued request completes and is reviewed on web | Passed — learner-reported | App request queued, then completed after resume | 2026-09-16 | Browser reload required for updated frontend |
 | Real queued request completes and is reviewed on iOS | Pending | — | — | Requires live rehearsal |
 | Restart recovery after queueing | Pending | — | — | Requires live rehearsal |
 | Duplicate delivery, unchanged provider count | Pending | — | — | Local harness proves once-only claim; live count unobserved |
@@ -553,12 +563,12 @@ credentials; they are not deployed proof.
 | Deliberate timeout records `failed/timeout` | Pending | — | — | Requires live rehearsal |
 | Deliberate crash after claim never auto-retries provider | Pending | — | — | Harness injection proves no auto-retry; live crash unobserved |
 | Retry exhaustion then cleanup expiry | Pending | — | — | Requires live disposable-target drill |
-| Queue pause/throttling then backlog delivery | Pending | — | — | Requires live rehearsal |
+| Queue pause/throttling then backlog delivery | Partial — learner-reported | Paused queue retained request; resume delivered it | 2026-09-16 | Separate throttling drill unobserved |
 | Repeated cleanup sweep is safe | Pending | — | — | PostgreSQL replay tests pass; live schedule unobserved |
 | Poison-task identification and removal | Pending | — | — | Requires live rehearsal |
-| One successful two-service release | Pending | — | — | Release script tested with fakes only |
+| One successful two-service release | Passed | Run 35175134217; both revisions and matching digest verified | 2026-09-16 | None |
 | Rollback restores both services | Pending | — | — | Restore logic tested with fakes only |
-| Final no-drift Terraform plan | Pending | — | — | Requires local plan after rehearsal |
+| Final no-drift Terraform plan | Passed | Local plan after Scheduler activation: no changes | 2026-09-16 | Live fault drills remain unobserved |
 
 ## Cleanup
 
