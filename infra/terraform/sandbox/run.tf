@@ -169,6 +169,14 @@ resource "google_cloud_run_v2_service" "api" {
   # and moves traffic. Terraform keeps all stable configuration.
   lifecycle {
     prevent_destroy = true
+    precondition {
+      condition     = var.observability == null || !contains(keys(var.api.plain_env), "TRACE_SAMPLE_RATE")
+      error_message = "api.plain_env must not set TRACE_SAMPLE_RATE when observability is enabled; var.observability.trace_sample_rate owns it."
+    }
+    precondition {
+      condition     = var.observability == null || !contains(keys(var.api.secret_env), "TRACE_SAMPLE_RATE")
+      error_message = "api.secret_env must not set TRACE_SAMPLE_RATE when observability is enabled; var.observability.trace_sample_rate owns it."
+    }
     ignore_changes = [
       template[0].containers[0].image,
       template[0].revision,

@@ -756,6 +756,35 @@ run "rejects_missing_trace_api" {
   }
 }
 
+run "rejects_manual_trace_sample_rate_plain_env" {
+  command         = plan
+  expect_failures = [google_cloud_run_v2_service.api]
+  variables {
+    api = merge(var.api, { plain_env = merge(var.api.plain_env, { TRACE_SAMPLE_RATE = "0.5" }) })
+  }
+}
+
+run "rejects_manual_trace_sample_rate_secret_env" {
+  command         = plan
+  expect_failures = [google_cloud_run_v2_service.api]
+  variables {
+    api = merge(var.api, { secret_env = merge(var.api.secret_env, { TRACE_SAMPLE_RATE = { secret_key = "database_url", version = "1" } }) })
+  }
+}
+
+run "allows_manual_trace_sample_rate_when_disabled" {
+  command = plan
+  variables {
+    observability = null
+    api           = merge(var.api, { plain_env = merge(var.api.plain_env, { TRACE_SAMPLE_RATE = "0.5" }) })
+  }
+
+  assert {
+    condition     = ({ for e in google_cloud_run_v2_service.api.template[0].containers[0].env : e.name => e.value if e.value != null })["TRACE_SAMPLE_RATE"] == "0.5"
+    error_message = "The API must keep a manually set TRACE_SAMPLE_RATE when observability is disabled."
+  }
+}
+
 run "preserves_existing" {
   command = plan
   variables {
