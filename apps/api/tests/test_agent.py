@@ -1724,9 +1724,16 @@ def test_route_streams_clarify_events_with_streaming_media_type(
 
 
 def test_stream_generator_stops_and_cancels_on_disconnect(
-    database_session: Session, session_factory: sessionmaker[Session]
+    database_session: Session,
+    session_factory: sessionmaker[Session],
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
+    import json as _json
+
+    from app.observability import configure_logging as _configure
+
     del database_session
+    _configure("test-service")
     owner_id = setup_owner(session_factory)
     workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
     closed: list[str] = []
@@ -1773,3 +1780,166 @@ def test_stream_generator_stops_and_cancels_on_disconnect(
     first_chunk = asyncio.run(_scenario())
     assert "RUN_STARTED" in first_chunk
     assert closed == ["closed"]
+    # A cancelled run never terminates: no terminal agent log fires.
+    records = [
+        _json.loads(line)
+        for line in capsys.readouterr().out.splitlines()
+        if line.strip()
+    ]
+    assert all(
+        record.get("event") != "agent_finished" for record in records
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 21 Task 3 (TDD red): agent terminal logs for HTTP 200 streams.
+#
+# Semantic errors travel inside the HTTP 200 AG-UI stream, so operators
+# cannot rely on the status code: every terminal agent path must emit one
+# `agent_finished` log with a safe outcome, and unexpected faults must go
+# through the sanitized unexpected-fault path. Goal text never travels.
+# ---------------------------------------------------------------------------
+
+
+def read_agent_records(capsys: pytest.CaptureFixture[str]) -> list[dict]:
+    import json as _json
+
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert lines, "expected serialized log output"
+    return [_json.loads(line) for line in lines]
+
+
+def test_agent_success_emits_agent_finished(
+    database_session: Session,
+    session_factory: sessionmaker[Session],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from app.observability import configure_logging as _configure
+
+    del database_session
+    _configure("test-service")
+    owner_id = setup_owner(session_factory)
+    workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
+    run = make_run(
+        thread_id=workflow_id,
+        messages=[user_msg("u1", "Help me plan")],
+        state=agent_state(workflow_id, revision, step_id),
+    )
+    capsys.readouterr()
+    with session_factory() as session:
+        events = collect(
+            agent_events(run, owner_id, session, choose=fake_choice("location"))
+        )
+    assert event_types(events)[-1] == "RUN_FINISHED"
+    records = read_agent_records(capsys)
+    finished = [
+        record for record in records if record.get("event") == "agent_finished"
+    ]
+    assert len(finished) == 1
+    assert finished[0]["outcome"] == "success"
+    assert "Plan birthday party" not in __import__("json").dumps(records)
+
+
+def test_agent_semantic_error_emits_agent_finished_inside_http_200(
+    database_session: Session,
+    session_factory: sessionmaker[Session],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from app.observability import configure_logging as _configure
+
+    del database_session
+    _configure("test-service")
+    owner_id = setup_owner(session_factory)
+    workflow_id, _revision, _step_id = make_collecting(session_factory, owner_id)
+    run = make_run(
+        thread_id=workflow_id,
+        messages=[user_msg("u1", "Help me plan")],
+        state=agent_state(workflow_id, 999, "stale-step"),
+    )
+    capsys.readouterr()
+    with session_factory() as session:
+        events = collect(
+            agent_events(run, owner_id, session, choose=fake_choice("location"))
+        )
+    assert event_types(events)[-1] == "RUN_ERROR"
+    records = read_agent_records(capsys)
+    finished = [
+        record for record in records if record.get("event") == "agent_finished"
+    ]
+    assert len(finished) == 1, "semantic errors still terminate the agent once"
+    assert finished[0]["outcome"] in ("invalid_request", "agent_failed")
+    assert "Plan birthday party" not in __import__("json").dumps(records)
+
+
+# ---------------------------------------------------------------------------
+# Phase 21 Task 3 (TDD red): clarification provider span in the agent route.
+#
+# The /agent clarify decision must show a `provider.clarification` span in
+# the request trace with a truthful outcome, backed by the real bounded
+# OpenRouter choice transport (mock HTTP, no network).
+# ---------------------------------------------------------------------------
+
+
+def test_agent_clarify_choice_span_shares_request_trace(
+    database_session: Session,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json as _json
+
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    from app.agent import choose_clarification
+    from app.main import create_app
+    from app.suggestion_provider import OpenRouterConfig
+
+    del database_session
+    monkeypatch.setenv("TRACE_SAMPLE_RATE", "1.0")
+    sink = InMemorySpanExporter()
+    bodies: list[dict[str, Any]] = []
+    choice_transport = openrouter_transport({"field": "date"}, bodies)
+
+    async def real_choice(
+        goal: str, config: object, *, transport: object = None
+    ) -> str:
+        return await choose_clarification(
+            goal,
+            OpenRouterConfig(api_key="key", model="model"),
+            transport=choice_transport,
+        )
+
+    owner_id_holder: list[int] = []
+    route_app = create_app(session_factory, agent_choice=real_choice)
+    route_app.state.tracing_exporter = sink
+    with TestClient(route_app) as client:
+        headers = route_auth_headers(client)
+        owner_id_holder.append(0)
+        with session_factory() as session:
+            from app.auth_repository import find_user_by_username
+
+            user = find_user_by_username(session, "alice")
+            assert user is not None
+            collecting = make_collecting(session_factory, user.id)
+        workflow_id, revision, step_id = collecting
+        body = route_body(workflow_id, uuid4(), revision, step_id)
+        response = client.post("/agent", json=body, headers=headers)
+        assert response.status_code == 200
+        events = decode_sse(response.text)
+        assert events[-1]["type"] == "RUN_FINISHED"
+        client.app.state.tracing_state.flush()
+    assert len(bodies) == 1, "the real choice transport ran once"
+    spans = list(sink.get_finished_spans())
+    by_name = {span.name: span for span in spans}
+    assert "provider.clarification" in by_name, sorted(by_name)
+    request_span = next(
+        span for span in spans if span.name == "POST /agent"
+    )
+    request_trace = format(request_span.get_span_context().trace_id, "032x")
+    choice_span = by_name["provider.clarification"]
+    assert format(choice_span.get_span_context().trace_id, "032x") == request_trace
+    assert dict(choice_span.attributes or {}).get("outcome") == "ok"
+    assert _json.dumps([dict(s.attributes or {}) for s in spans]).find(
+        "Plan birthday party"
+    ) == -1

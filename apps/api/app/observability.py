@@ -55,6 +55,7 @@ SAFE_LOG_FIELDS = frozenset(
         "trace_id",
         "span_id",
         "expired",
+        "queue_wait_ms",
         "status_code",
         "method",
         "route",
@@ -70,6 +71,9 @@ EVENT_MESSAGES = {
     "direct_log": "Direct log record redacted.",
     "suggestion_task": "Suggestion task processed.",
     "suggestion_expire": "Suggestion expiry sweep finished.",
+    "provider_call": "Provider transport attempt finished.",
+    "ai_output_rejected": "Provider output rejected by validation.",
+    "agent_finished": "Agent run finished.",
 }
 
 _MAX_STRING_FIELD_LENGTH = 256

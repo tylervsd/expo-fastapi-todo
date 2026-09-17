@@ -3,12 +3,15 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from dataclasses import dataclass
 from typing import Any
+from uuid import uuid4
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError
 
+from app.observability import log_event
 from app.suggestion_service import Clarification, normalize_clarification
 from app.title_validation import canonicalize_title
 from app.workflow_domain import InvalidWorkflowInput, create_submit_tasks
@@ -138,17 +141,41 @@ def _extract_titles(response_body: bytes) -> tuple[str, ...]:
         raise _invalid_output() from None
 
 
+def _emit_provider_call(operation: str, outcome: str, started: float) -> None:
+    # One log per transport attempt with only safe scalars: the bounded
+    # operation, outcome, latency, and a random attempt ID. Goals, prompts,
+    # response bodies, and exception text never travel. Emitted regardless
+    # of trace sampling so transport failures stay visible in logs.
+    log_event(
+        "provider_call",
+        outcome=outcome,
+        operation=operation,
+        duration_ms=int((time.monotonic() - started) * 1000),
+        attempt_id=uuid4().hex,
+    )
+
+
+def emit_output_rejected(operation: str) -> None:
+    # Model output failed validation: safe operation tag only, never the
+    # rejected content.
+    log_event("ai_output_rejected", outcome="invalid_output", operation=operation)
+
+
 async def _post_openrouter_json(
     payload: dict[str, Any],
     config: OpenRouterConfig,
     *,
     transport: httpx.AsyncBaseTransport | None = None,
+    operation: str = "suggestions",
 ) -> bytes:
     """Send one bounded, redacted OpenRouter JSON request.
 
     Shared by todo suggestions and the Task 3 agent choice so both use the
-    same output cap, deadline, timeouts, and error mapping.
+    same output cap, deadline, timeouts, and error mapping. Exactly one
+    attempt runs: no retries. Cancellation is never mapped: it propagates
+    so disconnects unwind instead of persisting as provider results.
     """
+    started = time.monotonic()
     api_key = config.api_key.strip()
     if not api_key or not config.model.strip():
         raise SuggestionsNotConfigured("OpenRouter suggestions are not configured")
@@ -172,23 +199,32 @@ async def _post_openrouter_json(
                     json=payload,
                 ) as response:
                     if not response.is_success:
+                        _emit_provider_call(operation, "transport_error", started)
                         raise ProviderUnavailable(
                             "OpenRouter provider was unavailable"
                         )
                     response_body = bytearray()
                     async for chunk in response.aiter_bytes():
                         if len(response_body) + len(chunk) > MAX_RESPONSE_BYTES:
+                            _emit_provider_call(operation, "transport_error", started)
                             raise InvalidSuggestionOutput(
                                 "OpenRouter response exceeded the size limit"
                             )
                         response_body.extend(chunk)
+    except asyncio.CancelledError:
+        # Disconnects unwind: never mapped to a provider error, never
+        # logged as an attempt outcome, never retried.
+        raise
     except (TimeoutError, httpx.TimeoutException):
+        _emit_provider_call(operation, "timeout", started)
         raise SuggestionTimeout("OpenRouter request timed out") from None
     except (ProviderUnavailable, InvalidSuggestionOutput):
         raise
     except httpx.HTTPError:
+        _emit_provider_call(operation, "transport_error", started)
         raise ProviderUnavailable("OpenRouter provider was unavailable") from None
 
+    _emit_provider_call(operation, "ok", started)
     return bytes(response_body)
 
 
@@ -218,5 +254,10 @@ async def request_todo_suggestions(
         _request_payload(canonical_goal, model, canonical_clarification),
         config,
         transport=transport,
+        operation="suggestions",
     )
-    return _extract_titles(response_body)
+    try:
+        return _extract_titles(response_body)
+    except InvalidSuggestionOutput:
+        emit_output_rejected("suggestions")
+        raise

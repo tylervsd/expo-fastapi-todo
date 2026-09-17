@@ -26,7 +26,9 @@ from app.suggestion_service import (
     reserve_suggestion,
 )
 from app.todo_repository import TodoRow
+from app.workflow_domain import SubmitTasks
 from app.workflow_repository import WorkflowSuggestionRequestRow
+from app.workflow_service import advance_workflow
 
 
 def reserve_cloud(
@@ -1878,3 +1880,225 @@ def test_expire_legacy_null_row_span_stays_valid_in_sweep_trace(
     assert expire_span.parent is not None
     assert expire_span.parent.span_id == sweep.get_span_context().span_id
     assert dict(expire_span.attributes or {}).get("suggestion_id") == suggestion_id
+
+
+# ---------------------------------------------------------------------------
+# Phase 21 Task 3 (TDD red): truthful saved outcomes and transition metadata.
+#
+# A provider result that arrives after its row already reached a terminal
+# state must never be served or logged as `ready`: the finish helper returns
+# None (no-op) and the worker must log `discarded`. A finish that commits a
+# supersession must return the committed SUPERSEDED snapshot so callers can
+# distinguish it from a no-op. Claims carry the database-clock queue delay
+# as metadata for the process span and delivery log.
+# ---------------------------------------------------------------------------
+
+
+def test_worker_late_result_is_discarded_never_saved_ready(
+    database_session: Session,
+    session_factory: sessionmaker[Session],
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del database_session
+    import app.worker as worker_module
+    from app.suggestion_service import expire_suggestions
+
+    provider = RecordingProvider()
+    suggestion_id = reserve_for_worker(session_factory)
+    real_finish = worker_module.finish_claimed_suggestion
+
+    def late_finish(session, claim, *, titles, error_code):
+        # The expiry sweep lands while the provider runs: the row reaches
+        # FAILED/timeout before the late result is finalized.
+        with session_factory() as sweep_session:
+            sweep_session.execute(
+                text(
+                    "UPDATE todo_workflow_suggestion_requests "
+                    "SET queued_at = now() - interval '20 minutes', "
+                    "expires_at = now() - interval '5 minutes', "
+                    "provider_started_at = now() - interval '19 minutes' "
+                    "WHERE id = :id"
+                ),
+                {"id": claim.suggestion_id},
+            )
+            sweep_session.commit()
+        with session_factory() as sweep_session:
+            assert expire_suggestions(sweep_session) == 1
+        return real_finish(session, claim, titles=titles, error_code=error_code)
+
+    monkeypatch.setattr(worker_module, "finish_claimed_suggestion", late_finish)
+    with caplog.at_level("INFO", logger="app.worker"), worker_client(
+        session_factory, provider
+    ) as client:
+        response = post_task(client, suggestion_id)
+    assert response.status_code == 204
+    assert provider.calls != []
+    status, error = row_status(session_factory, suggestion_id)
+    assert (status, error) == (
+        SuggestionStatus.FAILED.value,
+        SuggestionErrorCode.TIMEOUT.value,
+    )
+    outcomes = [
+        getattr(record, "outcome", None)
+        for record in caplog.records
+        if record.name == "app.worker"
+    ]
+    assert "discarded" in outcomes, outcomes
+    assert "ready" not in outcomes, outcomes
+
+
+def test_finish_claimed_supersession_returns_committed_snapshot(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    owner_id = setup_owner(session_factory)
+    workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
+    request_id, _ = reserve_cloud(
+        session_factory, owner_id, workflow_id, revision, step_id
+    )
+    suggestion_id = cloud_row_id(session_factory, owner_id, workflow_id, request_id)
+    with session_factory() as session:
+        claim = claim_suggestion(session, suggestion_id)
+    assert claim is not None
+
+    # The workflow advances while the provider runs, so the late finish
+    # commits a supersession instead of serving stale titles.
+    with session_factory() as session:
+        assert (
+            advance_workflow(
+                session,
+                owner_id,
+                workflow_id,
+                SubmitTasks(titles=("Direct one", "Direct two")),
+                request_id=uuid4(),
+                expected_revision=revision,
+                step_id=step_id,
+            )
+            is not None
+        )
+    with session_factory() as session:
+        saved = finish_claimed_suggestion(
+            session,
+            claim,
+            titles=("Book venue", "Invite guests"),
+            error_code=None,
+        )
+    assert saved is not None, "committed supersession is not a no-op"
+    assert saved.status is SuggestionStatus.SUPERSEDED
+    status, _ = row_status(session_factory, suggestion_id)
+    assert status == SuggestionStatus.SUPERSEDED.value
+
+
+def test_claim_carries_database_clock_queue_delay(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    owner_id = setup_owner(session_factory)
+    workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
+    request_id, _ = reserve_cloud(
+        session_factory, owner_id, workflow_id, revision, step_id
+    )
+    suggestion_id = cloud_row_id(session_factory, owner_id, workflow_id, request_id)
+    with session_factory() as session:
+        session.execute(
+            text(
+                "UPDATE todo_workflow_suggestion_requests "
+                "SET queued_at = now() - interval '30 seconds' "
+                "WHERE id = :id"
+            ),
+            {"id": suggestion_id},
+        )
+        session.commit()
+    with session_factory() as session:
+        claim = claim_suggestion(session, suggestion_id)
+    assert claim is not None
+    assert claim.queue_wait_ms is not None
+    assert 25_000 <= claim.queue_wait_ms <= 60_000
+
+
+def test_worker_process_span_carries_queue_delay_attribute(
+    database_session: Session,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del database_session
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    sink = InMemorySpanExporter()
+    provider = RecordingProvider()
+    suggestion_id = reserve_for_worker(session_factory)
+    with session_factory() as session:
+        session.execute(
+            text(
+                "UPDATE todo_workflow_suggestion_requests "
+                "SET queued_at = now() - interval '30 seconds' "
+                "WHERE id = :id"
+            ),
+            {"id": suggestion_id},
+        )
+        session.commit()
+    with worker_client_with_sink(
+        session_factory, provider, sink, monkeypatch
+    ) as client:
+        assert post_task(client, suggestion_id).status_code == 204
+        client.app.state.tracing_state.flush()
+    spans = finished_spans(sink)
+    process = next(
+        span for span in spans if span.name == "suggestion.process"
+    )
+    queue_wait = dict(process.attributes or {}).get("queue_wait_ms")
+    assert isinstance(queue_wait, int)
+    assert 25_000 <= queue_wait <= 60_000
+
+
+def test_expire_sweep_replay_emits_no_duplicate_terminal_span(
+    database_session: Session,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del database_session
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    sink = InMemorySpanExporter()
+    provider = RecordingProvider()
+    suggestion_id = reserve_for_worker(session_factory)
+    with session_factory() as session:
+        session.execute(
+            text(
+                "UPDATE todo_workflow_suggestion_requests "
+                "SET queued_at = now() - interval '20 minutes', "
+                "expires_at = now() - interval '5 minutes' "
+                "WHERE id = :id"
+            ),
+            {"id": suggestion_id},
+        )
+        session.commit()
+    with worker_client_with_sink(
+        session_factory, provider, sink, monkeypatch
+    ) as client:
+        assert client.post("/internal/suggestions/expire", json={}).json() == {
+            "expired": 1
+        }
+        assert client.post("/internal/suggestions/expire", json={}).json() == {
+            "expired": 0
+        }
+        # A replay delivery against the terminal row acks without provider
+        # work or a second terminal span.
+        assert post_task(client, suggestion_id).status_code == 204
+        client.app.state.tracing_state.flush()
+    assert provider.calls == []
+    assert row_status(session_factory, suggestion_id) == (
+        SuggestionStatus.FAILED.value,
+        SuggestionErrorCode.TIMEOUT.value,
+    )
+    expires = [
+        span
+        for span in finished_spans(sink)
+        if span.name == "suggestion.expire"
+    ]
+    assert len(expires) == 1

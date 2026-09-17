@@ -499,6 +499,9 @@ class ClaimedSuggestion:
     # Stored lineage read with the claimed row; controls worker processing
     # lineage where available. None for legacy rows without context.
     trace_parent: str | None = None
+    # Database-clock queue delay (queued_at to claim), recorded as span
+    # and log metadata only; never a metric label or deadline input.
+    queue_wait_ms: int | None = None
 
 
 def _is_cloud_row(row: WorkflowSuggestionRequestRow) -> bool:
@@ -617,6 +620,13 @@ def claim_suggestion(session: Session, suggestion_id: int) -> ClaimedSuggestion 
             return None
         row.provider_started_at = now
         session.flush()
+        queue_wait_ms: int | None = None
+        if row.queued_at is not None:
+            # Database-clock delay between enqueue and this claim: a
+            # diagnostic attribute for the process span and delivery log.
+            # Cloud rows always carry queued_at (see _is_cloud_row above).
+            queue_wait_ms = int((now - row.queued_at).total_seconds() * 1000)
+            queue_wait_ms = max(queue_wait_ms, 0)
         return ClaimedSuggestion(
             suggestion_id=row.id,
             owner_id=row.owner_id,
@@ -631,6 +641,7 @@ def claim_suggestion(session: Session, suggestion_id: int) -> ClaimedSuggestion 
             ),
             provider_started_at=now,
             trace_parent=row.trace_parent,
+            queue_wait_ms=queue_wait_ms,
         )
 
 
@@ -703,8 +714,13 @@ def finish_claimed_suggestion(
             or latest is None
             or latest.id != row.id
         ):
+            # A committed supersession is a real transition, not a no-op:
+            # return the saved SUPERSEDED snapshot so callers can tell it
+            # apart from the None paths above (missing, marker mismatch,
+            # already terminal, or past a deadline).
             _supersede_row(row)
-            return None
+            session.flush()
+            return suggestion_snapshot_from_row(row)
         if canonical_titles is not None:
             row.status = SuggestionStatus.READY.value
             row.proposed_titles = list(canonical_titles)

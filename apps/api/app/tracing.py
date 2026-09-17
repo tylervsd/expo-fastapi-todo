@@ -75,6 +75,7 @@ ALLOWED_SPAN_ATTRIBUTE_KEYS = frozenset(
         "error_code",
         "attempt",
         "suggestion_id",
+        "queue_wait_ms",
     }
 )
 

@@ -1021,3 +1021,81 @@ def test_cloud_replay_enqueue_span_links_to_stored_trace(
     # ... while one link names the validated stored context.
     assert replay_enqueue.links is not None and len(replay_enqueue.links) == 1
     assert format(replay_enqueue.links[0].context.trace_id, "032x") == stored_trace_id
+
+
+# ---------------------------------------------------------------------------
+# Phase 21 Task 3 (TDD red): inline waterfall spans.
+#
+# The synchronous API path must show db.reserve_suggestion → provider
+# work inside the request trace with a truthful provider outcome, and no
+# queue/enqueue leg (nothing waits on a broker inline).
+# ---------------------------------------------------------------------------
+
+
+class InlineTitles:
+    """Credential-free inline provider returning fixed titles."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, object]] = []
+
+    async def __call__(
+        self, goal: str, config: object, clarification: object = None
+    ) -> tuple[str, str]:
+        self.calls.append((goal, clarification))
+        return ("Choose a date", "Invite guests")
+
+
+def test_inline_waterfall_spans_share_request_trace(
+    database_session: Session,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    from app.main import create_app
+
+    del database_session
+    monkeypatch.setenv("TRACE_SAMPLE_RATE", "1.0")
+    sink: InMemorySpanExporter = InMemorySpanExporter()
+    provider = InlineTitles()
+    app = create_app(
+        session_factory,
+        suggestion_callable=provider,  # type: ignore[arg-type]
+    )
+    app.state.tracing_exporter = sink
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        body = start_collecting(client, headers)
+        request_id = uuid4()
+        response = client.post(
+            f"/todo-workflows/{body['workflow_id']}/suggestions",
+            json={
+                "request_id": str(request_id),
+                "expected_revision": body["revision"],
+                "step_id": body["view"]["step_id"],
+            },
+            headers=headers,
+        )
+        assert response.status_code == 201
+        assert response.json()["status"] == "ready"
+        app.state.tracing_state.flush()
+    assert len(provider.calls) == 1
+    spans = list(sink.get_finished_spans())
+    by_name = {span.name: span for span in spans}
+    assert "db.reserve_suggestion" in by_name, sorted(by_name)
+    assert "provider.suggestions" in by_name, sorted(by_name)
+    assert "cloudtasks.enqueue" not in by_name
+    assert "suggestion.enqueue" not in by_name
+    request_span = next(
+        span
+        for span in spans
+        if span.name == "POST /todo-workflows/{workflow_id}/suggestions"
+    )
+    request_trace = format(request_span.get_span_context().trace_id, "032x")
+    for name in ("db.reserve_suggestion", "provider.suggestions"):
+        span = by_name[name]
+        assert format(span.get_span_context().trace_id, "032x") == request_trace
+    provider_span = by_name["provider.suggestions"]
+    assert dict(provider_span.attributes or {}).get("outcome") == "ok"

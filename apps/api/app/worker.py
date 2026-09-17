@@ -30,7 +30,11 @@ from app.database import (
     create_session_factory,
     get_database_url,
 )
-from app.observability import RequestLoggingMiddleware, configure_logging
+from app.observability import (
+    RequestLoggingMiddleware,
+    configure_logging,
+    log_unexpected_fault,
+)
 from app.suggestion_provider import (
     InvalidSuggestionOutput,
     OpenRouterConfig,
@@ -46,6 +50,8 @@ from app.suggestion_service import (
     InvalidStoredSuggestion,
     SuggestionErrorCode,
     SuggestionInProgress,
+    SuggestionSnapshot,
+    SuggestionStatus,
     claim_suggestion,
     expire_suggestions_with_context,
     finish_claimed_suggestion,
@@ -56,6 +62,7 @@ from app.tracing import (
     TracingMiddleware,
     extract_stored_context,
     init_tracing,
+    safe_span_attributes,
     set_span_outcome,
     shutdown_tracing,
     start_safe_span,
@@ -355,9 +362,11 @@ def create_worker_app(
         outcome: str,
         started: float,
         error_code: SuggestionErrorCode | None = None,
+        queue_wait_ms: int | None = None,
     ) -> None:
-        # Only IDs, outcome, duration, and safe error codes are logged; never
-        # goals, clarification, proposals, tokens, or raw exception text.
+        # Only IDs, outcome, duration, queue delay, and safe error codes
+        # are logged; never goals, clarification, proposals, tokens, or
+        # raw exception text.
         extra: dict[str, object] = {
             "suggestion_id": suggestion_id,
             "outcome": outcome,
@@ -365,6 +374,8 @@ def create_worker_app(
         }
         if error_code is not None:
             extra["error_code"] = error_code.value
+        if queue_wait_ms is not None:
+            extra["queue_wait_ms"] = queue_wait_ms
         logger.info("suggestion_task", extra=extra)
 
     async def read_bounded_body(request: Request) -> bytes:
@@ -423,7 +434,7 @@ def create_worker_app(
         factory: sessionmaker[Session],
         claim: ClaimedSuggestion,
         titles: tuple[str, ...],
-    ) -> object:
+    ) -> SuggestionSnapshot | None:
         with factory() as session:
             return finish_claimed_suggestion(
                 session, claim, titles=titles, error_code=None
@@ -433,17 +444,31 @@ def create_worker_app(
         factory: sessionmaker[Session],
         claim: ClaimedSuggestion,
         error_code: SuggestionErrorCode,
-    ) -> object:
+    ) -> SuggestionSnapshot | None:
         with factory() as session:
             return finish_claimed_suggestion(
                 session, claim, titles=None, error_code=error_code
             )
 
+    def set_provider_outcome(span: object, outcome: str) -> None:
+        # Provider outcomes use their own bounded vocabulary (ok, timeout,
+        # unavailable, invalid_output): never the request-span vocabulary
+        # and never exception text. Telemetry failures stay silent.
+        if span is None:
+            return
+        try:
+            span.set_attributes(safe_span_attributes({"outcome": outcome}))  # type: ignore[union-attr]
+        except Exception:  # noqa: BLE001, S110 - telemetry must never raise
+            pass
+
     async def execute_provider(
         claim: ClaimedSuggestion,
+        provider_span: object,
     ) -> tuple[tuple[str, ...] | None, SuggestionErrorCode | None]:
         # Same provider exception-to-error-code mapping as the public route:
         # known failures persist as failed results, never as retries.
+        # Cancellation is not mapped: it unwinds the delivery instead of
+        # persisting as a provider result.
         try:
             config = (
                 get_openrouter_config()
@@ -451,6 +476,7 @@ def create_worker_app(
                 else OpenRouterConfig(api_key="", model="")
             )
         except SuggestionsNotConfigured:
+            set_provider_outcome(provider_span, "unavailable")
             return None, SuggestionErrorCode.NOT_CONFIGURED
         try:
             # Without clarification the legacy two-argument seam is retained;
@@ -464,15 +490,21 @@ def create_worker_app(
                     clarification=claim.reservation.clarification,
                 )
         except SuggestionTimeout:
+            set_provider_outcome(provider_span, "timeout")
             return None, SuggestionErrorCode.TIMEOUT
         except ProviderUnavailable:
+            set_provider_outcome(provider_span, "unavailable")
             return None, SuggestionErrorCode.PROVIDER_UNAVAILABLE
         except InvalidSuggestionOutput:
+            set_provider_outcome(provider_span, "invalid_output")
             return None, SuggestionErrorCode.INVALID_OUTPUT
         except SuggestionsNotConfigured:
+            set_provider_outcome(provider_span, "unavailable")
             return None, SuggestionErrorCode.NOT_CONFIGURED
         except Exception:  # noqa: BLE001 - isolate provider failures
+            set_provider_outcome(provider_span, "unavailable")
             return None, SuggestionErrorCode.PROVIDER_UNAVAILABLE
+        set_provider_outcome(provider_span, "ok")
         return tuple(titles), None
 
     @app.get("/health")
@@ -535,46 +567,90 @@ def create_worker_app(
             raise worker_unavailable() from None
         except Exception:  # noqa: BLE001 - worker errors stay sanitized
             log_outcome(suggestion_id, "claim_failed", started)
+            log_unexpected_fault("claim_failed", location="worker")
             raise worker_unavailable() from None
         if claim is None:
             # Missing, terminal, legacy, expired, superseded, cancelled, or
             # stale rows never call the provider; acknowledge to discard.
             log_outcome(suggestion_id, "no_work", started)
             return Response(status_code=204)
+        if claim.queue_wait_ms is not None:
+            # Database-clock queue delay travels as a diagnostic attribute
+            # on the process span (the current span here): no fabricated
+            # queue span, and the HTTP/process spans stay closed while the
+            # row waited on the broker.
+            try:
+                get_current_span().set_attributes(
+                    safe_span_attributes(
+                        {"queue_wait_ms": claim.queue_wait_ms}
+                    )
+                )
+            except Exception:  # noqa: BLE001, S110 - telemetry never raises
+                pass
         # The claim is committed; provider time holds no database resources.
         with _child_span(
             tracer, "provider.suggestions", "provider_suggestions", suggestion_id
-        ):
-            titles, error_code = await execute_provider(claim)
-        # Finalize in a fresh transaction; late writes are silent no-ops that
-        # still acknowledge the delivery.
+        ) as provider_span:
+            titles, error_code = await execute_provider(claim, provider_span)
+        # Finalize in a fresh transaction. The saved snapshot is the truth:
+        # None means the row already reached a terminal state (a late
+        # result is discarded, never served or logged as ready), while a
+        # SUPERSEDED snapshot marks a committed supersession. Terminal logs
+        # below run only after the finish transaction commits.
         try:
             with _child_span(
                 tracer, "db.finish_suggestion", "finish_suggestion", suggestion_id
             ):
+                saved: SuggestionSnapshot | None
                 if error_code is not None:
-                    await run_in_threadpool(finish_failed, factory, claim, error_code)
-                    log_outcome(suggestion_id, "failed", started, error_code)
+                    saved = await run_in_threadpool(
+                        finish_failed, factory, claim, error_code
+                    )
                 else:
                     assert titles is not None
                     try:
-                        await run_in_threadpool(finish_ready, factory, claim, titles)
-                    except (TypeError, ValueError):
-                        await run_in_threadpool(
-                            finish_failed,
-                            factory,
-                            claim,
-                            SuggestionErrorCode.INVALID_OUTPUT,
+                        saved = await run_in_threadpool(
+                            finish_ready, factory, claim, titles
                         )
+                    except (TypeError, ValueError):
                         error_code = SuggestionErrorCode.INVALID_OUTPUT
-                        log_outcome(suggestion_id, "failed", started, error_code)
-                    else:
-                        log_outcome(suggestion_id, "ready", started)
+                        saved = await run_in_threadpool(
+                            finish_failed, factory, claim, error_code
+                        )
+                if saved is None:
+                    log_outcome(
+                        suggestion_id,
+                        "discarded",
+                        started,
+                        error_code,
+                        claim.queue_wait_ms,
+                    )
+                elif saved.status is SuggestionStatus.SUPERSEDED:
+                    log_outcome(
+                        suggestion_id,
+                        "superseded",
+                        started,
+                        error_code,
+                        claim.queue_wait_ms,
+                    )
+                elif error_code is not None:
+                    log_outcome(
+                        suggestion_id,
+                        "failed",
+                        started,
+                        error_code,
+                        claim.queue_wait_ms,
+                    )
+                else:
+                    log_outcome(
+                        suggestion_id, "ready", started, None, claim.queue_wait_ms
+                    )
         except (OperationalError, SQLAlchemyTimeoutError):
             log_outcome(suggestion_id, "finalize_unavailable", started)
             raise worker_unavailable() from None
         except Exception:  # noqa: BLE001 - worker errors stay sanitized
             log_outcome(suggestion_id, "finalize_failed", started)
+            log_unexpected_fault("finalize_failed", location="worker")
             raise worker_unavailable() from None
         return Response(status_code=204)
 
@@ -674,6 +750,7 @@ def create_worker_app(
             raise worker_unavailable() from None
         except Exception:  # noqa: BLE001 - worker errors stay sanitized
             logger.warning("worker_expire_failed", extra={"outcome": "failed"})
+            log_unexpected_fault("expire_failed", location="worker")
             raise worker_unavailable() from None
         expired = len(expired_rows)
         for item in expired_rows:

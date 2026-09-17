@@ -101,6 +101,7 @@ from app.tracing import (
     extract_stored_context,
     init_tracing,
     inject_traceparent,
+    safe_span_attributes,
     shutdown_tracing,
     start_safe_span,
 )
@@ -1030,16 +1031,53 @@ def create_app(
         else:
             # Without clarification the legacy two-argument seam is retained so
             # Phase 10 callables keep working; the keyword is only used when
-            # a clarification was supplied.
+            # a clarification was supplied. The provider leg runs in a
+            # `provider.suggestions` span with a truthful bounded outcome;
+            # cancellation unwinds the request instead of mapping to an
+            # error code.
+            provider_outcome = "ok"
             try:
-                if reservation.clarification is None:
-                    titles = await suggestion_runner(reservation.goal, config)
-                else:
-                    titles = await suggestion_runner(
-                        reservation.goal,
-                        config,
-                        clarification=reservation.clarification,
-                    )
+                with _maybe_span(
+                    tracer,
+                    "provider.suggestions",
+                    {"operation": "provider_suggestions"},
+                ) as provider_span:
+                    try:
+                        if reservation.clarification is None:
+                            titles = await suggestion_runner(
+                                reservation.goal, config
+                            )
+                        else:
+                            titles = await suggestion_runner(
+                                reservation.goal,
+                                config,
+                                clarification=reservation.clarification,
+                            )
+                    except SuggestionTimeout:
+                        provider_outcome = "timeout"
+                        raise
+                    except ProviderUnavailable:
+                        provider_outcome = "unavailable"
+                        raise
+                    except InvalidSuggestionOutput:
+                        provider_outcome = "invalid_output"
+                        raise
+                    except SuggestionsNotConfigured:
+                        provider_outcome = "unavailable"
+                        raise
+                    except Exception:
+                        provider_outcome = "unavailable"
+                        raise
+                    finally:
+                        if provider_span is not None:
+                            try:
+                                provider_span.set_attributes(
+                                    safe_span_attributes(
+                                        {"outcome": provider_outcome}
+                                    )
+                                )
+                            except Exception:  # noqa: BLE001, S110
+                                pass
                 error_code = None
             except SuggestionTimeout:
                 titles = None
@@ -1175,6 +1213,7 @@ def create_app(
                 session,
                 choose=agent_chooser,
                 is_disconnected=request.is_disconnected,
+                tracer=_request_tracer(request),
             ):
                 yield chunk
 
