@@ -897,6 +897,26 @@ it("offers suggestions only from the server-supported task breakdown template", 
   expect(api.advanceWorkflow).toHaveBeenCalledTimes(2);
 });
 
+it("waits for initial suggestion probe before editing", async () => {
+  const api = makeApi();
+  const probe = deferred<WorkflowSuggestion>();
+  api.getWorkflow.mockResolvedValue(collectWorkflow);
+  api.getSuggestion.mockReturnValueOnce(probe.promise);
+  await renderHost(api, createAppQueryClient(), {
+    initialWorkflowId: WORKFLOW_ID,
+  });
+  const input = () => screen.getByLabelText("Todo titles (one per line)");
+  await waitFor(() => expect(api.getSuggestion).toHaveBeenCalled());
+  expect(input()).toHaveProp("editable", false);
+  await act(async () => {
+    probe.reject(new TodoApiError("not-found", "No saved suggestions."));
+  });
+  await waitFor(() => expect(input()).toHaveProp("editable", true));
+  await fireEvent.changeText(input(), "Pack bag\nCheck weather");
+  await waitForQuiescence();
+  expect(input()).toHaveProp("value", "Pack bag\nCheck weather");
+});
+
 it("keeps a user edit when a deferred suggestion completes", async () => {
   const api = makeApi();
   await renderHost(api);
