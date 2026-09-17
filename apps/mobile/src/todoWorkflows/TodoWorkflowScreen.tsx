@@ -58,7 +58,7 @@ const UNKNOWN_START_FAILURE = "Could not start planning. Retry the saved request
 const UNKNOWN_ADVANCE_FAILURE = "Could not update the plan. Retry the saved request.";
 const INVALID_RESPONSE = "The API returned invalid plan data.";
 // Bounded queued-suggestion refresh: one guarded GET per tick, at most one
-// in flight, within a 2-minute budget per mounted workflow session.
+// in flight, within a 2-minute budget per active foreground session.
 const SUGGESTION_POLL_INTERVAL_MS = 3000;
 const SUGGESTION_POLL_BUDGET_MS = 120000;
 

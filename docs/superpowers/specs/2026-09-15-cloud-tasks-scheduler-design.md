@@ -102,8 +102,9 @@ A new explicit “Try suggestions again” action gets a new ID and warns that a
 earlier provider call may have been billed. Preserve manual entry and cancellation.
 
 Refresh pending status every 3 seconds with at most one GET in flight for up to
-2 minutes per mounted workflow session. Stop on terminal status, logout, workflow
-change, unmount, or app background; resume with one immediate GET on foreground.
+2 minutes per active foreground session. Stop on terminal status, logout, workflow
+change, unmount, or app background. Foregrounding triggers one immediate GET
+and starts a new 2-minute budget, as specified in the implementation plan.
 After the time budget or a network failure, show “Check status” and existing
 recovery controls. Do not automatically repeat POST. Check status remains usable
 while the agent card is waiting; terminal failure/supersession must reject its
