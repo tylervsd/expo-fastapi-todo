@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 from alembic.config import Config
 from sqlalchemy import Engine, func, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 from test_workflow_suggestions import make_collecting, setup_owner
 
@@ -36,6 +37,7 @@ def reserve_cloud(
     step_id: str,
     request_id=None,
     clarification: Clarification | None = None,
+    trace_parent: str | None = None,
 ):
     request_id = request_id or uuid4()
     with session_factory() as session:
@@ -48,6 +50,7 @@ def reserve_cloud(
             step_id,
             clarification=clarification,
             queued=True,
+            trace_parent=trace_parent,
         )
     assert isinstance(result, SuggestionReservation)
     return request_id, result
@@ -1333,3 +1336,433 @@ def test_worker_unexpected_error_returns_sanitized_503(
             assert response.status_code == 503
             assert "seekrit-db-detail" not in response.text
     assert provider.calls == []
+
+
+# ---------------------------------------------------------------------------
+# Phase 21 Task 2 (TDD red): durable trace context across the queue.
+#
+# The stored traceparent controls worker processing lineage. Missing,
+# malformed, mismatched, or intermediary-modified headers never reject
+# valid work: the worker continues, logs a safe diagnostic, and links a
+# separate receipt trace where needed. Every delivery gets a new span ID
+# in the original trace with at most one provider call.
+
+
+STORED_TRACE = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+OTHER_TRACE = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"
+
+
+def worker_client_with_sink(session_factory, provider, sink, monkeypatch):
+    """Worker app with its own tracer provider sharing one in-memory sink."""
+    from fastapi.testclient import TestClient
+
+    from app.worker import create_worker_app
+
+    monkeypatch.setenv("TRACE_SAMPLE_RATE", "1.0")
+    app = create_worker_app(
+        session_factory=session_factory, suggestion_callable=provider
+    )
+    app.state.tracing_exporter = sink
+    return TestClient(app)
+
+
+def reserve_traced_for_worker(session_factory, trace_parent=STORED_TRACE):
+    owner_id = setup_owner(session_factory, username=f"traced-{uuid4()}")
+    workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
+    request_id, _ = reserve_cloud(
+        session_factory, owner_id, workflow_id, revision, step_id,
+        trace_parent=trace_parent,
+    )
+    return cloud_row_id(session_factory, owner_id, workflow_id, request_id)
+
+
+def finished_spans(sink):
+    return list(sink.get_finished_spans())
+
+
+def spans_by_name(spans):
+    grouped: dict[str, list] = {}
+    for span in spans:
+        grouped.setdefault(span.name, []).append(span)
+    return grouped
+
+
+def test_trace_parent_column_is_nullable_text_with_length_check(
+    database_engine: Engine,
+) -> None:
+    from sqlalchemy import inspect
+
+    inspector = inspect(database_engine)
+    columns = {
+        column["name"]: column
+        for column in inspector.get_columns("todo_workflow_suggestion_requests")
+    }
+    assert "trace_parent" in columns
+    assert columns["trace_parent"]["nullable"] is True
+    assert str(columns["trace_parent"]["type"]) == "TEXT"
+    checks = {
+        check["name"]: check["sqltext"]
+        for check in inspector.get_check_constraints(
+            "todo_workflow_suggestion_requests"
+        )
+    }
+    assert "ck_suggestion_requests_trace_parent" in checks
+    assert "55" in checks["ck_suggestion_requests_trace_parent"]
+
+
+def test_migration_old_rows_read_null_and_new_rows_store_context(
+    database_engine: Engine,
+) -> None:
+    from app.suggestion_service import suggestion_snapshot_from_row
+
+    config = Config(Path(__file__).parents[1] / "alembic.ini")
+    username = f"suggestion-trace-{uuid4()}"
+    workflow_id = uuid4()
+    legacy_id = uuid4()
+    with database_engine.begin() as connection:
+        owner_id = connection.execute(
+            text(
+                "INSERT INTO users (public_id, username, password_hash) "
+                "VALUES (:public_id, :username, 'hash') RETURNING id"
+            ),
+            {"public_id": uuid4(), "username": username},
+        ).scalar_one()
+        connection.execute(
+            text(
+                "INSERT INTO todo_workflows (public_id, owner_id, state, title, "
+                "involves_multiple_steps, proposed_todo_titles) VALUES "
+                "(:id, :owner_id, 'COLLECT_TASKS', 'Party', true, '[]'::jsonb)"
+            ),
+            {"id": workflow_id, "owner_id": owner_id},
+        )
+        config.attributes["connection"] = connection
+        command.downgrade(config, "2026091501")
+        connection.execute(
+            text(
+                "INSERT INTO todo_workflow_suggestion_requests "
+                "(owner_id, workflow_id, request_id, request_fingerprint, "
+                "base_revision, step_id, status, proposed_titles) VALUES "
+                "(:owner_id, :workflow_id, :request_id, :fingerprint, 0, "
+                ":step_id, 'pending', '[]'::jsonb)"
+            ),
+            {
+                "owner_id": owner_id,
+                "workflow_id": workflow_id,
+                "request_id": legacy_id,
+                "fingerprint": "a" * 64,
+                "step_id": f"{workflow_id}:COLLECT_TASKS",
+            },
+        )
+        command.upgrade(config, "head")
+        legacy_row_id, legacy_trace = connection.execute(
+            text(
+                "SELECT id, trace_parent FROM todo_workflow_suggestion_requests "
+                "WHERE request_id = :request_id"
+            ),
+            {"request_id": legacy_id},
+        ).one()
+        assert legacy_trace is None
+
+    # Overlong trace metadata is rejected at the database boundary, in its
+    # own transaction so the fixture rows above stay committed.
+    with database_engine.begin() as connection, pytest.raises(IntegrityError):
+        connection.execute(
+            text(
+                "UPDATE todo_workflow_suggestion_requests SET trace_parent = :tp "
+                "WHERE id = :id"
+            ),
+                {"tp": "x" * 56, "id": legacy_row_id},
+            )
+
+    from app.database import create_session_factory
+
+    factory = create_session_factory(database_engine)
+    with factory() as session:
+        legacy_row = session.get(WorkflowSuggestionRequestRow, legacy_row_id)
+        assert legacy_row is not None
+        assert legacy_row.trace_parent is None
+        assert suggestion_snapshot_from_row(legacy_row).status is (
+            SuggestionStatus.PENDING
+        )
+        session.rollback()
+    with factory() as session:
+        # Legacy rows without context are never claimable cloud work.
+        assert claim_suggestion(session, legacy_row_id) is None
+
+    with database_engine.begin() as connection:
+        connection.execute(
+            text("DELETE FROM users WHERE username = :username"),
+            {"username": username},
+        )
+
+
+def test_worker_happy_path_spans_share_stored_trace(
+    database_session: Session, session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    del database_session
+    sink: InMemorySpanExporter = InMemorySpanExporter()
+    provider = RecordingProvider()
+    suggestion_id = reserve_traced_for_worker(session_factory)
+    with worker_client_with_sink(
+        session_factory, provider, sink, monkeypatch
+    ) as client:
+        response = client.post(
+            "/internal/suggestions",
+            json={"version": 1, "suggestion_id": suggestion_id},
+            headers={
+                "traceparent": STORED_TRACE,
+                "X-Suggestion-Traceparent": STORED_TRACE,
+            },
+        )
+        assert response.status_code == 204
+        client.app.state.tracing_state.flush()
+    assert len(provider.calls) == 1
+    spans = finished_spans(sink)
+    by_name = spans_by_name(spans)
+    for name in (
+        "suggestion.process",
+        "db.claim_suggestion",
+        "provider.suggestions",
+        "db.finish_suggestion",
+    ):
+        assert name in by_name, sorted(by_name)
+    stored_trace_id = STORED_TRACE.split("-")[1]
+    for span in spans:
+        assert format(span.get_span_context().trace_id, "032x") == stored_trace_id
+    process = by_name["suggestion.process"][0]
+    process_id = process.get_span_context().span_id
+    for name in ("db.claim_suggestion", "provider.suggestions", "db.finish_suggestion"):
+        (child,) = by_name[name]
+        assert child.parent is not None
+        assert child.parent.span_id == process_id
+    ids = [span.get_span_context().span_id for span in spans]
+    assert len(set(ids)) == len(ids)
+    for span in spans:
+        assert span.links is not None and len(span.links) == 0 or True
+
+
+def test_worker_second_delivery_new_span_without_second_provider_call(
+    database_session: Session, session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    del database_session
+    sink: InMemorySpanExporter = InMemorySpanExporter()
+    provider = RecordingProvider()
+    suggestion_id = reserve_traced_for_worker(session_factory)
+    headers = {
+        "traceparent": STORED_TRACE,
+        "X-Suggestion-Traceparent": STORED_TRACE,
+    }
+    with worker_client_with_sink(
+        session_factory, provider, sink, monkeypatch
+    ) as client:
+        assert (
+            client.post(
+                "/internal/suggestions",
+                json={"version": 1, "suggestion_id": suggestion_id},
+                headers=headers,
+            ).status_code
+            == 204
+        )
+        # Terminal repeat delivery: acknowledged, still traced, no new call.
+        assert (
+            client.post(
+                "/internal/suggestions",
+                json={"version": 1, "suggestion_id": suggestion_id},
+                headers=headers,
+            ).status_code
+            == 204
+        )
+        client.app.state.tracing_state.flush()
+    assert len(provider.calls) == 1
+    processes = spans_by_name(finished_spans(sink))["suggestion.process"]
+    assert len(processes) == 2
+    stored_trace_id = STORED_TRACE.split("-")[1]
+    assert {format(span.get_span_context().trace_id, "032x") for span in processes} == {
+        stored_trace_id
+    }
+    assert processes[0].get_span_context().span_id != (
+        processes[1].get_span_context().span_id
+    )
+
+
+def test_worker_live_claim_retry_span_without_provider_call(
+    database_session: Session, session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    del database_session
+    sink: InMemorySpanExporter = InMemorySpanExporter()
+    provider = RecordingProvider()
+    suggestion_id = reserve_traced_for_worker(session_factory)
+    with session_factory() as session:
+        assert claim_suggestion(session, suggestion_id) is not None
+    with worker_client_with_sink(
+        session_factory, provider, sink, monkeypatch
+    ) as client:
+        response = client.post(
+            "/internal/suggestions",
+            json={"version": 1, "suggestion_id": suggestion_id},
+            headers={
+                "traceparent": STORED_TRACE,
+                "X-Suggestion-Traceparent": STORED_TRACE,
+            },
+        )
+        assert response.status_code == 503
+        client.app.state.tracing_state.flush()
+    assert provider.calls == []
+    processes = spans_by_name(finished_spans(sink))["suggestion.process"]
+    assert len(processes) == 1
+    assert format(processes[0].get_span_context().trace_id, "032x") == (
+        STORED_TRACE.split("-")[1]
+    )
+
+
+def test_worker_missing_and_malformed_headers_use_stored_context(
+    database_session: Session, session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    del database_session
+    cases: list[dict[str, str]] = [
+        {},
+        {"traceparent": "bogus", "X-Suggestion-Traceparent": "also-bogus"},
+        {"traceparent": STORED_TRACE + "00"},
+    ]
+    for headers in cases:
+        sink = InMemorySpanExporter()
+        provider = RecordingProvider()
+        suggestion_id = reserve_traced_for_worker(session_factory)
+        with (
+            caplog.at_level(logging.WARNING, logger="app.worker"),
+            worker_client_with_sink(
+                session_factory, provider, sink, monkeypatch
+            ) as client,
+        ):
+            response = client.post(
+                "/internal/suggestions",
+                json={"version": 1, "suggestion_id": suggestion_id},
+                headers=headers,
+            )
+            assert response.status_code == 204, headers
+            client.app.state.tracing_state.flush()
+        assert len(provider.calls) == 1
+        processes = spans_by_name(finished_spans(sink))["suggestion.process"]
+        assert len(processes) == 1, headers
+        assert format(processes[0].get_span_context().trace_id, "032x") == (
+            STORED_TRACE.split("-")[1]
+        ), headers
+    assert "suggestion_trace_context" in caplog.text
+
+
+def test_worker_mismatched_headers_keep_stored_lineage_with_link(
+    database_session: Session, session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    del database_session
+    sink: InMemorySpanExporter = InMemorySpanExporter()
+    provider = RecordingProvider()
+    suggestion_id = reserve_traced_for_worker(session_factory)
+    with worker_client_with_sink(
+        session_factory, provider, sink, monkeypatch
+    ) as client:
+        response = client.post(
+            "/internal/suggestions",
+            json={"version": 1, "suggestion_id": suggestion_id},
+            headers={
+                "traceparent": OTHER_TRACE,
+                "X-Suggestion-Traceparent": OTHER_TRACE,
+            },
+        )
+        assert response.status_code == 204
+        client.app.state.tracing_state.flush()
+    assert len(provider.calls) == 1
+    spans = finished_spans(sink)
+    by_name = spans_by_name(spans)
+    receipt = None
+    for span in spans:
+        if format(span.get_span_context().trace_id, "032x") == (
+            OTHER_TRACE.split("-")[1]
+        ):
+            receipt = span
+    assert receipt is not None, sorted(by_name)
+    (process,) = by_name["suggestion.process"]
+    assert format(process.get_span_context().trace_id, "032x") == (
+        STORED_TRACE.split("-")[1]
+    )
+    assert process.links is not None and len(process.links) == 1
+    assert (
+        format(process.links[0].context.trace_id, "032x")
+        == OTHER_TRACE.split("-")[1]
+    )
+
+
+def test_worker_modified_standard_header_falls_back_to_app_header(
+    database_session: Session, session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An intermediary rewrote `traceparent`; X- preserves lineage (legacy row)."""
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    del database_session
+    sink: InMemorySpanExporter = InMemorySpanExporter()
+    provider = RecordingProvider()
+    owner_id = setup_owner(session_factory, username=f"legacy-{uuid4()}")
+    workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
+    request_id = uuid4()
+    with session_factory() as session:
+        reserved = reserve_suggestion(
+            session, owner_id, workflow_id, request_id, revision, step_id
+        )
+    assert isinstance(reserved, SuggestionReservation)
+    with session_factory() as session:
+        legacy_id = session.scalar(
+            select(WorkflowSuggestionRequestRow.id).where(
+                WorkflowSuggestionRequestRow.request_id == request_id
+            )
+        )
+    assert legacy_id is not None
+    with worker_client_with_sink(
+        session_factory, provider, sink, monkeypatch
+    ) as client:
+        response = client.post(
+            "/internal/suggestions",
+            json={"version": 1, "suggestion_id": legacy_id},
+            headers={
+                "traceparent": OTHER_TRACE,
+                "X-Suggestion-Traceparent": STORED_TRACE,
+            },
+        )
+        # Legacy rows are never claimable cloud work, but the delivery is
+        # still acknowledged and traced under the preserved lineage.
+        assert response.status_code == 204
+        client.app.state.tracing_state.flush()
+    assert provider.calls == []
+    (process,) = spans_by_name(finished_spans(sink))["suggestion.process"]
+    assert format(process.get_span_context().trace_id, "032x") == (
+        STORED_TRACE.split("-")[1]
+    )

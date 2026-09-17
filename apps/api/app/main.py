@@ -2,7 +2,7 @@ import json
 import os
 import re
 from collections.abc import AsyncIterator, Iterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Literal, Protocol
 from uuid import UUID, uuid4
@@ -97,8 +97,11 @@ from app.todo_repository import list_todos as list_todo_rows
 from app.tracing import (
     ResponseStatusMiddleware,
     TracingMiddleware,
+    extract_stored_context,
     init_tracing,
+    inject_traceparent,
     shutdown_tracing,
+    start_safe_span,
 )
 from app.workflow_domain import (
     MAX_WORKFLOW_REVISION,
@@ -414,7 +417,42 @@ class SuggestionCallable(Protocol):
 
 
 class EnqueueCallable(Protocol):
-    def __call__(self, suggestion_id: int, fingerprint: str) -> None: ...
+    def __call__(
+        self,
+        suggestion_id: int,
+        fingerprint: str,
+        trace_parent: str | None = None,
+    ) -> None: ...
+
+
+@contextmanager
+def _maybe_span(tracer: object, name: str, attributes: dict[str, object]):
+    """Start a fixed-name span when tracing is available, else a no-op."""
+    if tracer is None:
+        yield None
+    else:
+        with start_safe_span(tracer, name, attributes=attributes) as span:  # type: ignore[arg-type]
+            yield span
+
+
+def _request_tracer(request: Request):
+    state = getattr(request.app.state, "tracing_state", None)
+    return state.tracer if state is not None else None
+
+
+def _active_traceparent() -> str | None:
+    """Capture the API server span context as a storable traceparent.
+
+    Called while the request server span is active, before any child span
+    starts, so the stored lineage names the API exchange itself. Returns
+    None when no valid span is active; telemetry never fails the request.
+    """
+    carrier: dict[str, str] = {}
+    inject_traceparent(carrier)
+    candidate = carrier.get("traceparent")
+    if candidate is None or extract_stored_context(candidate) is None:
+        return None
+    return candidate
 
 
 def create_app(
@@ -815,7 +853,12 @@ def create_app(
         payload: TodoWorkflowSuggestionRequest,
         user: Annotated[UserRow, Depends(get_current_user)],
         session: Annotated[Session, Depends(get_session)],
+        request: Request,
     ) -> TodoWorkflowSuggestionResponse | JSONResponse:
+        # Capture the server span context before any child span starts: the
+        # stored lineage names this API exchange, not an inner DB span.
+        tracer = _request_tracer(request)
+        active_trace_parent = _active_traceparent()
         try:
             clarification = (
                 Clarification(
@@ -824,16 +867,22 @@ def create_app(
                 if payload.clarification is not None
                 else None
             )
-            reservation = reserve_suggestion(
-                session,
-                user.id,
-                workflow_id,
-                payload.request_id,
-                payload.expected_revision,
-                payload.step_id,
-                clarification=clarification,
-                queued=execution_mode == "cloud_tasks",
-            )
+            with _maybe_span(
+                tracer,
+                "db.reserve_suggestion",
+                {"operation": "reserve_suggestion"},
+            ):
+                reservation = reserve_suggestion(
+                    session,
+                    user.id,
+                    workflow_id,
+                    payload.request_id,
+                    payload.expected_revision,
+                    payload.step_id,
+                    clarification=clarification,
+                    queued=execution_mode == "cloud_tasks",
+                    trace_parent=active_trace_parent,
+                )
         except RequestIdReused as exc:
             raise suggestion_conflict(
                 "request_id_reused",
@@ -898,10 +947,25 @@ def create_app(
                 and row.status == SuggestionStatus.PENDING.value
                 and row.provider_started_at is None
             ):
+                # Enqueue repair reuses the original stored lineage, never
+                # the replay request's trace: the argument crosses the
+                # threadpool boundary explicitly, not via contextvars.
+                stored_trace_parent = row.trace_parent
                 try:
-                    await run_in_threadpool(
-                        enqueue_runner, row.id, row.request_fingerprint
-                    )
+                    with _maybe_span(
+                        tracer,
+                        "cloudtasks.enqueue",
+                        {
+                            "operation": "enqueue",
+                            "suggestion_id": row.id,
+                        },
+                    ):
+                        await run_in_threadpool(
+                            enqueue_runner,
+                            row.id,
+                            row.request_fingerprint,
+                            stored_trace_parent,
+                        )
                 except EnqueueUnavailable as exc:
                     raise enqueue_unavailable() from exc
             try:

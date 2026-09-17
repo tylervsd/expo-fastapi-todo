@@ -31,7 +31,7 @@ from app.todo_repository import (
 )
 from app.todo_repository import set_title as set_todo_title
 
-REVISION = "2026091501"
+REVISION = "2026091701"
 
 
 def test_alembic_cli_loads_api_package() -> None:

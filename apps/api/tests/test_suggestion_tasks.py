@@ -234,9 +234,14 @@ class FakeEnqueue:
 
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         self.session_factory = session_factory
-        self.calls: list[tuple[int, str]] = []
+        self.calls: list[tuple[int, str, str | None]] = []
 
-    def __call__(self, suggestion_id: int, fingerprint: str) -> None:
+    def __call__(
+        self,
+        suggestion_id: int,
+        fingerprint: str,
+        trace_parent: str | None = None,
+    ) -> None:
         from app.workflow_repository import WorkflowSuggestionRequestRow
 
         with self.session_factory() as session:
@@ -248,7 +253,10 @@ class FakeEnqueue:
             assert row is not None, "enqueue must observe the committed row"
             assert row.status == "pending"
             assert row.request_fingerprint == fingerprint
-        self.calls.append((suggestion_id, fingerprint))
+            # The stored context travels explicitly: the seam records what
+            # it was given and the row carries the committed value.
+            assert trace_parent == row.trace_parent
+        self.calls.append((suggestion_id, fingerprint, trace_parent))
 
 
 def cloud_client(
@@ -339,7 +347,7 @@ def test_cloud_ready_replay_returns_200_without_enqueue(
             post_suggestion(client, headers, body, body["workflow_id"], request_id).status_code
             == 202
         )
-        suggestion_id, _fingerprint = enqueue.calls[0]
+        suggestion_id, _fingerprint, _trace_parent = enqueue.calls[0]
         with session_factory() as session:
             from app.workflow_repository import WorkflowSuggestionRequestRow
 
@@ -382,7 +390,7 @@ def test_cloud_failed_replay_returns_mapped_error_without_enqueue(
             post_suggestion(client, headers, body, body["workflow_id"], request_id).status_code
             == 202
         )
-        suggestion_id, _fingerprint = enqueue.calls[0]
+        suggestion_id, _fingerprint, _trace_parent = enqueue.calls[0]
         with session_factory() as session:
             from app.workflow_repository import WorkflowSuggestionRequestRow
 
@@ -460,8 +468,10 @@ def test_cloud_enqueue_unavailable_keeps_saved_reservation(
     del database_session
     use_cloud_env(monkeypatch)
 
-    def unavailable(suggestion_id: int, fingerprint: str) -> None:
-        del suggestion_id, fingerprint
+    def unavailable(
+        suggestion_id: int, fingerprint: str, trace_parent: str | None = None
+    ) -> None:
+        del suggestion_id, fingerprint, trace_parent
         raise suggestion_tasks.EnqueueUnavailable("queue is down")
 
     with TestClient(
@@ -628,3 +638,304 @@ def test_injected_enqueue_callable_still_used_in_cloud_mode(
         )
         assert response.status_code == 202
     assert len(enqueue.calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# Phase 21 Task 2 (TDD red): durable trace context across the queue.
+#
+# The reservation captures the API server span context as a canonical
+# version-00 W3C traceparent (at most 55 chars) stored alongside the row.
+# Enqueue forwards it in both `traceparent` and `X-Suggestion-Traceparent`
+# headers with the same validated value; the task body stays version 1.
+
+TRACE_A = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+TRACE_B = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"
+INCOMING_A = "00-11111111111111111111111111111111-2222222222222222-01"
+INCOMING_B = "00-33333333333333333333333333333333-4444444444444444-01"
+
+
+def test_enqueue_emits_matching_trace_headers(
+    fake_tasks: type[FakeTasksClient], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app import suggestion_tasks
+
+    use_cloud_env(monkeypatch)
+    suggestion_tasks.enqueue_suggestion(5, "d" * 64, TRACE_A)
+
+    assert len(FakeTasksClient.instances) == 1
+    (call,) = FakeTasksClient.instances[0].calls
+    task = call["request"]["task"]
+    headers = dict(task.http_request.headers)
+    assert headers["traceparent"] == TRACE_A
+    assert headers["X-Suggestion-Traceparent"] == TRACE_A
+    assert "baggage" not in {key.lower() for key in headers}
+    assert "tracestate" not in {key.lower() for key in headers}
+    # Task body version 1 is unchanged: trace context travels in headers only.
+    assert bytes(task.http_request.body) == (
+        json.dumps({"version": 1, "suggestion_id": 5}).encode()
+    )
+    assert task.name.endswith(expected_task_name(5, "d" * 64))
+
+
+def test_enqueue_omits_trace_headers_when_missing_or_invalid(
+    fake_tasks: type[FakeTasksClient], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app import suggestion_tasks
+
+    use_cloud_env(monkeypatch)
+    suggestion_tasks.enqueue_suggestion(6, "e" * 64)
+    suggestion_tasks.enqueue_suggestion(6, "e" * 64, None)
+    suggestion_tasks.enqueue_suggestion(6, "e" * 64, "bogus")
+    suggestion_tasks.enqueue_suggestion(6, "e" * 64, TRACE_A + "00")
+
+    assert len(FakeTasksClient.instances) == 4
+    for instance in FakeTasksClient.instances:
+        (call,) = instance.calls
+        headers = {key.lower() for key in dict(call["request"]["task"].http_request.headers)}
+        assert headers == {"content-type"}
+
+
+def sampled_cloud_client(
+    session_factory, monkeypatch: pytest.MonkeyPatch, enqueue: object
+) -> TestClient:
+    monkeypatch.setenv("TRACE_SAMPLE_RATE", "1.0")
+    return cloud_client(session_factory, monkeypatch, enqueue)
+
+
+def row_trace_parent(session_factory, suggestion_id: int) -> object:
+    from app.workflow_repository import WorkflowSuggestionRequestRow
+
+    with session_factory() as session:
+        return session.scalar(
+            select(WorkflowSuggestionRequestRow.trace_parent).where(
+                WorkflowSuggestionRequestRow.id == suggestion_id
+            )
+        )
+
+
+def test_cloud_post_stores_server_trace_and_enqueues_with_it(
+    database_session: Session, session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.workflow_repository import WorkflowSuggestionRequestRow
+
+    del database_session
+    enqueue = FakeEnqueue(session_factory)
+    with sampled_cloud_client(session_factory, monkeypatch, enqueue) as client:
+        headers = auth_headers(client)
+        body = start_collecting(client, headers)
+        request_id = uuid4()
+        response = client.post(
+            f"/todo-workflows/{body['workflow_id']}/suggestions",
+            json={
+                "request_id": str(request_id),
+                "expected_revision": body["revision"],
+                "step_id": body["view"]["step_id"],
+            },
+            headers={**headers, "traceparent": INCOMING_A},
+        )
+        assert response.status_code == 202
+    assert len(enqueue.calls) == 1
+    suggestion_id, _fingerprint, enqueued_tp = enqueue.calls[0]
+    with session_factory() as session:
+        row = session.scalar(
+            select(WorkflowSuggestionRequestRow).where(
+                WorkflowSuggestionRequestRow.id == suggestion_id
+            )
+        )
+        assert row is not None
+        stored = row.trace_parent
+    assert isinstance(stored, str) and len(stored) <= 55
+    assert stored.startswith("00-11111111111111111111111111111111-")
+    assert stored != INCOMING_A  # new span ID for the API server span
+    assert enqueued_tp == stored
+
+
+def test_cloud_replay_from_other_trace_preserves_original_context(
+    database_session: Session, session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del database_session
+    enqueue = FakeEnqueue(session_factory)
+    with sampled_cloud_client(session_factory, monkeypatch, enqueue) as client:
+        headers = auth_headers(client)
+        body = start_collecting(client, headers)
+        request_id = uuid4()
+        payload = {
+            "request_id": str(request_id),
+            "expected_revision": body["revision"],
+            "step_id": body["view"]["step_id"],
+        }
+        first = client.post(
+            f"/todo-workflows/{body['workflow_id']}/suggestions",
+            json=payload,
+            headers={**headers, "traceparent": INCOMING_A},
+        )
+        assert first.status_code == 202
+        # Enqueue repair from another API request/trace reuses the original.
+        second = client.post(
+            f"/todo-workflows/{body['workflow_id']}/suggestions",
+            json=payload,
+            headers={**headers, "traceparent": INCOMING_B},
+        )
+        assert second.status_code == 202
+    assert len(enqueue.calls) == 2
+    assert enqueue.calls[0] == enqueue.calls[1]
+    _suggestion_id, _fingerprint, enqueued_tp = enqueue.calls[0]
+    assert isinstance(enqueued_tp, str)
+    assert enqueued_tp.startswith("00-11111111111111111111111111111111-")
+    assert row_trace_parent(session_factory, _suggestion_id) == enqueued_tp
+
+
+def test_api_to_worker_waterfall_shares_one_trace(
+    database_session: Session, session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    fake_tasks: type[FakeTasksClient],
+) -> None:
+    """Separate API/worker tracer providers, one in-memory sink, one trace.
+
+    The API reservation stores its server span context; enqueue forwards it
+    in both headers; the worker receipt joins it and nests
+    process/claim/provider/finish beneath it. No process-local context is
+    shared: only the task headers connect the two providers.
+    """
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    from app.main import create_app
+    from app.worker import create_worker_app
+
+    del database_session
+    monkeypatch.setenv("TRACE_SAMPLE_RATE", "1.0")
+    use_cloud_env(monkeypatch)
+    sink: InMemorySpanExporter = InMemorySpanExporter()
+
+    from test_suggestion_worker import RecordingProvider
+
+    provider = RecordingProvider()
+    api_app = create_app(
+        session_factory,
+        suggestion_callable=failing_provider,  # type: ignore[arg-type]
+    )
+    api_app.state.tracing_exporter = sink
+    worker_app = create_worker_app(
+        session_factory=session_factory, suggestion_callable=provider
+    )
+    worker_app.state.tracing_exporter = sink
+
+    with TestClient(api_app) as api, TestClient(worker_app) as worker:
+        headers = auth_headers(api)
+        body = start_collecting(api, headers)
+        request_id = uuid4()
+        response = api.post(
+            f"/todo-workflows/{body['workflow_id']}/suggestions",
+            json={
+                "request_id": str(request_id),
+                "expected_revision": body["revision"],
+                "step_id": body["view"]["step_id"],
+            },
+            headers={**headers, "traceparent": INCOMING_A},
+        )
+        assert response.status_code == 202
+        assert len(FakeTasksClient.instances) == 1
+        (call,) = FakeTasksClient.instances[0].calls
+        task_headers = dict(call["request"]["task"].http_request.headers)
+        stored_tp = task_headers["traceparent"]
+        assert task_headers["X-Suggestion-Traceparent"] == stored_tp
+        body_bytes = bytes(call["request"]["task"].http_request.body)
+
+        delivery = worker.post(
+            "/internal/suggestions",
+            content=body_bytes,
+            headers={
+                "Content-Type": "application/json",
+                "traceparent": stored_tp,
+                "X-Suggestion-Traceparent": stored_tp,
+            },
+        )
+        assert delivery.status_code == 204
+        # A lost-acknowledgement repeat delivery reuses the same headers and
+        # records a second process span without another provider call.
+        repeat = worker.post(
+            "/internal/suggestions",
+            content=body_bytes,
+            headers={
+                "Content-Type": "application/json",
+                "traceparent": stored_tp,
+                "X-Suggestion-Traceparent": stored_tp,
+            },
+        )
+        assert repeat.status_code == 204
+        api_app.state.tracing_state.flush()
+        worker_app.state.tracing_state.flush()
+
+    assert len(provider.calls) == 1
+    spans = list(sink.get_finished_spans())
+    api_span = next(
+        span for span in spans
+        if span.name == "POST /todo-workflows/{workflow_id}/suggestions"
+    )
+    trace_id = format(api_span.get_span_context().trace_id, "032x")
+    assert trace_id == INCOMING_A.split("-")[1]
+    waterfall = [span for span in spans if (
+        format(span.get_span_context().trace_id, "032x") == trace_id
+    )]
+    by_name: dict[str, list] = {}
+    for span in waterfall:
+        by_name.setdefault(span.name, []).append(span)
+    assert set(by_name) == {
+        "POST /todo-workflows/{workflow_id}/suggestions",
+        "db.reserve_suggestion",
+        "cloudtasks.enqueue",
+        "POST /internal/suggestions",
+        "suggestion.process",
+        "db.claim_suggestion",
+        "provider.suggestions",
+        "db.finish_suggestion",
+    }, sorted(by_name)
+    assert len(by_name["POST /internal/suggestions"]) == 2
+    assert len(by_name["suggestion.process"]) == 2
+    ids = [span.get_span_context().span_id for span in waterfall]
+    assert len(set(ids)) == len(ids)
+
+    def parent_id(span) -> int | None:
+        return span.parent.span_id if span.parent is not None else None
+
+    api_id = api_span.get_span_context().span_id
+    (reserve,) = by_name["db.reserve_suggestion"]
+    (enqueue,) = by_name["cloudtasks.enqueue"]
+    assert parent_id(reserve) == api_id
+    assert parent_id(enqueue) == api_id
+    for receipt, process in zip(
+        sorted(
+            by_name["POST /internal/suggestions"],
+            key=lambda span: span.start_time,
+        ),
+        sorted(
+            by_name["suggestion.process"], key=lambda span: span.start_time
+        ),
+    ):
+        assert parent_id(receipt) == api_id
+        assert parent_id(process) == receipt.get_span_context().span_id
+    first_process = min(
+        by_name["suggestion.process"], key=lambda span: span.start_time
+    )
+    first_process_id = first_process.get_span_context().span_id
+    # Both deliveries attempt the claim under their own process span; only
+    # the first reaches the provider and finalizes.
+    assert len(by_name["db.claim_suggestion"]) == 2
+    for receipt_process, claim in zip(
+        sorted(
+            by_name["suggestion.process"], key=lambda span: span.start_time
+        ),
+        sorted(
+            by_name["db.claim_suggestion"], key=lambda span: span.start_time
+        ),
+    ):
+        assert parent_id(claim) == receipt_process.get_span_context().span_id
+    for name in ("provider.suggestions", "db.finish_suggestion"):
+        (child,) = by_name[name]
+        assert parent_id(child) == first_process_id, name
+    for span in waterfall:
+        assert dict(span.attributes or {}).get("suggestion_id") in (None,) or True

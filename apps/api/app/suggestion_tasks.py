@@ -32,6 +32,12 @@ TASK_DISPATCH_DEADLINE_SECONDS = 60
 
 TASK_NAME_PREFIX = "suggest-v1-"
 
+# Application-owned lineage header. Carries the same validated stored
+# traceparent as `traceparent` so application lineage survives a managed
+# intermediary that rewrites standard headers. Diagnostic only: never
+# authority, never baggage.
+SUGGESTION_TRACEPARENT_HEADER = "X-Suggestion-Traceparent"
+
 
 class EnqueueUnavailable(RuntimeError):
     """Sanitized transport failure: the reservation stays saved for retry."""
@@ -46,7 +52,7 @@ class CloudTasksConfig:
     invoker_email: str
 
 
-EnqueueRunner = Callable[[int, str], None]
+EnqueueRunner = Callable[[int, str, str | None], None]
 
 
 def _require_nonempty(value: object, *, name: str) -> str:
@@ -122,19 +128,49 @@ def _require_task_identity(suggestion_id: object, fingerprint: object) -> None:
         raise EnqueueUnavailable("suggestion enqueue is unavailable")
 
 
+def _validated_trace_header(value: object) -> str | None:
+    """Return the stored traceparent for task headers when it validates.
+
+    Uses the Task 1 W3C propagator helper: missing, malformed, overlong,
+    or zero-ID values yield no header. Never emits baggage or tracestate.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if len(text) > 55:
+        return None
+    try:
+        from app.tracing import extract_stored_context
+    except Exception:  # noqa: BLE001 - telemetry stays optional
+        return None
+    if extract_stored_context(text) is None:
+        return None
+    return text
+
+
 def enqueue_suggestion_with_config(
-    config: CloudTasksConfig, suggestion_id: int, fingerprint: str
+    config: CloudTasksConfig,
+    suggestion_id: int,
+    fingerprint: str,
+    trace_parent: str | None = None,
 ) -> None:
     """Create (or deduplicate) the delivery task using a startup-bound config.
 
     Only `AlreadyExists` is accepted as duplicate success; every other
     failure raises sanitized `EnqueueUnavailable`. Never logs the credential
-    or the task body.
+    or the task body. `trace_parent` is the stored row context, forwarded
+    verbatim in both trace headers only when it validates; the task body
+    stays version 1 and carries no trace metadata.
     """
     _require_task_identity(suggestion_id, fingerprint)
     body = json.dumps({"version": TASK_VERSION, "suggestion_id": suggestion_id}).encode()
     if len(body) > MAX_TASK_BODY_BYTES:
         raise EnqueueUnavailable("suggestion enqueue is unavailable")
+    headers = {"Content-Type": "application/json"}
+    stored = _validated_trace_header(trace_parent)
+    if stored is not None:
+        headers["traceparent"] = stored
+        headers[SUGGESTION_TRACEPARENT_HEADER] = stored
     parent = (
         f"projects/{config.project}"
         f"/locations/{config.location}"
@@ -145,7 +181,7 @@ def enqueue_suggestion_with_config(
         http_request=tasks_v2.HttpRequest(
             http_method=tasks_v2.HttpMethod.POST,
             url=f"{config.worker_url}/internal/suggestions",
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             body=body,
             oidc_token=tasks_v2.OidcToken(
                 service_account_email=config.invoker_email,
@@ -177,16 +213,20 @@ def enqueue_suggestion_with_config(
 def build_enqueue_runner(config: CloudTasksConfig) -> EnqueueRunner:
     """Bind the default enqueue runner to the immutable startup config."""
 
-    def _runner(suggestion_id: int, fingerprint: str) -> None:
-        enqueue_suggestion_with_config(config, suggestion_id, fingerprint)
+    def _runner(
+        suggestion_id: int, fingerprint: str, trace_parent: str | None = None
+    ) -> None:
+        enqueue_suggestion_with_config(config, suggestion_id, fingerprint, trace_parent)
 
     return _runner
 
 
-def enqueue_suggestion(suggestion_id: int, fingerprint: str) -> None:
+def enqueue_suggestion(
+    suggestion_id: int, fingerprint: str, trace_parent: str | None = None
+) -> None:
     """Create (or deduplicate) the delivery task for a committed reservation.
 
-    Public two-argument seam: reads the current environment for standalone
+    Public seam: reads the current environment for standalone
     use. The application binds its default runner to the startup-validated
     config via `build_enqueue_runner` so requests never re-read routing.
     Only `AlreadyExists` is accepted as duplicate success; every other
@@ -198,4 +238,4 @@ def enqueue_suggestion(suggestion_id: int, fingerprint: str) -> None:
         config = read_cloud_config()
     except ValueError as exc:
         raise EnqueueUnavailable("suggestion enqueue is unavailable") from exc
-    enqueue_suggestion_with_config(config, suggestion_id, fingerprint)
+    enqueue_suggestion_with_config(config, suggestion_id, fingerprint, trace_parent)

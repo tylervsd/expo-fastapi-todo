@@ -245,6 +245,10 @@ class WorkflowSuggestionRequestRow(Base):
             "OR jsonb_typeof(clarification_snapshot) = 'object')",
             name="ck_suggestion_requests_clarification_object",
         ),
+        CheckConstraint(
+            "(trace_parent IS NULL OR char_length(trace_parent) <= 55)",
+            name="ck_suggestion_requests_trace_parent",
+        ),
         Index(
             "ix_suggestion_requests_owner_workflow_id",
             "owner_id",
@@ -290,6 +294,11 @@ class WorkflowSuggestionRequestRow(Base):
     clarification_snapshot: Mapped[dict[str, str] | None] = mapped_column(
         JSONB(none_as_null=True), nullable=True
     )
+    # Phase 21 Task 2: optional canonical version-00 W3C traceparent (at
+    # most 55 characters) captured from the API server span. Diagnostic
+    # lineage only: never hashed into fingerprints or idempotency keys,
+    # and never rewritten by a same-ID replay.
+    trace_parent: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 # Short aliases keep the journal row discoverable to service and persistence callers.

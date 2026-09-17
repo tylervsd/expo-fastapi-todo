@@ -12,7 +12,7 @@ from __future__ import annotations
 import math
 import os
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -36,6 +36,7 @@ from opentelemetry.sdk.trace.sampling import (
     StaticSampler,
 )
 from opentelemetry.trace import (
+    Link,
     NonRecordingSpan,
     Span,
     SpanContext,
@@ -525,6 +526,7 @@ def start_safe_span(
     context: otel_context.Context | None = None,
     kind: SpanKind = SpanKind.INTERNAL,
     attributes: Mapping[str, Any] | None = None,
+    links: Sequence[Link] | None = None,
 ) -> Iterator[Span]:
     """Start a span that never records exceptions automatically.
 
@@ -532,13 +534,15 @@ def start_safe_span(
     an event on exit, which would bypass the attribute allowlist with raw
     messages and tracebacks. This helper manages the span manually:
     failures carry only the bounded outcome set via ``set_span_outcome``
-    by the caller (or middleware), never exception text.
+    by the caller (or middleware), never exception text. ``links`` carries
+    cross-trace receipt references (Phase 21 Task 2) without headers.
     """
     span = tracer.start_span(
         name,
         context=context,
         kind=kind,
         attributes=dict(safe_span_attributes(dict(attributes or {}))),
+        links=list(links) if links else None,
     )
     with trace.use_span(span, end_on_exit=False):
         try:
@@ -561,12 +565,18 @@ def start_stored_span(
     *,
     attributes: Mapping[str, Any] | None = None,
     kind: SpanKind = SpanKind.INTERNAL,
+    links: Sequence[Link] | None = None,
 ) -> Iterator[Span]:
     """Start a span under a validated stored parent, inheriting its decision."""
     token = _TRUSTED_STORED_PARENT.set(True)
     try:
         with start_safe_span(
-            tracer, name, context=stored_context, kind=kind, attributes=attributes
+            tracer,
+            name,
+            context=stored_context,
+            kind=kind,
+            attributes=attributes,
+            links=links,
         ) as span:
             yield span
     finally:

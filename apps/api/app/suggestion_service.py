@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -61,6 +62,36 @@ class InvalidStoredSuggestion(ValueError):
 
 
 ClarificationField = Literal["date", "location", "people", "budget", "constraints"]
+
+# Phase 21 Task 2: canonical version-00 W3C traceparent carried as
+# diagnostic lineage alongside a cloud reservation. Exactly 55 characters
+# (`00-<32 hex>-<16 hex>-<2 hex>`), nonzero trace/parent IDs, never a
+# fingerprint or idempotency input.
+_TRACE_PARENT_RE = re.compile(r"^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$")
+
+
+def canonical_trace_parent(value: object) -> str | None:
+    """Validate an untrusted traceparent for durable lineage storage.
+
+    Returns the canonical value when it is a well-formed version-00 W3C
+    traceparent with nonzero IDs, else None. Telemetry input never fails
+    a reservation: callers store None for anything else.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if len(text) > 55 or _TRACE_PARENT_RE.match(text) is None:
+        return None
+    try:
+        from app.tracing import extract_stored_context
+    except Exception:  # noqa: BLE001 - tracing stays optional here
+        return None
+    if extract_stored_context(text) is None:
+        return None
+    parts = text.split("-")
+    if parts[1] == "0" * 32 or parts[2] == "0" * 16:
+        return None
+    return text
 
 # Cloud execution bounds from the Phase 20 spec: a reservation stays useful
 # for 15 minutes, while a committed provider claim lapses after 2 minutes.
@@ -281,6 +312,7 @@ def reserve_suggestion(
     clarification: Clarification | None = None,
     *,
     queued: bool = False,
+    trace_parent: str | None = None,
 ) -> SuggestionReservation | SuggestionSnapshot | None:
     canonical_clarification = (
         normalize_clarification(clarification) if clarification is not None else None
@@ -376,6 +408,10 @@ def reserve_suggestion(
             provider_started_at=None,
             goal_snapshot=goal_snapshot,
             clarification_snapshot=clarification_snapshot,
+            # A same-ID replay returns above without reaching this insert,
+            # so stored lineage is written once and never rewritten.
+            # Inline rows keep ordinary request-child spans: no stored parent.
+            trace_parent=canonical_trace_parent(trace_parent) if queued else None,
         )
         session.add(row)
         session.flush()
@@ -460,6 +496,9 @@ class ClaimedSuggestion:
     owner_id: int
     reservation: SuggestionReservation
     provider_started_at: datetime
+    # Stored lineage read with the claimed row; controls worker processing
+    # lineage where available. None for legacy rows without context.
+    trace_parent: str | None = None
 
 
 def _is_cloud_row(row: WorkflowSuggestionRequestRow) -> bool:
@@ -591,6 +630,7 @@ def claim_suggestion(session: Session, suggestion_id: int) -> ClaimedSuggestion 
                 clarification=clarification,
             ),
             provider_started_at=now,
+            trace_parent=row.trace_parent,
         )
 
 

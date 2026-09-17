@@ -14,11 +14,12 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from typing import Protocol
 
 from fastapi import FastAPI, HTTPException, Request, Response
-from sqlalchemy import Engine, text
+from opentelemetry.trace import Link, get_current_span
+from sqlalchemy import Engine, select, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from sqlalchemy.orm import Session, sessionmaker
@@ -49,12 +50,18 @@ from app.suggestion_service import (
     expire_suggestions,
     finish_claimed_suggestion,
 )
+from app.suggestion_tasks import SUGGESTION_TRACEPARENT_HEADER
 from app.tracing import (
     ResponseStatusMiddleware,
     TracingMiddleware,
+    extract_stored_context,
     init_tracing,
+    set_span_outcome,
     shutdown_tracing,
+    start_safe_span,
+    start_stored_span,
 )
+from app.workflow_repository import WorkflowSuggestionRequestRow
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +78,167 @@ class SuggestionCallable(Protocol):
         *,
         clarification: Clarification | None = None,
     ) -> tuple[str, ...]: ...
+
+
+def read_stored_trace_parent(
+    factory: sessionmaker[Session], suggestion_id: int
+) -> str | None:
+    """Lightweight lineage pre-read so each delivery can join the stored trace.
+
+    Returns the stored traceparent or None. Never raises: the claim right
+    after surfaces database errors through the sanitized mapping.
+    """
+    try:
+        with factory() as session:
+            return session.scalar(
+                select(WorkflowSuggestionRequestRow.trace_parent).where(
+                    WorkflowSuggestionRequestRow.id == suggestion_id
+                )
+            )
+    except Exception:  # noqa: BLE001 - the claim reports the failure
+        return None
+
+
+def _incoming_trace_candidate(
+    app_raw: str | None,
+    std_raw: str | None,
+) -> tuple[str | None, object]:
+    """Prefer the app-owned lineage header, fall back to `traceparent`.
+
+    Returns (raw value, validated context) or (None, None). Both headers
+    carry the same value on the happy path; when a managed intermediary
+    rewrites the standard header, the app header preserves application
+    lineage. Baggage is never read.
+    """
+    for raw in (app_raw, std_raw):
+        if raw is None:
+            continue
+        context = extract_stored_context(raw)
+        if context is not None:
+            return raw.strip(), context
+    return None, None
+
+
+def _trace_diagnosis(
+    *,
+    app_raw: str | None,
+    std_raw: str | None,
+    incoming_raw: str | None,
+    incoming_ctx: object,
+    stored_ctx: object,
+) -> str | None:
+    """Bounded diagnosis for observability-input problems.
+
+    Returns one of missing/invalid/mismatch/modified, else None. Never
+    rejects work or carries header values; the caller logs only the code.
+    """
+    if incoming_ctx is None:
+        if stored_ctx is None:
+            return None
+        if app_raw is None and std_raw is None:
+            return "missing"
+        return "invalid"
+    if stored_ctx is not None:
+        incoming_trace = (
+            get_current_span(incoming_ctx).get_span_context().trace_id  # type: ignore[arg-type]
+        )
+        stored_trace = (
+            get_current_span(stored_ctx).get_span_context().trace_id  # type: ignore[arg-type]
+        )
+        if incoming_trace != stored_trace:
+            return "mismatch"
+    if (
+        app_raw is not None
+        and incoming_raw == app_raw.strip()
+        and std_raw != app_raw.strip()
+    ):
+        return "modified"
+    return None
+
+
+@contextmanager
+def _delivery_span(
+    tracer: object,
+    suggestion_id: int,
+    *,
+    stored_ctx: object,
+    incoming_ctx: object,
+):
+    """One `suggestion.process` span per delivery in the stored trace.
+
+    Stored row context controls processing lineage where available; without
+    it, the validated app lineage header does. A receipt span on another
+    trace (tampered standard header, mismatched delivery) is linked, never
+    reparented. Stored parents inherit their sampling decision; header
+    parents go through the normal boundary decision. Yields None when
+    tracing is unavailable.
+    """
+    attributes = {"operation": "process", "suggestion_id": suggestion_id}
+    if tracer is None:
+        yield None
+        return
+    lineage_ctx = stored_ctx if stored_ctx is not None else incoming_ctx
+    trusted = stored_ctx is not None
+    if lineage_ctx is None:
+        with start_safe_span(  # type: ignore[arg-type]
+            tracer, "suggestion.process", attributes=attributes
+        ) as span:
+            yield span
+        return
+    lineage_id = get_current_span(lineage_ctx).get_span_context()  # type: ignore[arg-type]
+    receipt = get_current_span().get_span_context()
+    if receipt.is_valid and receipt.trace_id == lineage_id.trace_id:
+        with start_safe_span(  # type: ignore[arg-type]
+            tracer, "suggestion.process", attributes=attributes
+        ) as span:
+            yield span
+    elif trusted:
+        links = [Link(receipt)] if receipt.is_valid else None
+        with start_stored_span(  # type: ignore[arg-type]
+            tracer,
+            lineage_ctx,  # type: ignore[arg-type]
+            "suggestion.process",
+            attributes=attributes,
+            links=links,
+        ) as span:
+            yield span
+    else:
+        links = [Link(receipt)] if receipt.is_valid else None
+        with start_safe_span(  # type: ignore[arg-type]
+            tracer,
+            "suggestion.process",
+            context=lineage_ctx,  # type: ignore[arg-type]
+            attributes=attributes,
+            links=links,
+        ) as span:
+            yield span
+
+
+@contextmanager
+def _child_span(tracer: object, name: str, operation: str, suggestion_id: int):
+    """Fixed-name child span for one delivery stage; no-op without tracing."""
+    if tracer is None:
+        yield None
+    else:
+        with start_safe_span(  # type: ignore[arg-type]
+            tracer,
+            name,
+            attributes={"operation": operation, "suggestion_id": suggestion_id},
+        ) as span:
+            yield span
+
+
+def _delivery_error(process_span: object, exc: HTTPException) -> None:
+    """Record a bounded outcome on the delivery span for a raised status."""
+    if process_span is None:
+        return
+    code = exc.detail.get("code") if isinstance(exc.detail, dict) else None
+    outcome = "server_error" if exc.status_code >= 500 else "client_error"
+    set_span_outcome(
+        process_span,  # type: ignore[arg-type]
+        outcome,
+        error_code=str(code)[:64] if code is not None else None,
+    )
 
 
 def create_worker_app(
@@ -289,23 +457,19 @@ def create_worker_app(
             raise worker_unavailable() from None
         return {"status": "ok"}
 
-    @app.post("/internal/suggestions", status_code=204)
-    async def handle_suggestion(request: Request) -> Response:
-        started = time.monotonic()
-        raw = await read_bounded_body(request)
-        try:
-            suggestion_id = parse_task_body(raw)
-        except HTTPException:
-            logger.warning(
-                "suggestion_task_rejected", extra={"outcome": "malformed"}
-            )
-            raise
-        factory = get_session_factory(request)
-        if factory is None:
-            raise worker_unavailable()
+    async def _deliver_once(
+        factory: sessionmaker[Session],
+        tracer: object,
+        suggestion_id: int,
+        started: float,
+    ) -> Response:
         # Claim first and commit; the provider runs outside any transaction.
+        # Each stage runs in its own fixed-name child span of the delivery.
         try:
-            claim = await run_in_threadpool(claim_once, factory, suggestion_id)
+            with _child_span(
+                tracer, "db.claim_suggestion", "claim_suggestion", suggestion_id
+            ):
+                claim = await run_in_threadpool(claim_once, factory, suggestion_id)
         except SuggestionInProgress:
             # A live claim means another delivery is executing: ask Cloud
             # Tasks to retry later without a second provider call.
@@ -333,28 +497,34 @@ def create_worker_app(
             log_outcome(suggestion_id, "no_work", started)
             return Response(status_code=204)
         # The claim is committed; provider time holds no database resources.
-        titles, error_code = await execute_provider(claim)
+        with _child_span(
+            tracer, "provider.suggestions", "provider_suggestions", suggestion_id
+        ):
+            titles, error_code = await execute_provider(claim)
         # Finalize in a fresh transaction; late writes are silent no-ops that
         # still acknowledge the delivery.
         try:
-            if error_code is not None:
-                await run_in_threadpool(finish_failed, factory, claim, error_code)
-                log_outcome(suggestion_id, "failed", started, error_code)
-            else:
-                assert titles is not None
-                try:
-                    await run_in_threadpool(finish_ready, factory, claim, titles)
-                except (TypeError, ValueError):
-                    await run_in_threadpool(
-                        finish_failed,
-                        factory,
-                        claim,
-                        SuggestionErrorCode.INVALID_OUTPUT,
-                    )
-                    error_code = SuggestionErrorCode.INVALID_OUTPUT
+            with _child_span(
+                tracer, "db.finish_suggestion", "finish_suggestion", suggestion_id
+            ):
+                if error_code is not None:
+                    await run_in_threadpool(finish_failed, factory, claim, error_code)
                     log_outcome(suggestion_id, "failed", started, error_code)
                 else:
-                    log_outcome(suggestion_id, "ready", started)
+                    assert titles is not None
+                    try:
+                        await run_in_threadpool(finish_ready, factory, claim, titles)
+                    except (TypeError, ValueError):
+                        await run_in_threadpool(
+                            finish_failed,
+                            factory,
+                            claim,
+                            SuggestionErrorCode.INVALID_OUTPUT,
+                        )
+                        error_code = SuggestionErrorCode.INVALID_OUTPUT
+                        log_outcome(suggestion_id, "failed", started, error_code)
+                    else:
+                        log_outcome(suggestion_id, "ready", started)
         except (OperationalError, SQLAlchemyTimeoutError):
             log_outcome(suggestion_id, "finalize_unavailable", started)
             raise worker_unavailable() from None
@@ -362,6 +532,64 @@ def create_worker_app(
             log_outcome(suggestion_id, "finalize_failed", started)
             raise worker_unavailable() from None
         return Response(status_code=204)
+
+    @app.post("/internal/suggestions", status_code=204)
+    async def handle_suggestion(request: Request) -> Response:
+        started = time.monotonic()
+        raw = await read_bounded_body(request)
+        try:
+            suggestion_id = parse_task_body(raw)
+        except HTTPException:
+            logger.warning(
+                "suggestion_task_rejected", extra={"outcome": "malformed"}
+            )
+            raise
+        factory = get_session_factory(request)
+        if factory is None:
+            raise worker_unavailable()
+        # Lineage setup runs before any business read: the stored row
+        # context controls the delivery span, and header problems are a
+        # safe diagnostic, never a rejection. The stored value crosses the
+        # threadpool boundary as an explicit return value.
+        state = getattr(request.app.state, "tracing_state", None)
+        tracer = state.tracer if state is not None else None
+        app_raw = request.headers.get(SUGGESTION_TRACEPARENT_HEADER)
+        std_raw = request.headers.get("traceparent")
+        incoming_raw, incoming_ctx = _incoming_trace_candidate(app_raw, std_raw)
+        stored_tp = await run_in_threadpool(
+            read_stored_trace_parent, factory, suggestion_id
+        )
+        stored_ctx = extract_stored_context(stored_tp)
+        diagnosis = _trace_diagnosis(
+            app_raw=app_raw,
+            std_raw=std_raw,
+            incoming_raw=incoming_raw,
+            incoming_ctx=incoming_ctx,
+            stored_ctx=stored_ctx,
+        )
+        if diagnosis is not None:
+            logger.warning(
+                "suggestion_trace_context",
+                extra={"suggestion_id": suggestion_id, "outcome": diagnosis},
+            )
+        # Every delivery gets its own span ID in the stored trace, even
+        # duplicates and retries that never reach the provider.
+        with _delivery_span(
+            tracer, suggestion_id, stored_ctx=stored_ctx, incoming_ctx=incoming_ctx
+        ) as process_span:
+            try:
+                response = await _deliver_once(
+                    factory,
+                    tracer,
+                    suggestion_id,
+                    started,
+                )
+            except HTTPException as exc:
+                _delivery_error(process_span, exc)
+                raise
+            if process_span is not None:
+                set_span_outcome(process_span, "success")
+            return response
 
     @app.post("/internal/suggestions/expire")
     async def expire(request: Request) -> dict[str, int]:
