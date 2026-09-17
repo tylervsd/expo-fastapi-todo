@@ -365,6 +365,24 @@ def _rev(image=IMAGE, name=CAND):
     }
 
 
+class TrafficTagTest(unittest.TestCase):
+    def test_real_worker_release_fits_cloud_run_limit(self):
+        service = "fullstack-suggestion-worker"
+        release = "r35173944617-a1-7074d4f3"
+        tag = release_deploy._traffic_tag(service, release)
+        self.assertLessEqual(len(service) + len(tag), 46)
+        self.assertRegex(tag, r"^[a-z][a-z0-9-]*$")
+        self.assertEqual(tag, release_deploy._traffic_tag(service, release))
+        self.assertNotEqual(tag, release_deploy._traffic_tag(service, release.replace("a1", "a2")))
+
+    def test_short_tag_is_preserved(self):
+        self.assertEqual(release_deploy._traffic_tag("api", REL), REL)
+
+    def test_service_without_room_fails_before_deploy(self):
+        with self.assertRaisesRegex(RuntimeError, "traffic tag"):
+            release_deploy._traffic_tag("a" * 40, REL)
+
+
 class DeploySequenceTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
