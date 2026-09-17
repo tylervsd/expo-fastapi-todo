@@ -15,6 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from opentelemetry.trace import Link, get_current_span
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -426,12 +427,13 @@ class EnqueueCallable(Protocol):
 
 
 @contextmanager
-def _maybe_span(tracer: object, name: str, attributes: dict[str, object]):
+def _maybe_span(tracer: object, name: str, attributes: dict[str, object],
+                 links: list[Link] | None = None):
     """Start a fixed-name span when tracing is available, else a no-op."""
     if tracer is None:
         yield None
     else:
-        with start_safe_span(tracer, name, attributes=attributes) as span:  # type: ignore[arg-type]
+        with start_safe_span(tracer, name, attributes=attributes, links=links) as span:  # type: ignore[arg-type]
             yield span
 
 
@@ -938,6 +940,10 @@ def create_app(
             # already committed; end database work, enqueue off the event
             # loop, then reconcile the saved state (a task may finish
             # before POST returns).
+            # A pending snapshot here is a same-ID replay: the row already
+            # exists, so the enqueue below retries against original
+            # deadlines instead of creating new lineage.
+            is_replay = isinstance(reservation, SuggestionSnapshot)
             row = lookup_suggestion_row(
                 session, user.id, workflow_id, payload.request_id
             )
@@ -950,7 +956,20 @@ def create_app(
                 # Enqueue repair reuses the original stored lineage, never
                 # the replay request's trace: the argument crosses the
                 # threadpool boundary explicitly, not via contextvars.
+                # A same-ID replay keeps its own request parent and links
+                # to the validated stored context instead of reparenting.
                 stored_trace_parent = row.trace_parent
+                replay_links: list[Link] | None = None
+                if is_replay and stored_trace_parent is not None:
+                    stored_ctx = extract_stored_context(stored_trace_parent)
+                    if stored_ctx is not None:
+                        stored_sc = get_current_span(stored_ctx).get_span_context()
+                        current_sc = get_current_span().get_span_context()
+                        if (
+                            current_sc.is_valid
+                            and stored_sc.trace_id != current_sc.trace_id
+                        ):
+                            replay_links = [Link(stored_sc)]
                 try:
                     with _maybe_span(
                         tracer,
@@ -959,7 +978,8 @@ def create_app(
                             "operation": "enqueue",
                             "suggestion_id": row.id,
                         },
-                    ):
+                        links=replay_links,
+                    ): 
                         await run_in_threadpool(
                             enqueue_runner,
                             row.id,

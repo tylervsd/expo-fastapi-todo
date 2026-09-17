@@ -47,7 +47,7 @@ from app.suggestion_service import (
     SuggestionErrorCode,
     SuggestionInProgress,
     claim_suggestion,
-    expire_suggestions,
+    expire_suggestions_with_context,
     finish_claimed_suggestion,
 )
 from app.suggestion_tasks import SUGGESTION_TRACEPARENT_HEADER
@@ -226,6 +226,51 @@ def _child_span(tracer: object, name: str, operation: str, suggestion_id: int):
             attributes={"operation": operation, "suggestion_id": suggestion_id},
         ) as span:
             yield span
+
+
+def _emit_expire_span(tracer: object, sweep_context: object, item: object) -> None:
+    """One short `suggestion.expire` span for a single expired row.
+
+    Rows carrying stored context are spanned under that context and linked
+    to the separate Scheduler sweep trace; legacy/context-less rows stay
+    valid as ordinary children of the sweep exchange. Runs after the sweep
+    transaction commits and holds no database resources. Telemetry never
+    fails expiry: errors are swallowed.
+    """
+    if tracer is None:
+        return
+    suggestion_id = getattr(item, "suggestion_id", None)
+    trace_parent = getattr(item, "trace_parent", None)
+    attributes = {"operation": "expire", "suggestion_id": suggestion_id}
+    try:
+        stored_ctx = (
+            extract_stored_context(trace_parent)
+            if isinstance(trace_parent, str) and trace_parent
+            else None
+        )
+        if stored_ctx is not None:
+            links = (
+                [Link(sweep_context)]  # type: ignore[arg-type]
+                if getattr(sweep_context, "is_valid", False)
+                else None
+            )
+            with start_stored_span(  # type: ignore[arg-type]
+                tracer,
+                stored_ctx,  # type: ignore[arg-type]
+                "suggestion.expire",
+                attributes=attributes,  # type: ignore[arg-type]
+                links=links,
+            ) as span:
+                set_span_outcome(span, "success")  # type: ignore[arg-type]
+        else:
+            with start_safe_span(  # type: ignore[arg-type]
+                tracer,
+                "suggestion.expire",
+                attributes=attributes,  # type: ignore[arg-type]
+            ) as span:
+                set_span_outcome(span, "success")  # type: ignore[arg-type]
+    except Exception:  # noqa: BLE001, S110 - telemetry never raises
+        pass
 
 
 def _delivery_error(process_span: object, exc: HTTPException) -> None:
@@ -610,19 +655,29 @@ def create_worker_app(
         factory = get_session_factory(request)
         if factory is None:
             raise worker_unavailable()
+        # Scheduler sweep trace: the server span for this expire exchange.
+        # Per-row `suggestion.expire` spans below link back here while
+        # living under each row's stored context, so one sweep never
+        # merges different suggestions into a single transaction trace.
+        state = getattr(request.app.state, "tracing_state", None)
+        tracer = state.tracer if state is not None else None
+        sweep_context = get_current_span().get_span_context()
 
-        def sweep_once() -> int:
+        def sweep_once() -> list:
             with factory() as session:
-                return expire_suggestions(session)
+                return expire_suggestions_with_context(session)
 
         try:
-            expired = await run_in_threadpool(sweep_once)
+            expired_rows = await run_in_threadpool(sweep_once)
         except (OperationalError, SQLAlchemyTimeoutError):
             logger.warning("worker_expire_failed", extra={"outcome": "unavailable"})
             raise worker_unavailable() from None
         except Exception:  # noqa: BLE001 - worker errors stay sanitized
             logger.warning("worker_expire_failed", extra={"outcome": "failed"})
             raise worker_unavailable() from None
+        expired = len(expired_rows)
+        for item in expired_rows:
+            _emit_expire_span(tracer, sweep_context, item)
         logger.info("suggestion_expire", extra={"expired": expired})
         return {"expired": expired}
 

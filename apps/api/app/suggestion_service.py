@@ -729,7 +729,27 @@ def _supersede_row(row: WorkflowSuggestionRequestRow) -> None:
     row.error_code = None
 
 
+@dataclass(frozen=True)
+class ExpiredSuggestion:
+    """Minimal committed-transition metadata for one expired suggestion row.
+
+    Exposes only the row ID and the stored trace context so the caller can
+    emit one `suggestion.expire` span per row under its own lineage. No
+    user content, fingerprints, or task bodies travel here. A None
+    `trace_parent` marks a legacy/context-less row, which remains valid and
+    is traced under the sweep exchange instead.
+    """
+
+    suggestion_id: int
+    trace_parent: str | None = None
+
+
 def expire_suggestions(session: Session) -> int:
+    """Expire past-due pending cloud rows; returns the expired count."""
+    return len(expire_suggestions_with_context(session))
+
+
+def expire_suggestions_with_context(session: Session) -> list[ExpiredSuggestion]:
     # One bounded sweep: at most SUGGESTION_EXPIRE_BATCH_LIMIT pending cloud
     # rows past either database-clock expiry become failed/timeout. No
     # provider or cloud call runs inside this transaction.
@@ -754,8 +774,8 @@ def expire_suggestions(session: Session) -> int:
                 .limit(SUGGESTION_EXPIRE_BATCH_LIMIT)
             )
         )
-        expired = 0
-        for row_id in candidate_ids:
+        expired: list[ExpiredSuggestion] = []
+        for row_id in candidate_ids: 
             target = session.execute(
                 select(
                     WorkflowSuggestionRequestRow.owner_id,
@@ -795,7 +815,11 @@ def expire_suggestions(session: Session) -> int:
             ):
                 continue
             _fail_row(row)
-            expired += 1
+            expired.append(
+                ExpiredSuggestion(
+                    suggestion_id=row.id, trace_parent=row.trace_parent
+                )
+            )
         return expired
 
 

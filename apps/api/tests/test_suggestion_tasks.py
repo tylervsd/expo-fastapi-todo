@@ -939,3 +939,85 @@ def test_api_to_worker_waterfall_shares_one_trace(
         assert parent_id(child) == first_process_id, name
     for span in waterfall:
         assert dict(span.attributes or {}).get("suggestion_id") in (None,) or True
+
+
+def test_cloud_replay_enqueue_span_links_to_stored_trace(
+    database_session: Session, session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same-ID replay keeps its own request parent and links to stored trace.
+
+    The replay POST arrives on another trace (INCOMING_B) while the stored
+    row context names the original trace (INCOMING_A). The replay's
+    `cloudtasks.enqueue` span stays parented under the replay API exchange
+    and carries one link to the validated stored context.
+    """
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    from app.main import create_app
+
+    del database_session
+    monkeypatch.setenv("TRACE_SAMPLE_RATE", "1.0")
+    use_cloud_env(monkeypatch)
+    sink: InMemorySpanExporter = InMemorySpanExporter()
+    enqueue = FakeEnqueue(session_factory)
+    api_app = create_app(
+        session_factory,
+        suggestion_callable=failing_provider,  # type: ignore[arg-type]
+        enqueue_callable=enqueue,  # type: ignore[arg-type]
+    )
+    api_app.state.tracing_exporter = sink
+    with TestClient(api_app) as client:
+        headers = auth_headers(client)
+        body = start_collecting(client, headers)
+        request_id = uuid4()
+        payload = {
+            "request_id": str(request_id),
+            "expected_revision": body["revision"],
+            "step_id": body["view"]["step_id"],
+        }
+        first = client.post(
+            f"/todo-workflows/{body['workflow_id']}/suggestions",
+            json=payload,
+            headers={**headers, "traceparent": INCOMING_A},
+        )
+        assert first.status_code == 202
+        second = client.post(
+            f"/todo-workflows/{body['workflow_id']}/suggestions",
+            json=payload,
+            headers={**headers, "traceparent": INCOMING_B},
+        )
+        assert second.status_code == 202
+        api_app.state.tracing_state.flush()
+    assert len(enqueue.calls) == 2
+    _suggestion_id, _fingerprint, stored_tp = enqueue.calls[0]
+    assert isinstance(stored_tp, str)
+    stored_trace_id = stored_tp.split("-")[1]
+    assert stored_trace_id == INCOMING_A.split("-")[1]
+
+    spans = list(sink.get_finished_spans())
+    enqueues = sorted(
+        [span for span in spans if span.name == "cloudtasks.enqueue"],
+        key=lambda span: span.start_time,
+    )
+    assert len(enqueues) == 2
+    replay_spans = [
+        span for span in spans
+        if format(span.get_span_context().trace_id, "032x") == INCOMING_B.split("-")[1]
+    ]
+    replay_api = next(
+        span for span in replay_spans
+        if span.name == "POST /todo-workflows/{workflow_id}/suggestions"
+    )
+    (replay_enqueue,) = [
+        span for span in enqueues
+        if format(span.get_span_context().trace_id, "032x") == INCOMING_B.split("-")[1]
+    ]
+    # The replay request stays the parent: no reparenting onto stored trace.
+    assert replay_enqueue.parent is not None
+    assert replay_enqueue.parent.span_id == replay_api.get_span_context().span_id
+    # ... while one link names the validated stored context.
+    assert replay_enqueue.links is not None and len(replay_enqueue.links) == 1
+    assert format(replay_enqueue.links[0].context.trace_id, "032x") == stored_trace_id

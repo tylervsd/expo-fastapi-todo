@@ -1766,3 +1766,115 @@ def test_worker_modified_standard_header_falls_back_to_app_header(
     assert format(process.get_span_context().trace_id, "032x") == (
         STORED_TRACE.split("-")[1]
     )
+
+
+def test_expire_emits_per_suggestion_span_under_stored_context(
+    database_session: Session, session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each expired traced row gets a `suggestion.expire` span in its trace.
+
+    The span is parented under the validated stored context and linked to
+    the separate Scheduler sweep trace (the expire POST exchange).
+    """
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    del database_session
+    sink: InMemorySpanExporter = InMemorySpanExporter()
+    provider = RecordingProvider()
+    suggestion_id = reserve_traced_for_worker(session_factory)
+    with session_factory() as session:
+        session.execute(
+            text(
+                "UPDATE todo_workflow_suggestion_requests "
+                "SET queued_at = now() - interval '20 minutes', "
+                "expires_at = now() - interval '5 minutes' "
+                "WHERE id = :id"
+            ),
+            {"id": suggestion_id},
+        )
+        session.commit()
+    with worker_client_with_sink(
+        session_factory, provider, sink, monkeypatch
+    ) as client:
+        response = client.post("/internal/suggestions/expire", json={})
+        assert response.status_code == 200
+        assert response.json() == {"expired": 1}
+        client.app.state.tracing_state.flush()
+    assert row_status(session_factory, suggestion_id) == (
+        SuggestionStatus.FAILED.value,
+        SuggestionErrorCode.TIMEOUT.value,
+    )
+    assert provider.calls == []
+    spans = finished_spans(sink)
+    by_name = spans_by_name(spans)
+    assert "suggestion.expire" in by_name, sorted(by_name)
+    (expire_span,) = by_name["suggestion.expire"]
+    stored_trace_id = STORED_TRACE.split("-")[1]
+    assert format(expire_span.get_span_context().trace_id, "032x") == stored_trace_id
+    assert dict(expire_span.attributes or {}).get("suggestion_id") == suggestion_id
+    sweep = next(
+        span for span in spans
+        if span.name == "POST /internal/suggestions/expire"
+    )
+    sweep_trace_id = format(sweep.get_span_context().trace_id, "032x")
+    assert sweep_trace_id != stored_trace_id
+    # Linked to the separate Scheduler sweep trace, never merged into it.
+    assert expire_span.links is not None and len(expire_span.links) == 1
+    assert (
+        format(expire_span.links[0].context.trace_id, "032x") == sweep_trace_id
+    )
+
+
+def test_expire_legacy_null_row_span_stays_valid_in_sweep_trace(
+    database_session: Session, session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Expired rows without stored context still expire with a sweep span."""
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    del database_session
+    sink: InMemorySpanExporter = InMemorySpanExporter()
+    provider = RecordingProvider()
+    suggestion_id = reserve_for_worker(session_factory)
+    with session_factory() as session:
+        session.execute(
+            text(
+                "UPDATE todo_workflow_suggestion_requests "
+                "SET queued_at = now() - interval '20 minutes', "
+                "expires_at = now() - interval '5 minutes' "
+                "WHERE id = :id"
+            ),
+            {"id": suggestion_id},
+        )
+        session.commit()
+    with worker_client_with_sink(
+        session_factory, provider, sink, monkeypatch
+    ) as client:
+        response = client.post("/internal/suggestions/expire", json={})
+        assert response.status_code == 200
+        assert response.json() == {"expired": 1}
+        client.app.state.tracing_state.flush()
+    assert row_status(session_factory, suggestion_id) == (
+        SuggestionStatus.FAILED.value,
+        SuggestionErrorCode.TIMEOUT.value,
+    )
+    spans = finished_spans(sink)
+    by_name = spans_by_name(spans)
+    assert "suggestion.expire" in by_name, sorted(by_name)
+    (expire_span,) = by_name["suggestion.expire"]
+    sweep = next(
+        span for span in spans
+        if span.name == "POST /internal/suggestions/expire"
+    )
+    sweep_trace_id = format(sweep.get_span_context().trace_id, "032x")
+    assert (
+        format(expire_span.get_span_context().trace_id, "032x") == sweep_trace_id
+    )
+    assert expire_span.parent is not None
+    assert expire_span.parent.span_id == sweep.get_span_context().span_id
+    assert dict(expire_span.attributes or {}).get("suggestion_id") == suggestion_id
