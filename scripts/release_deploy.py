@@ -19,6 +19,7 @@ Runner loss or forced cancellation between mutations needs the manual
 rollback runbook; only the release workflow's own steps are handled here.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -114,6 +115,16 @@ def _revision_image(revision, candidate):
         return None
 
 
+def _traffic_tag(service, release):
+    """Cloud Run limits the combined service and traffic tag to 46 characters."""
+    if len(service) + len(release) <= 46:
+        return release
+    tag = "r" + hashlib.sha256(release.encode()).hexdigest()[:12]
+    if len(service) + len(tag) > 46:
+        raise RuntimeError(f"service name too long for release traffic tag: {service}")
+    return tag
+
+
 def _tag_url(service, tag, revision):
     try:
         traffic = service["status"]["traffic"]
@@ -196,6 +207,7 @@ def deploy(image: str, previous: str) -> None:
         candidate = f"{service}-{release}"
         if len(candidate) > 63:
             raise RuntimeError(f"candidate revision name too long: {candidate}")
+        tags = {name: _traffic_tag(name, release) for name in (service, worker_service) if name}
         described = cloud("run", "services", "describe", service)
         observed = serving_revision(described)
         if observed != previous:
@@ -227,7 +239,7 @@ def deploy(image: str, previous: str) -> None:
                 worker_service,
                 "--image=" + image,
                 "--revision-suffix=" + release,
-                "--tag=" + release,
+                "--tag=" + tags[worker_service],
                 "--no-traffic",
             )
             worker_revision = cloud(
@@ -242,7 +254,7 @@ def deploy(image: str, previous: str) -> None:
             if worker_observed != worker_previous:
                 raise RuntimeError("worker traffic moved before candidate smoke")
             worker_tag_url = _tag_url(
-                worker_described, release, worker_candidate
+                worker_described, tags[worker_service], worker_candidate
             )
             try:
                 smoke_worker(worker_tag_url, worker_stable_url, invoker)
@@ -284,7 +296,7 @@ def deploy(image: str, previous: str) -> None:
             service,
             "--image=" + image,
             "--revision-suffix=" + release,
-            "--tag=" + release,
+            "--tag=" + tags[service],
             "--no-traffic",
         )
         revision = cloud("run", "revisions", "describe", candidate)
@@ -294,7 +306,7 @@ def deploy(image: str, previous: str) -> None:
         observed = serving_revision(described)
         if observed != previous:
             raise RuntimeError("traffic moved before candidate smoke")
-        tag_url = _tag_url(described, release, candidate)
+        tag_url = _tag_url(described, tags[service], candidate)
         try:
             smoke(tag_url)
             candidate_smoke = "passed"
@@ -398,7 +410,7 @@ def deploy(image: str, previous: str) -> None:
                     "services",
                     "update-traffic",
                     tag_service,
-                    "--remove-tags=" + release,
+                    "--remove-tags=" + tags[tag_service],
                 )
             except Exception as exc:  # noqa: BLE001 - cleanup must not raise
                 cleanup_note = f"cleanup failed: {exc}"

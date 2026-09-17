@@ -252,8 +252,16 @@ First activation ships the compatible image **without** activating cloud mode.
    TASK_INVOKER_SERVICE_ACCOUNT  = "<invoker-sa-email>"
    ```
 
-   Plan and apply the reviewed configuration. This apply creates the API
-   configuration revision and enables enqueue; the queue remains paused.
+   Set `api.runtime.revision = null` in local tfvars so Cloud Run generates a
+   fresh revision name; an existing release revision is immutable. Temporarily
+   remove `template[0].revision` from the API resource's `ignore_changes` in
+   `infra/terraform/sandbox/run.tf`, then plan and apply as shown below.
+   Immediately after apply, restore that ignore entry before further Terraform
+   work or releases. Do not commit the temporary lifecycle edit.
+
+   The apply creates the API configuration revision. Terraform preserves
+   existing traffic, so explicitly route traffic to the verified new revision
+   below to enable enqueue; the queue stays paused.
    GitHub variables alone do not configure the API container: `release.yml`
    consumes only the two worker release variables below.
 
@@ -261,9 +269,22 @@ First activation ships the compatible image **without** activating cloud mode.
    terraform -chdir=infra/terraform/sandbox plan -out=/tmp/sandbox-phase20-activate.tfplan
    # Inspect stable configuration, image preservation, and traffic before apply.
    terraform -chdir=infra/terraform/sandbox apply /tmp/sandbox-phase20-activate.tfplan
+   # NOW restore template[0].revision in the API resource's ignore_changes.
+   # Then verify no API revision drift before proceeding:
+   terraform -chdir=infra/terraform/sandbox plan -input=false
    gcloud run services describe "$CLOUD_SERVICE" \
      --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
      --format='yaml(spec.template.spec.containers[0].env)'
+   API_REVISION=$(gcloud run services describe "$CLOUD_SERVICE" \
+     --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
+     --format='value(status.latestCreatedRevisionName)')
+   gcloud run revisions describe "$API_REVISION" \
+     --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
+     --format='yaml(status.conditions,spec.containers)'
+   # Verify readiness, the six settings, and the unchanged image before routing.
+   gcloud run services update-traffic "$CLOUD_SERVICE" \
+     --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
+     --to-revisions="$API_REVISION=100"
    gh variable set CLOUD_WORKER_SERVICE --env sandbox --body "$WORKER_SERVICE"
    gh variable set CLOUD_TASK_INVOKER_SERVICE_ACCOUNT --env sandbox --body "$INVOKER_SA"
    gh variable list --env sandbox
