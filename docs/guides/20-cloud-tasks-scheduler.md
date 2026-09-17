@@ -257,7 +257,9 @@ First activation ships the compatible image **without** activating cloud mode.
    remove `template[0].revision` from the API resource's `ignore_changes` in
    `infra/terraform/sandbox/run.tf` for this configuration apply. Restore that
    entry immediately afterward, before subsequent plans or releases, so
-   Terraform continues to ignore release-owned revision names. Plan and
+   Terraform continues to ignore release-owned revision names. Do not commit
+   the temporary lifecycle edit. After restoring it, run a follow-up plan and
+   verify there is no API revision drift. Plan and
    apply the reviewed configuration. This creates the API configuration
    revision. Terraform preserves existing traffic, so explicitly route traffic
    to the verified new revision below to enable enqueue; the queue stays paused.
