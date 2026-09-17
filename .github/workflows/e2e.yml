@@ -116,7 +116,8 @@ jobs:
           "$PGBIN/psql" -h 127.0.0.1 -p 5434 -U todo_e2e -d todo_e2e -tAc 'SELECT version();'
       - name: Install Maestro 2.10.0 (requires java on PATH first)
         run: |
-          export JAVA_HOME="$(/usr/libexec/java_home -v 17)"
+          JAVA_HOME="$(/usr/libexec/java_home -v 17)"
+          export JAVA_HOME
           echo "JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
           echo "$JAVA_HOME/bin" >> "$GITHUB_PATH"
           export PATH="$JAVA_HOME/bin:$PATH"

@@ -104,38 +104,56 @@ First activation ships the compatible image **without** activating cloud mode.
 > ```sh
 > export CLOUD_PROJECT="<sandbox-project-id>"
 > export CLOUD_REGION="<sandbox-region>"          # Cloud Run + Scheduler location
-> export CLOUD_TASKS_LOCATION="<tasks-location>"  # usually the same region
+> export CLOUD_TASKS_LOCATION="<tasks-location>"  # same region as var.region
 > export CLOUD_TASKS_QUEUE="<suggestions-queue>"   # var.async_suggestions.queue_name
 > export SCHEDULER_JOB="<suggestion-expiry-job>"   # var.async_suggestions.scheduler_name
-> export CLOUD_SERVICE="<api-service-name>"        # var.api.service_name
+> export CLOUD_SERVICE="<api-service-name>"        # var.api.name
 > export WORKER_SERVICE="<phase20-worker-name>"    # var.async_suggestions.worker_name
 > export INVOKER_SA="<invoker-sa-email>"           # output suggestion_invoker_email
 > export WORKER_URL="https://<worker-host>.run.app" # output suggestion_worker_uri (bare origin)
 > export IMAGE_DIGEST="<registry-path>@sha256:<64-hex>"  # verified compatible image
 > ```
 
-1. Build and verify one Phase 20-compatible image. Confirm the worker entry
-   point inside the built container, and record the immutable digest
-   (expected: import succeeds, digest ends in `@sha256:<64-hex>`):
+1. Verify Terraform and workflows before merging. The local checks passed on
+   2026-09-16 with Terraform 1.14.7 (21 mock tests) and actionlint 1.7.12.
+   If `actionlint` is missing, install it with `brew install actionlint`.
+   Terraform installation is documented in `infra/terraform/README.md`.
 
    ```sh
-   docker exec <container> python -c 'import app.worker'
-   docker inspect --format='{{index .RepoDigests 0}}' <local-image-tag>
+   terraform -chdir=infra/terraform/sandbox init -backend=false -lockfile=readonly
+   terraform -chdir=infra/terraform/sandbox validate
+   terraform -chdir=infra/terraform/sandbox test
+   actionlint .github/workflows/*.yml
    ```
 
-2. Deploy the verified digest with inline mode still active (`SUGGESTION_EXECUTION` unset or
-   `inline`) and no worker release target. Drain legacy inline requests
-   (expected: service serves the digest, no `CLOUD_WORKER_SERVICE` set):
+   Review and merge the Phase 20 PR to `main` after the required checks pass.
+   Before merging, verify API `SUGGESTION_EXECUTION` is unset or `inline` and
+   both worker release variables are absent at repository and `sandbox`
+   environment scope. Preserve the existing Phase 19 delivery configuration.
 
    ```sh
-   gcloud run deploy "$CLOUD_SERVICE" \
-     --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
-     --image="$IMAGE_DIGEST"
-   gcloud run services describe "$CLOUD_SERVICE" \
-     --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
-     --format='value(spec.template.spec.containers[0].image)'  # expect $IMAGE_DIGEST
-   gh variable list | grep -E 'CLOUD_WORKER_SERVICE|DELIVERY_ENABLED'
+   gh variable list
+   gh variable list --env sandbox
    ```
+
+2. Use the Phase 19 release workflow to build and deploy the first compatible
+   image in inline mode. The merge-triggered release can satisfy this step;
+   dispatch manually only if another run is needed. Approve its sandbox
+   environment deployment and wait for success. This runs the migration job
+   with the same digest before deploying the API; a direct `gcloud run deploy`
+   alone does not perform that migration.
+
+   ```sh
+   gh run list --workflow release.yml
+   # Only if a release is needed and DELIVERY_ENABLED is true:
+   gh workflow run release.yml --ref main
+   ```
+
+   Record `IMAGE_DIGEST` from the successful release summary. Verify migration
+   `2026091501` completed, the API serves that digest, and inline suggestions
+   still work. Drain active inline requests before cloud-mode activation.
+   Run remaining local commands from the Phase 20 worktree containing the
+   reviewed implementation.
 
 3. Pause delivery with the Guide 19 process (`DELIVERY_ENABLED=false`,
    disable `release.yml`, inspect runs; never cancel an active mutation to
@@ -149,15 +167,12 @@ First activation ships the compatible image **without** activating cloud mode.
    # Wait for the active deployment to finish; cancel only identified pending runs.
    ```
 
-4. Apply the reviewed Terraform locally with the verified image digest.
-   Only the worker image is Terraform-owned (`async_suggestions.worker_image`
-   must be an immutable digest); the API service image stays release-owned
-   (deployed in step 2) under `ignore_changes`. Set the worker image to the
-   verified digest in the local reviewed (uncommitted) tfvars, then plan to a
-   file, confirm the digest is in the plan, and apply that exact plan.
-   This `$IMAGE_DIGEST` proves the infrastructure path; step 9's release
-   builds its own image from `main`, and that workflow-produced digest becomes
-   the single canonical verified digest (API + worker + reconciled Terraform).
+4. Apply the reviewed Terraform locally with `async_suggestions.worker_image`
+   set to the step 2 release digest in uncommitted tfvars. This seeds the new
+   worker with compatible code. Both API and worker images are release-owned
+   after creation (`ignore_changes`); Terraform owns their stable configuration.
+   Keep API execution inline and `async_suggestions.scheduler_paused = true`.
+   Include Cloud Tasks and Scheduler APIs in the existing `enabled_services`.
    Expected: plan shows only the reviewed async additions with `$IMAGE_DIGEST`
    as the worker image; apply succeeds:
 
@@ -171,6 +186,12 @@ First activation ships the compatible image **without** activating cloud mode.
    terraform -chdir=infra/terraform/sandbox output suggestion_queue_name
    terraform -chdir=infra/terraform/sandbox output suggestion_worker_uri
    terraform -chdir=infra/terraform/sandbox output suggestion_invoker_email
+   # The new queue starts running. Pause it before enabling cloud enqueue.
+   gcloud tasks queues pause "$CLOUD_TASKS_QUEUE" \
+     --project="$CLOUD_PROJECT" --location="$CLOUD_TASKS_LOCATION"
+   gcloud tasks queues describe "$CLOUD_TASKS_QUEUE" \
+     --project="$CLOUD_PROJECT" --location="$CLOUD_TASKS_LOCATION" \
+     --format='value(state)'  # expect PAUSED
    ```
 
 5. Verify IAM: no `allUsers`/`allAuthenticatedUsers` on the worker; the
@@ -195,10 +216,10 @@ First activation ships the compatible image **without** activating cloud mode.
 6. Smoke private invocation with a short-lived ID token from the invocation
    account against the canonical `run.app` root audience (never reuse an
    OAuth access token; mask the token; include the email claim).
-   Expected: `/health` returns `{"status": "ok"`; unauthenticated call fails:
+   Expected: `/health` returns `{"status": "ok"}`; unauthenticated call fails:
 
    ```sh
-   TOKEN=$(gcloud auth print-identity-token --impersonate-service-account="$INVOKER_SA" --audiences="$WORKER_URL")
+   TOKEN=$(gcloud auth print-identity-token --impersonate-service-account="$INVOKER_SA" --audiences="$WORKER_URL" --include-email)
    curl -sS -H "Authorization: Bearer $TOKEN" "$WORKER_URL/health"
    unset TOKEN
    curl -sS -o /dev/null -w '%{http_code}\n' "$WORKER_URL/health"  # expect 401/403
@@ -209,84 +230,83 @@ First activation ships the compatible image **without** activating cloud mode.
    Expected: `{"status": "ready"}` (or `ok`) and a JSON expired count:
 
    ```sh
-   TOKEN=$(gcloud auth print-identity-token --impersonate-service-account="$INVOKER_SA" --audiences="$WORKER_URL")
+   TOKEN=$(gcloud auth print-identity-token --impersonate-service-account="$INVOKER_SA" --audiences="$WORKER_URL" --include-email)
    curl -sS -H "Authorization: Bearer $TOKEN" "$WORKER_URL/ready"
    curl -sS -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
      -d '{}' "$WORKER_URL/internal/suggestions/expire"
    unset TOKEN
    ```
 
-8. Set cloud-mode API configuration (`SUGGESTION_EXECUTION=cloud_tasks`,
-   `GOOGLE_CLOUD_PROJECT`, `CLOUD_TASKS_LOCATION`, `CLOUD_TASKS_QUEUE`,
-   `SUGGESTION_WORKER_URL` as a bare `https://<host>.run.app` origin,
-   `TASK_INVOKER_SERVICE_ACCOUNT`) and the worker release variables
-   (`CLOUD_WORKER_SERVICE`, `CLOUD_TASK_INVOKER_SERVICE_ACCOUNT`).
-   Expected: each variable echoes back the intended value before any release:
+8. With delivery, queue, and Scheduler paused, add the cloud-mode values to
+   the existing `api.plain_env` map in local uncommitted Terraform values.
+   Preserve existing entries such as `OPENROUTER_MODEL`. Replace the example
+   values below with the observed project and Terraform outputs:
 
-   ```sh
-   gh variable set SUGGESTION_EXECUTION --body cloud_tasks
-   gh variable set GOOGLE_CLOUD_PROJECT --body "$CLOUD_PROJECT"
-   gh variable set CLOUD_TASKS_LOCATION --body "$CLOUD_TASKS_LOCATION"
-   gh variable set CLOUD_TASKS_QUEUE --body "$CLOUD_TASKS_QUEUE"
-   gh variable set SUGGESTION_WORKER_URL --body "$WORKER_URL"
-   gh variable set TASK_INVOKER_SERVICE_ACCOUNT --body "$INVOKER_SA"
-   gh variable set CLOUD_WORKER_SERVICE --body "$WORKER_SERVICE"
-   gh variable set CLOUD_TASK_INVOKER_SERVICE_ACCOUNT --body "$INVOKER_SA"
-   gh variable list | grep -E 'SUGGESTION|CLOUD_TASKS|CLOUD_WORKER|TASK_INVOKER|GOOGLE_CLOUD'
+   ```hcl
+   # Entries to add to the existing api.plain_env map:
+   SUGGESTION_EXECUTION          = "cloud_tasks"
+   GOOGLE_CLOUD_PROJECT          = "<sandbox-project-id>"
+   CLOUD_TASKS_LOCATION          = "<sandbox-region>"
+   CLOUD_TASKS_QUEUE             = "<suggestions-queue>"
+   SUGGESTION_WORKER_URL          = "https://<worker-host>.run.app"
+   TASK_INVOKER_SERVICE_ACCOUNT  = "<invoker-sa-email>"
    ```
 
-9. Re-enable delivery, then release the cloud-mode configuration set in step 8
-   (variables take effect on the next release: the workflow builds, scans, and
-   deploys one image from `main` to the worker first, then the API — see
-   [Guide 19 activation](19-continuous-delivery.md#activate-delivery)).
-   The deploy job only runs when `DELIVERY_ENABLED == 'true'`, so re-enable
-   before dispatching; keep the queue and Scheduler paused through release and
-   queued-task verification, then resume the queue so the disposable task can
-   dispatch, and resume Scheduler only after the worker claim is verified.
-   The workflow-produced digest — not the step 1
-   `$IMAGE_DIGEST` — is the single canonical verified digest for API + worker +
-   Terraform: capture it from the release summary, confirm both services serve
-   it, and reconcile the Terraform worker image to it. Only then test enqueue
-   on a disposable sandbox workflow. Expected: the release summary shows API +
-   worker both serving the same workflow-produced digest; the disposable
-   reservation leaves `queued` state and the worker log shows one claim;
-   resume the queue after queued-task verification so dispatch can occur, and
-   flip Scheduler to enabled only after the claim check passes:
+   Plan and apply the reviewed configuration. This apply creates the API
+   configuration revision and enables enqueue; the queue remains paused.
+   GitHub variables alone do not configure the API container: `release.yml`
+   consumes only the two worker release variables below.
+
+   ```sh
+   terraform -chdir=infra/terraform/sandbox plan -out=/tmp/sandbox-phase20-activate.tfplan
+   # Inspect stable configuration, image preservation, and traffic before apply.
+   terraform -chdir=infra/terraform/sandbox apply /tmp/sandbox-phase20-activate.tfplan
+   gcloud run services describe "$CLOUD_SERVICE" \
+     --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
+     --format='yaml(spec.template.spec.containers[0].env)'
+   gh variable set CLOUD_WORKER_SERVICE --env sandbox --body "$WORKER_SERVICE"
+   gh variable set CLOUD_TASK_INVOKER_SERVICE_ACCOUNT --env sandbox --body "$INVOKER_SA"
+   gh variable list --env sandbox
+   ```
+
+   Verify the intended API revision is serving and the six non-secret settings
+   above are correct. Do not copy secret values into output or acceptance records.
+
+9. Re-enable delivery and run the two-service release. The workflow builds one
+   image from `main`, runs migrations, then deploys worker and API with that
+   same digest. It preserves the API configuration applied in step 8.
+   Keep queue and Scheduler paused throughout the release.
 
    ```sh
    gh workflow enable release.yml
    gh variable set DELIVERY_ENABLED --body true
-   gh variable list | grep -E 'DELIVERY_ENABLED'
    gh workflow run release.yml --ref main
-   # Approve the sandbox environment prompt; wait for success.
+   # Approve the sandbox deployment and wait for a successful release.
    gh run list --workflow release.yml
-   # Capture the canonical digest from the release summary (`digest:` line).
-   RELEASE_DIGEST="<registry-path>@sha256:<64-hex>"  # copy from the release summary
-   gcloud run services describe "$CLOUD_SERVICE" \
-     --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
-     --format='value(spec.template.spec.containers[0].image)'  # expect $RELEASE_DIGEST
-   gcloud run services describe "$WORKER_SERVICE" \
-     --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
-     --format='value(spec.template.spec.containers[0].image)'  # expect $RELEASE_DIGEST
-   # Reconcile Terraform when the canonical digest differs from the step 4
-   # digest: set async_suggestions.worker_image to $RELEASE_DIGEST in the local
-   # reviewed tfvars, re-plan to a file, grep the digest, apply that exact planfile.
-   # Submit one disposable suggestion request through the app, then watch it:
-   # 1. Verify the queued task exists while the queue is still paused.
+   ```
+
+   Record the new digest and both serving revisions from the release summary.
+   Update the local `async_suggestions.worker_image` value to this digest for
+   future provisioning. The image is ignored on existing resources; this update
+   does not require an apply just to reconcile release-owned image changes.
+   Verify observed traffic and revision image digests for both services.
+
+   Submit one disposable suggestion through the app, verify the task is queued,
+   then resume promptly (the pending reservation expires after 15 minutes):
+
+   ```sh
    gcloud tasks list --queue="$CLOUD_TASKS_QUEUE" \
      --project="$CLOUD_PROJECT" --location="$CLOUD_TASKS_LOCATION"
-   # 2. Resume the queue so the paused task can dispatch (a paused queue
-   #    cannot dispatch, so no worker claim can occur before this step).
    gcloud tasks queues resume "$CLOUD_TASKS_QUEUE" \
      --project="$CLOUD_PROJECT" --location="$CLOUD_TASKS_LOCATION"
-   # 3. Verify the worker claim after dispatch.
-   gcloud logging read 'resource.type="cloud_run_revision" AND textPayload:"suggestion"' \
-     --project="$CLOUD_PROJECT" --freshness=30m --limit=20
-   # 4. Resume Scheduler only after the claim is verified; keep it paused
-   #    until then.
-   gcloud scheduler jobs resume "$SCHEDULER_JOB" \
-     --project="$CLOUD_PROJECT" --location="$CLOUD_REGION"
    ```
+
+   Verify the saved result in the app and the worker execution evidence. Enable
+   Scheduler only after worker and cleanup checks pass: pause delivery again
+   using step 3, set `async_suggestions.scheduler_paused = false` in local
+   tfvars, review/apply a new saved plan, and confirm Scheduler is enabled.
+   This keeps the schedule's enabled state consistent with Terraform. Resume
+   delivery afterward and record the final no-drift plan.
 
    Startup fails on unknown mode or incomplete cloud config; cloud mode
    never falls back to inline on enqueue error.
@@ -371,7 +391,9 @@ gcloud tasks describe "<task-full-name>" \
 gcloud tasks delete "<task-full-name>" \
   --queue="$CLOUD_TASKS_QUEUE" \
   --project="$CLOUD_PROJECT" --location="$CLOUD_TASKS_LOCATION"
-``` Queue exhaustion has no application callback or
+```
+
+Queue exhaustion has no application callback or
 dead-letter queue; Scheduler expiry (`failed/timeout`) is the eventual
 database transition.
 
@@ -428,7 +450,7 @@ revisions with only this release's tags removed:
 #    (provider_started_at set) must not be re-driven by hand.
 gcloud logging read 'resource.type="cloud_run_revision" AND textPayload:"suggestion"' \
   --project="$CLOUD_PROJECT" --freshness=2h --limit=50
-TOKEN=$(gcloud auth print-identity-token --impersonate-service-account="$INVOKER_SA" --audiences="$WORKER_URL")
+TOKEN=$(gcloud auth print-identity-token --impersonate-service-account="$INVOKER_SA" --audiences="$WORKER_URL" --include-email)
 curl -sS -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{}' "$WORKER_URL/internal/suggestions/expire"
 unset TOKEN
@@ -445,7 +467,7 @@ gcloud run services update-traffic "$WORKER_SERVICE" \
   --to-revisions="$WORKER_PREVIOUS=100"
 # 2. Verify each with its smoke (API stable URL, worker authenticated probes).
 python3 scripts/release_smoke.py "$STABLE_URL"
-TOKEN=$(gcloud auth print-identity-token --impersonate-service-account="$INVOKER_SA" --audiences="$WORKER_URL")
+TOKEN=$(gcloud auth print-identity-token --impersonate-service-account="$INVOKER_SA" --audiences="$WORKER_URL" --include-email)
 curl -sS -H "Authorization: Bearer $TOKEN" "$WORKER_URL/health"
 curl -sS -H "Authorization: Bearer $TOKEN" "$WORKER_URL/ready"
 unset TOKEN
@@ -476,17 +498,21 @@ gcloud scheduler jobs pause "$SCHEDULER_JOB" \
   --project="$CLOUD_PROJECT" --location="$CLOUD_REGION"
 # Drain or expire outstanding work: run the expire sweep with a worker token,
 # or wait out the 15-minute pending lifetime, then confirm the queue is empty.
-TOKEN=$(gcloud auth print-identity-token --impersonate-service-account="$INVOKER_SA" --audiences="$WORKER_URL")
+TOKEN=$(gcloud auth print-identity-token --impersonate-service-account="$INVOKER_SA" --audiences="$WORKER_URL" --include-email)
 curl -sS -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{}' "$WORKER_URL/internal/suggestions/expire"
 unset TOKEN
 gcloud tasks list --queue="$CLOUD_TASKS_QUEUE" \
   --project="$CLOUD_PROJECT" --location="$CLOUD_TASKS_LOCATION"
 # Disable cloud enqueue and restore the inline stable configuration.
-gh variable set SUGGESTION_EXECUTION --body inline
-gh variable delete CLOUD_WORKER_SERVICE || true
-gh variable delete CLOUD_TASK_INVOKER_SERVICE_ACCOUNT || true
-gh variable list | grep -E 'SUGGESTION_EXECUTION|CLOUD_WORKER_SERVICE|DELIVERY_ENABLED'
+# In local tfvars, set api.plain_env.SUGGESTION_EXECUTION = "inline".
+# Preserve the other existing runtime settings; review/apply the saved plan.
+terraform -chdir=infra/terraform/sandbox plan -out=/tmp/sandbox-phase20-inline.tfplan
+terraform -chdir=infra/terraform/sandbox apply /tmp/sandbox-phase20-inline.tfplan
+# Delete these at their configured scope (sandbox in this bootstrap).
+gh variable delete CLOUD_WORKER_SERVICE --env sandbox
+gh variable delete CLOUD_TASK_INVOKER_SERVICE_ACCOUNT --env sandbox
+gh variable list --env sandbox
 ```
 
 ## Acceptance record

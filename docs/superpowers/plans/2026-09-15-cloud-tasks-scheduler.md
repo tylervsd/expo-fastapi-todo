@@ -507,8 +507,10 @@ observed. No cloud provisioning or paid calls are implied by finishing code task
 - [x] **5. Run integrated verification once.** (Done 2026-09-16: `pnpm quality` passed
   end-to-end; `pnpm test:release` 57 passed; `pnpm test:pages` passed;
   `pnpm typecheck:e2e` clean; `pnpm test:e2e:web` 4 passed; `git diff --check` clean.
-  `terraform validate/test` and `actionlint` not run — binaries unavailable, recorded
-  as gaps.) Start the repository's local test
+  `terraform validate/test` and `actionlint` were initially unavailable.
+  Follow-up on 2026-09-16: Terraform 1.14.7 validation passed, all 21 mock
+  tests passed, and actionlint 1.7.12 passed after separating JAVA_HOME assignment
+  from export in the iOS workflow.) Start the repository's local test
   database with its documented environment, then:
 
 ```sh
