@@ -221,13 +221,14 @@ Phases 7-9 build one guided-todo creation feature to teach backend-owned state t
 
 ## 21. Observability, alerts, and cost control
 
-- **Learning goal:** Diagnose deployed behavior and cost using signals that preserve user privacy.
-- **Visible outcome:** A learner can follow one request and async task through structured logs, inspect Cloud Run/Cloud SQL/Cloud Tasks metrics, respond to an error or backlog alert, and explain current cloud and AI spend.
-- **New technology/pattern:** Cloud Logging, Cloud Monitoring, Error Reporting, trace correlation, dashboards, service-level indicators, log-based metrics, alerts, retention, redaction, quotas, budgets, and provider usage/cost diagnostics.
-- **Verification emphasis:** Synthetic failures, alert delivery tests, dashboard queries, redaction assertions, task-backlog and database-connection alerts, and a cost-review checklist.
-- **Learning experiment:** Inject one traceable suggestion failure, locate it without searching for user content, correlate API and task events, and verify the alert links to a useful runbook.
-- **Non-goals:** A commercial observability platform, logging prompts or todo titles by default, exhaustive SRE policy, multi-region SLOs, and vanity dashboards.
-- **Spec gate:** Approve signal names, correlation identifiers, sensitive-field rules, retention, alert thresholds and recipients, service objectives, provider quota/cost reporting, and runbooks.
+- **Learning goal:** Diagnose deployed behavior across service boundaries using signals that preserve user privacy.
+- **Visible outcome:** A learner opens one Cloud Trace waterfall covering a suggestion's API request, database operations, task enqueue, worker, provider call, and saved result; responds to operational alerts; and reviews existing cloud/provider cost controls.
+- **New technology/pattern:** OpenTelemetry spans, durable W3C trace context, asynchronous parent relationships and links, sampling, bounded export, Cloud Trace, Cloud Logging, Cloud Monitoring, Error Reporting, dashboards, log-based metrics, retention, redaction, and budgets.
+- **Verification emphasis:** Cross-process trace continuity, duplicate/retry span identities, queue delay, span/log privacy, export under Cloud Run CPU constraints, synthetic failures, delivered alerts, database-connection/backlog alerts, and cost/retention review.
+- **Learning experiment:** Follow a suggestion in one application waterfall, then inject a traceable failure and use the alert's trace/log/runbook links to diagnose and recover.
+- **Non-goals:** AI token/cost accounting or per-user analytics (Phase 26/28), daily quota enforcement (separate future decision), frontend RUM, managed-service internal spans, logging user content, commercial observability platforms, exhaustive SRE policy, and multi-region SLOs.
+- **Spec gate:** Approve span/event names, propagation and retry semantics, sampling/export behavior, privacy/retention, alert thresholds/recipients, service objectives, existing cost controls, and runbooks.
+- **Status:** Tracing-focused direction selected on 2026-09-17; [design](superpowers/specs/2026-09-17-observability-design.md), [plan](superpowers/plans/2026-09-17-observability.md), and [learner walkthrough](guides/21-observability.md) updated. Implementation and live acceptance have not started.
 
 ## 22. Cloud KMS and encryption lifecycle
 
@@ -272,11 +273,11 @@ Phases 7-9 build one guided-todo creation feature to teach backend-owned state t
 ## 26. BigQuery product analytics
 
 - **Learning goal:** Separate transactional application data from analytical workloads and define product metrics without copying sensitive content unnecessarily.
-- **Visible outcome:** Privacy-conscious events support SQL analysis of signup, workflow completion, suggestion outcome, and latency funnels without analytical scans against Cloud SQL.
+- **Visible outcome:** Privacy-conscious events support SQL analysis of signup, workflow completion, suggestion outcome, and latency funnels without analytical scans against Cloud SQL. Add AI usage/token/cost attribution deferred from Phase 21, with explicit handling of unknown usage and billing reconciliation limits.
 - **New technology/pattern:** BigQuery datasets and tables, partitioning, clustering, batch or event ingestion, retention/expiration, query-cost controls, views, data location, and least-privilege analyst access.
 - **Verification emphasis:** Schema validation, duplicate event handling, metric-definition tests, retention checks, row-count reconciliation, access denial, and bounded query bytes.
 - **Learning experiment:** Calculate a workflow-completion funnel, discover how duplicate deliveries distort it, and correct the query using the event identity contract.
-- **Non-goals:** A customer-data platform, copying todo titles or prompts by default, real-time BI requirements, Dataflow, BigQuery ML, and replacing PostgreSQL.
+- **Non-goals:** A customer-data platform, copying todo titles or prompts by default, real-time BI requirements, Dataflow, BigQuery ML, replacing PostgreSQL, and automatically treating analytics as quota enforcement.
 - **Spec gate:** Approve metric definitions, lawful data set, event linkage, dataset location, retention/deletion, ingestion path, access roles, query-cost limits, and validation queries.
 
 ## 27. Firebase Cloud Messaging
@@ -292,7 +293,7 @@ Phases 7-9 build one guided-todo creation feature to teach backend-owned state t
 ## 28. Hex analytics with BigQuery
 
 - **Learning goal:** Turn the trusted product events and metric definitions from Phase 26 into reproducible analysis and an interactive dashboard for product decisions.
-- **Visible outcome:** Hex connects to curated BigQuery views and presents activation, workflow-completion, and feature-adoption metrics with explicit definitions, time windows, and data-freshness indicators.
+- **Visible outcome:** Hex connects to curated BigQuery views and presents activation, workflow-completion, and feature-adoption and approved AI usage/cost metrics with explicit definitions, time windows, and data-freshness indicators.
 - **New technology/pattern:** Hex BigQuery connections, SQL/Python analysis, parameterized queries, reusable metric definitions, interactive dashboards, sharing permissions, and query-cost controls. BigQuery remains the analytical store; Hex supplies analysis and presentation.
 - **Verification emphasis:** Least-privilege access to approved datasets/views, denied access to unrelated data, agreement with Phase 26 validation queries, duplicate-event handling, bounded query bytes, dashboard sharing, and retention/deletion propagation.
 - **Learning experiment:** Introduce a duplicate delivery into a synthetic event fixture, observe the naive completion metric inflate, and show that the identity-aware metric agrees in both BigQuery and Hex. Count confirmed backend outcomes separately from client button clicks.
