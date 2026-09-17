@@ -67,6 +67,7 @@ EVENT_MESSAGES = {
     "http_request": "HTTP request completed.",
     "unexpected_fault": "Unexpected fault reported.",
     "third_party_log": "Third-party log record redacted.",
+    "direct_log": "Direct log record redacted.",
     "suggestion_task": "Suggestion task processed.",
     "suggestion_expire": "Suggestion expiry sweep finished.",
 }
@@ -158,8 +159,12 @@ class Phase21JSONFormatter(logging.Formatter):
             # Helper path: fixed message per event, never caller content.
             fields["message"] = EVENT_MESSAGES.get(event_name, event_name)
         else:
-            # Direct logger calls keep their (caller-chosen, fixed) message.
-            fields["message"] = record.getMessage()
+            # Direct logger calls lack a validated event, so the message is
+            # caller-controlled and never serialized. Allowlisted extra
+            # fields still travel; new code must use log_event instead.
+            fields["message"] = EVENT_MESSAGES["direct_log"]
+            fields["event"] = "direct_log"
+            event_name = "direct_log"
         merged = _context_fields()
         for key, value in merged.items():
             fields.setdefault(key, value)
@@ -215,6 +220,21 @@ def disable_uvicorn_access_logs() -> None:
         logger.handlers = []
 
 
+def route_uvicorn_through_safe_formatter() -> None:
+    """Force uvicorn loggers through the root sanitizing formatter.
+
+    Production uvicorn installs its own plain-text handlers on ``uvicorn``
+    and ``uvicorn.error`` with propagation disabled, which would bypass the
+    output policy. Clearing those handlers and re-enabling propagation
+    routes every record through the root JSON formatter instead.
+    """
+    for name in ("uvicorn", "uvicorn.error"):
+        logger = logging.getLogger(name)
+        logger.handlers = []
+        logger.propagate = True
+        logger.disabled = False
+
+
 def configure_logging(service: str) -> logging.Logger:
     """Configure application JSON logging; idempotent across factories.
 
@@ -240,6 +260,7 @@ def configure_logging(service: str) -> logging.Logger:
     for existing in logging.root.manager.loggerDict.values():
         if isinstance(existing, logging.Logger):
             existing.disabled = False
+    route_uvicorn_through_safe_formatter()
     disable_uvicorn_access_logs()
     return logging.getLogger(APP_LOGGER_NAME)
 
@@ -373,4 +394,5 @@ __all__ = [
     "google_trace_name",
     "log_event",
     "log_unexpected_fault",
+    "route_uvicorn_through_safe_formatter",
 ]

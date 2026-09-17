@@ -36,6 +36,7 @@ from app.tracing import (
     extract_stored_context,
     flush_tracing,
     init_tracing,
+    inject_traceparent,
     outcome_for_status,
     pending_span_count,
     safe_span_attributes,
@@ -811,6 +812,77 @@ def test_boundary_extraction_rejects_baggage_and_malformed() -> None:
     )
     span_context = trace.get_current_span(context).get_span_context()
     assert span_context.is_valid
+
+
+def test_boundary_extraction_ignores_baggage_values() -> None:
+    from opentelemetry import baggage as baggage_api
+
+    context = extract_boundary_context(
+        [
+            (b"traceparent", b"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"),
+            (b"baggage", f"secret={HEADER_SECRET}".encode("latin-1")),
+        ]
+    )
+    assert trace.get_current_span(context).get_span_context().is_valid
+    # Baggage must never enter the context: only the dedicated
+    # trace-context propagator runs at the boundary.
+    assert baggage_api.get_all(context=context) == {}
+    assert baggage_api.get_baggage("secret", context=context) is None
+
+
+def test_inject_emits_traceparent_without_baggage(
+    exporter: InMemorySpanExporter,
+) -> None:
+    from opentelemetry import baggage as baggage_api
+    from opentelemetry import context as otel_context
+
+    state = init_tracing("baggage-inject", exporter=exporter, sample_rate=1.0)
+    try:
+        with state.tracer.start_as_current_span("op"):
+            token = otel_context.attach(
+                baggage_api.set_baggage("secret", HEADER_SECRET)
+            )
+            try:
+                carrier: dict[str, str] = {}
+                inject_traceparent(carrier)
+            finally:
+                otel_context.detach(token)
+        assert "traceparent" in carrier
+        assert "baggage" not in carrier
+        assert_no_sentinels(carrier)
+    finally:
+        shutdown_tracing(state)
+
+
+def test_failing_readiness_probe_emits_span(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sqlalchemy.exc import OperationalError
+
+    from app.worker import create_worker_app
+
+    monkeypatch.setenv("TRACE_SAMPLE_RATE", "1.0")
+
+    class BrokenDatabase:
+        def __call__(self, *args: object, **kwargs: object) -> object:
+            raise OperationalError("SELECT 1", {}, Exception("db down"))
+
+    seam: InMemorySpanExporter = InMemorySpanExporter()
+    app = create_worker_app(session_factory=BrokenDatabase())  # type: ignore[arg-type]
+    app.state.tracing_exporter = seam
+    with TestClient(app) as client:
+        assert client.get("/health").status_code == 200
+        assert client.get("/ready").status_code == 503
+    # The successful probe stays out; the failing probe is traceable.
+    spans = seam.get_finished_spans()
+    assert len(spans) == 1
+    span = spans[0]
+    assert span.name == "GET /ready"
+    attrs = dict(span.attributes or {})
+    assert attrs["http.route"] == "/ready"
+    assert attrs["http.status_code"] == 503
+    assert attrs["outcome"] == "server_error"
+    assert_no_sentinels(span_to_text(span))
 
 
 def test_thread_counts_stay_bounded_under_outage() -> None:

@@ -9,6 +9,7 @@ plus active trace correlation. No database calls.
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
 
@@ -96,7 +97,86 @@ def test_exception_records_exclude_traceback_text(
     records = read_json_lines(capsys.readouterr().out)
     assert_no_sentinels(records)
     assert "Traceback" not in json.dumps(records)
-    assert records[-1]["message"] == "database operation failed"
+    # Direct logger calls lack a validated event: the caller-controlled
+    # message is never serialized, only a fixed redaction notice.
+    assert records[-1]["event"] == "direct_log"
+    assert records[-1]["message"] == "Direct log record redacted."
+
+
+def test_direct_app_logger_calls_are_redacted(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    logger = logging.getLogger(APP_LOGGER_NAME)
+    logger.info("user said %s", BODY_SECRET)
+    logger.info(f"query {QUERY_SECRET} header {HEADER_SECRET}")
+    logger.warning("worker state %s", SQL_SECRET)
+    try:
+        raise ValueError(EXCEPTION_SECRET)
+    except ValueError:
+        logger.exception("direct exception with traceback")
+    records = read_json_lines(capsys.readouterr().out)
+    assert_no_sentinels(records)
+    assert "Traceback" not in json.dumps(records)
+    assert records
+    for record in records:
+        assert record["event"] == "direct_log"
+        assert record["message"] == "Direct log record redacted."
+
+
+def test_direct_app_calls_keep_allowlisted_fields(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Worker-style direct calls keep their allowlisted extra fields; only
+    # the caller-controlled message is replaced with fixed safe output.
+    logging.getLogger("app.worker").info(
+        "suggestion_task",
+        extra={
+            "suggestion_id": 7,
+            "outcome": "ready",
+            "goal": BODY_SECRET,
+        },
+    )
+    records = read_json_lines(capsys.readouterr().out)
+    assert_no_sentinels(records)
+    assert records[-1]["event"] == "direct_log"
+    assert records[-1]["message"] == "Direct log record redacted."
+    assert records[-1]["suggestion_id"] == 7
+    assert records[-1]["outcome"] == "ready"
+
+
+def test_production_uvicorn_handlers_cannot_bypass_formatter(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Production uvicorn installs its own plain-text handlers on
+    # uvicorn.error with propagation disabled; those must be cleared so
+    # startup/exception output can only flow through the safe formatter.
+    error_logger = logging.getLogger("uvicorn.error")
+    raw = io.StringIO()
+    production_style = logging.StreamHandler(raw)
+    production_style.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
+    error_logger.addHandler(production_style)
+    error_logger.propagate = False
+    try:
+        configure_logging("test-service")
+        assert error_logger.handlers == []
+        assert error_logger.propagate is True
+        error_logger.info("GET /todos?secret=%s", QUERY_SECRET)
+        try:
+            raise ValueError(EXCEPTION_SECRET)
+        except ValueError:
+            error_logger.exception("uvicorn worker crashed")
+    finally:
+        error_logger.handlers = []
+        error_logger.propagate = True
+    assert QUERY_SECRET not in raw.getvalue()
+    assert EXCEPTION_SECRET not in raw.getvalue()
+    records = read_json_lines(capsys.readouterr().out)
+    assert_no_sentinels(records)
+    assert "Traceback" not in json.dumps(records)
+    assert records
+    for record in records:
+        assert record["event"] == "third_party_log"
+        assert record["message"] == "Third-party log record redacted."
 
 
 def test_third_party_records_are_redacted(

@@ -20,7 +20,6 @@ from typing import Any
 
 from opentelemetry import context as otel_context
 from opentelemetry import trace
-from opentelemetry.propagate import extract, inject
 from opentelemetry.propagators.textmap import Getter, Setter
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
@@ -473,19 +472,24 @@ def extract_boundary_context(
 ) -> otel_context.Context:
     """Extract W3C trace context from untrusted request headers.
 
-    Uses only the trace-context propagator (never baggage). Malformed
-    headers yield an invalid context, which starts a fresh local trace.
+    Uses only the dedicated trace-context propagator (never the global
+    composite, never baggage). Malformed headers yield an invalid context,
+    which starts a fresh local trace.
     """
     carrier = _headers_to_dict(headers)
     try:
-        return extract(carrier, getter=_HeaderGetter())
+        return _propagator.extract(carrier, getter=_HeaderGetter())
     except Exception:  # noqa: BLE001 - malformed input starts fresh
         return otel_context.get_current()
 
 
 def inject_traceparent(carrier: dict[str, str]) -> None:
-    """Inject the active context as W3C traceparent into a carrier mapping."""
-    inject(carrier, setter=_DictSetter())
+    """Inject the active context as W3C traceparent into a carrier mapping.
+
+    Uses only the dedicated trace-context propagator so baggage is never
+    emitted alongside the traceparent.
+    """
+    _propagator.inject(carrier, setter=_DictSetter())
 
 
 def extract_stored_context(traceparent: str | None) -> otel_context.Context | None:
@@ -502,7 +506,7 @@ def extract_stored_context(traceparent: str | None) -> otel_context.Context | No
     if len(text) > 55:
         return None
     try:
-        context = extract({"traceparent": text}, getter=_HeaderGetter())
+        context = _propagator.extract({"traceparent": text}, getter=_HeaderGetter())
     except Exception:  # noqa: BLE001 - invalid input means no parent
         return None
     span_context = get_current_span(context).get_span_context()
@@ -643,6 +647,44 @@ class TracingMiddleware:
         self.app = app
         self.state_provider = state_provider
 
+    def _record_failed_probe_span(
+        self,
+        state: TracingState,
+        scope: Scope,
+        boundary: otel_context.Context,
+    ) -> None:
+        """Record one post-hoc server span for a failed health probe.
+
+        Successful probes never become spans; failing ones carry only the
+        fixed name and allowlisted attributes, never bodies or headers.
+        """
+        method = str(scope.get("method", ""))[:16]
+        route = _route_template(scope)
+        status_code = int(scope.get("phase21.response_status", 500))
+        outcome = outcome_for_status(status_code)
+        if scope.get("phase21.client_disconnected"):
+            outcome = OUTCOME_INTERRUPTED
+        # Manual lifecycle: start_as_current_span would record an escaped
+        # exception as an event on exit, bypassing the attribute allowlist.
+        span = state.tracer.start_span(
+            f"{method} {route}",
+            context=boundary,
+            kind=SpanKind.SERVER,
+            attributes=safe_span_attributes(
+                {
+                    "http.method": method,
+                    "http.route": route,
+                    "http.status_code": status_code,
+                    "outcome": outcome,
+                }
+            ),
+        )
+        set_span_outcome(span, outcome)
+        try:
+            span.end()
+        except Exception:  # noqa: BLE001, S110 - telemetry never raises
+            pass
+
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
@@ -654,9 +696,25 @@ class TracingMiddleware:
 
         path = scope.get("path", "")
         if path in HEALTH_PATHS:
-            # Health probes keep log coverage but never become spans.
-            with trace.use_span(NonRecordingSpan(SpanContext(0, 0, False)), end_on_exit=True):
-                await self.app(scope, receive, send)
+            # Successful health probes keep log coverage but never become
+            # spans. Failing probes are traceable: run the probe under a
+            # non-recording span, then record a post-hoc server span when
+            # the probe fails so outages stay visible in traces.
+            boundary = extract_boundary_context(scope.get("headers", []))
+            try:
+                with trace.use_span(
+                    NonRecordingSpan(SpanContext(0, 0, False)), end_on_exit=True
+                ):
+                    await self.app(scope, receive, send)
+            except BaseException:
+                self._record_failed_probe_span(state, scope, boundary)
+                raise
+            status_code = int(scope.get("phase21.response_status", 500))
+            if status_code >= 400:
+                self._record_failed_probe_span(state, scope, boundary)
+                await run_in_threadpool(
+                    state.flush, REQUEST_FLUSH_TIMEOUT_SECONDS
+                )
             return
 
         boundary = extract_boundary_context(scope.get("headers", []))
