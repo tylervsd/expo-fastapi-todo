@@ -551,7 +551,6 @@ Delivery restored; final Terraform plan reports no changes.
 API revision: `fullstack-api-r35175134217-a1-e3301872`.
 Worker revision: `fullstack-suggestion-worker-r35175134217-a1-e3301872`.
 
-
 | Spec acceptance case | Result | Evidence / run URL | Date | Limitation |
 | --- | --- | --- | --- | --- |
 | Authenticated invocation succeeds; denied identity is rejected | Pending | — | — | Requires live IAM drill |
