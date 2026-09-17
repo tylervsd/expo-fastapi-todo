@@ -290,7 +290,7 @@ export function TodoWorkflowScreen({
   // Mirror render values for async callbacks without touching refs
   // during render. Declared before the step effect so mirrors are fresh
   // when it runs.
-  useEffect(() => {
+  useLayoutEffect(() => {
     workflowQueryRef.current = workflowQuery;
     pendingRecordRef.current = pendingRecord;
     reconcileFailedRef.current = reconcileFailed;
