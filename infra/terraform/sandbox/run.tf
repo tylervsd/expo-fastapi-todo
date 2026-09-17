@@ -49,6 +49,18 @@ resource "google_cloud_run_v2_service" "api" {
         value = jsonencode(var.api.cors_origins)
       }
 
+      # Observability-owned runtime input: the application parses
+      # TRACE_SAMPLE_RATE with a 0.1 default (1.0 bounded drills), so the
+      # variable stays unset (app default) when observability is disabled.
+      # Terraform normalizes 1.0 to "1"; the app parses it back to 1.0.
+      dynamic "env" {
+        for_each = var.observability == null ? [] : [var.observability.trace_sample_rate]
+        content {
+          name  = "TRACE_SAMPLE_RATE"
+          value = tostring(env.value)
+        }
+      }
+
       dynamic "env" {
         for_each = var.api.secret_env
         content {

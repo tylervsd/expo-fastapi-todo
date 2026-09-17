@@ -7,12 +7,12 @@
 # trace/log retention stays separately recorded (a 30-day log policy does
 # not set Cloud Trace retention).
 #
-# Runtime telemetry configuration (service name, revision, exporter, and
-# TRACE_SAMPLE_RATE) lives in the application with a 0.1 default;
-# var.observability.trace_sample_rate records the operational setting
-# (1.0 during bounded drills) for operators and dashboards. Enabling this
-# file never changes Cloud Run CPU allocation, instance limits, images, or
-# traffic: request-based CPU and release ownership are preserved.
+# Runtime telemetry identity (service name, revision, exporter) lives in the
+# application; var.observability.trace_sample_rate sets TRACE_SAMPLE_RATE on
+# the API and worker runtimes below (0.1 default, 1.0 bounded drills) without
+# touching release ownership. Enabling this file never changes Cloud Run CPU
+# allocation, instance limits, images, revisions, or traffic: request-based
+# CPU and release ownership are preserved.
 
 locals {
   observability_enabled       = var.observability != null
@@ -24,23 +24,38 @@ locals {
   observability_sql_id        = "${var.project_id}:${var.database.instance_name}"
 
   # Explicit application-failure allowlist. Includes saved suggestion
-  # failures, maintenance failures/unavailability, claim unavailability,
-  # agent failures, and unexpected faults. Excludes transport logs (the
-  # saved outcome already covers them), content-rejection diagnostics,
-  # expected live-claim retries, discarded late work, and normal 4xx such
-  # as agent invalid_request. Severity alone never implies failure.
+  # failures, maintenance failures/unavailability, actionable delivery
+  # failures (claim/finalize unavailability, unexpected claim/finalize
+  # failures, fail-closed stored rows), rejected worker tasks, enqueue
+  # unavailability, agent failures, and unexpected faults. Excludes
+  # transport logs (the saved outcome already covers them),
+  # content-rejection diagnostics, expected live-claim retries, committed
+  # claim-time acks (timeout/superseded/delivered ride with the companion
+  # suggestion_finished), discarded late work, no-work replays, and normal
+  # 4xx such as agent invalid_request. Severity alone never implies
+  # failure.
+  #
+  # Signal grounding (app vocabulary, Tasks 1-3): rejected worker tasks
+  # (suggestion_task_rejected malformed/oversized) travel as redacted
+  # direct_log entries because direct logger calls never serialize the
+  # caller message; only the allowlisted outcome travels. Enqueue
+  # unavailability has no dedicated event: the API raises 503 on the
+  # suggestion request route, so the http_request clause matches
+  # server_error outcomes on that route template only.
   observability_failure_filter = join(" ", [
     "resource.type=\"cloud_run_revision\"",
     "AND (",
     "(jsonPayload.event=\"suggestion_finished\" AND jsonPayload.outcome=\"failed\")",
     "OR (jsonPayload.event=\"maintenance_finished\" AND (jsonPayload.outcome=\"failed\" OR jsonPayload.outcome=\"unavailable\"))",
-    "OR (jsonPayload.event=\"suggestion_delivery\" AND jsonPayload.outcome=\"claim_unavailable\")",
+    "OR (jsonPayload.event=\"suggestion_delivery\" AND (jsonPayload.outcome=\"claim_unavailable\" OR jsonPayload.outcome=\"claim_failed\" OR jsonPayload.outcome=\"invalid_stored_row\" OR jsonPayload.outcome=\"finalize_unavailable\" OR jsonPayload.outcome=\"finalize_failed\"))",
+    "OR (jsonPayload.event=\"direct_log\" AND (jsonPayload.outcome=\"malformed\" OR jsonPayload.outcome=\"oversized\"))",
+    "OR (jsonPayload.event=\"http_request\" AND jsonPayload.outcome=\"server_error\" AND jsonPayload.route=\"/todo-workflows/{workflow_id}/suggestions\")",
     "OR (jsonPayload.event=\"agent_finished\" AND jsonPayload.outcome=\"agent_failed\")",
     "OR (jsonPayload.event=\"unexpected_fault\")",
     ")",
   ])
 
-  observability_api_count_query = "fetch cloud_run_revision | metric 'run.googleapis.com/request_count' | filter resource.service_name == '${var.api.name}' | align rate(60s) | every 60s"
+  observability_api_count_query = "fetch cloud_run_revision | metric 'run.googleapis.com/request_count' | filter resource.service_name == '${var.api.name}' | group_by [metric.label.response_code_class] | align rate(60s) | every 60s"
   observability_api_latency_query = join(" ", [
     "fetch cloud_run_revision | metric 'run.googleapis.com/request_latencies'",
     "| filter resource.service_name == '${var.api.name}'",
@@ -53,7 +68,7 @@ locals {
         width  = 6
         height = 4
         widget = {
-          title = "API request count (native status, not saved outcomes)"
+          title = "API request count by status class (native status, not saved outcomes)"
           xyChart = {
             dataSets = [{
               plotType        = "LINE"
@@ -81,11 +96,11 @@ locals {
         width  = 6
         height = 4
         widget = {
-          title = "Worker request count"
+          title = "Worker request count by status class"
           xyChart = {
             dataSets = [{
               plotType        = "LINE"
-              timeSeriesQuery = { timeSeriesQueryLanguage = { query = "fetch cloud_run_revision | metric 'run.googleapis.com/request_count' | filter resource.service_name == '${local.observability_worker_name}' | align rate(60s) | every 60s" } }
+              timeSeriesQuery = { timeSeriesQueryLanguage = { query = "fetch cloud_run_revision | metric 'run.googleapis.com/request_count' | filter resource.service_name == '${local.observability_worker_name}' | group_by [metric.label.response_code_class] | align rate(60s) | every 60s" } }
             }]
           }
         }

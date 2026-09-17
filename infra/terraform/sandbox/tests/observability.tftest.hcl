@@ -240,6 +240,10 @@ run "observability_disabled" {
     condition     = output.observability_trace_sample_rate == null
     error_message = "The sample-rate output must be null when observability is disabled."
   }
+  assert {
+    condition     = !contains([for e in google_cloud_run_v2_service.api.template[0].containers[0].env : e.name], "TRACE_SAMPLE_RATE")
+    error_message = "The API must not carry TRACE_SAMPLE_RATE when observability is disabled."
+  }
 }
 
 run "trace_iam_least_privilege" {
@@ -416,8 +420,56 @@ run "failure_alert" {
     error_message = "The failure filter must include claim unavailability."
   }
   assert {
+    condition     = strcontains(google_monitoring_alert_policy.app_failure[0].conditions[0].condition_matched_log[0].filter, "invalid_stored_row")
+    error_message = "The failure filter must include fail-closed stored-row rejections."
+  }
+  assert {
+    condition     = strcontains(google_monitoring_alert_policy.app_failure[0].conditions[0].condition_matched_log[0].filter, "claim_failed")
+    error_message = "The failure filter must include unexpected claim failures."
+  }
+  assert {
+    condition     = strcontains(google_monitoring_alert_policy.app_failure[0].conditions[0].condition_matched_log[0].filter, "finalize_unavailable")
+    error_message = "The failure filter must include finalize unavailability."
+  }
+  assert {
+    condition     = strcontains(google_monitoring_alert_policy.app_failure[0].conditions[0].condition_matched_log[0].filter, "finalize_failed")
+    error_message = "The failure filter must include finalize failures."
+  }
+  assert {
+    condition     = strcontains(google_monitoring_alert_policy.app_failure[0].conditions[0].condition_matched_log[0].filter, "malformed")
+    error_message = "The failure filter must include malformed worker-task rejections."
+  }
+  assert {
+    condition     = strcontains(google_monitoring_alert_policy.app_failure[0].conditions[0].condition_matched_log[0].filter, "oversized")
+    error_message = "The failure filter must include oversized worker-task rejections."
+  }
+  assert {
+    condition     = strcontains(google_monitoring_alert_policy.app_failure[0].conditions[0].condition_matched_log[0].filter, "jsonPayload.event=\"direct_log\"")
+    error_message = "Rejected worker tasks travel as redacted direct logs; the filter must match that event."
+  }
+  assert {
+    condition     = strcontains(google_monitoring_alert_policy.app_failure[0].conditions[0].condition_matched_log[0].filter, "jsonPayload.event=\"http_request\"")
+    error_message = "The failure filter must include server-error HTTP signals for enqueue unavailability."
+  }
+  assert {
+    condition     = strcontains(google_monitoring_alert_policy.app_failure[0].conditions[0].condition_matched_log[0].filter, "/todo-workflows/{workflow_id}/suggestions")
+    error_message = "The enqueue-unavailability clause must stay scoped to the suggestion request route."
+  }
+  assert {
     condition     = !strcontains(google_monitoring_alert_policy.app_failure[0].conditions[0].condition_matched_log[0].filter, "provider_call")
     error_message = "The failure filter must not double-alert transport logs alongside saved outcomes."
+  }
+  assert {
+    condition     = !strcontains(google_monitoring_alert_policy.app_failure[0].conditions[0].condition_matched_log[0].filter, "ai_output_rejected")
+    error_message = "The failure filter must not double-alert output-rejection diagnostics alongside saved outcomes."
+  }
+  assert {
+    condition     = !strcontains(google_monitoring_alert_policy.app_failure[0].conditions[0].condition_matched_log[0].filter, "invalid_request")
+    error_message = "The failure filter must exclude normal 4xx agent validation outcomes."
+  }
+  assert {
+    condition     = !strcontains(google_monitoring_alert_policy.app_failure[0].conditions[0].condition_matched_log[0].filter, "no_work")
+    error_message = "The failure filter must exclude no-work replays."
   }
   assert {
     condition     = !strcontains(google_monitoring_alert_policy.app_failure[0].conditions[0].condition_matched_log[0].filter, "live_claim_retry")
@@ -555,6 +607,10 @@ run "dashboard" {
     error_message = "The dashboard must chart native Cloud Run request status."
   }
   assert {
+    condition     = strcontains(google_monitoring_dashboard.observability[0].dashboard_json, "response_code_class")
+    error_message = "Native request-count charts must break down by status/error class."
+  }
+  assert {
     condition     = strcontains(google_monitoring_dashboard.observability[0].dashboard_json, "run.googleapis.com/request_latencies")
     error_message = "The dashboard must chart native Cloud Run latency."
   }
@@ -607,6 +663,35 @@ run "dashboard_without_async" {
   assert {
     condition     = strcontains(google_monitoring_dashboard.observability[0].dashboard_json, "phase21_suggestion_outcomes")
     error_message = "The dashboard must keep suggestion outcomes without async delivery."
+  }
+}
+
+run "trace_sample_rate_env" {
+  command = plan
+
+  assert {
+    condition     = ({ for e in google_cloud_run_v2_service.api.template[0].containers[0].env : e.name => e.value if e.value != null })["TRACE_SAMPLE_RATE"] == "0.1"
+    error_message = "The API runtime must receive TRACE_SAMPLE_RATE 0.1 from the default observability setting."
+  }
+  assert {
+    condition     = ({ for e in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : e.name => e.value if e.value != null })["TRACE_SAMPLE_RATE"] == "0.1"
+    error_message = "The worker runtime must receive TRACE_SAMPLE_RATE 0.1 from the default observability setting."
+  }
+}
+
+run "trace_sample_rate_env_drill" {
+  command = plan
+  variables {
+    observability = merge(var.observability, { trace_sample_rate = 1.0 })
+  }
+
+  assert {
+    condition     = ({ for e in google_cloud_run_v2_service.api.template[0].containers[0].env : e.name => e.value if e.value != null })["TRACE_SAMPLE_RATE"] == "1"
+    error_message = "The API runtime must receive the drill TRACE_SAMPLE_RATE 1.0."
+  }
+  assert {
+    condition     = ({ for e in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : e.name => e.value if e.value != null })["TRACE_SAMPLE_RATE"] == "1"
+    error_message = "The worker runtime must receive the drill TRACE_SAMPLE_RATE 1.0."
   }
 }
 

@@ -102,6 +102,18 @@ resource "google_cloud_run_v2_service" "worker" {
         value = var.async_suggestions.provider_model
       }
 
+      # Observability-owned runtime input, mirroring the API seam: set only
+      # when observability is enabled, without touching release-owned image
+      # or revision fields. Terraform normalizes 1.0 to "1"; the app
+      # parses it back to 1.0.
+      dynamic "env" {
+        for_each = var.observability == null ? [] : [var.observability.trace_sample_rate]
+        content {
+          name  = "TRACE_SAMPLE_RATE"
+          value = tostring(env.value)
+        }
+      }
+
       dynamic "env" {
         for_each = local.async_worker_secrets
         content {
