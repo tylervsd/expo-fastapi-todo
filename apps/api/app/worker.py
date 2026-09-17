@@ -33,6 +33,7 @@ from app.database import (
 from app.observability import (
     RequestLoggingMiddleware,
     configure_logging,
+    log_event,
     log_unexpected_fault,
 )
 from app.suggestion_provider import (
@@ -46,13 +47,14 @@ from app.suggestion_provider import (
 )
 from app.suggestion_service import (
     ClaimedSuggestion,
+    ClaimResult,
     Clarification,
     InvalidStoredSuggestion,
     SuggestionErrorCode,
     SuggestionInProgress,
     SuggestionSnapshot,
     SuggestionStatus,
-    claim_suggestion,
+    claim_suggestion_result,
     expire_suggestions_with_context,
     finish_claimed_suggestion,
 )
@@ -357,26 +359,56 @@ def create_worker_app(
             },
         )
 
-    def log_outcome(
+    def emit_delivery(
         suggestion_id: int,
         outcome: str,
         started: float,
         error_code: SuggestionErrorCode | None = None,
         queue_wait_ms: int | None = None,
     ) -> None:
-        # Only IDs, outcome, duration, queue delay, and safe error codes
-        # are logged; never goals, clarification, proposals, tokens, or
-        # raw exception text.
+        # Delivery/ack taxonomy (`suggestion_delivery`): one event per
+        # delivery attempt with the ack outcome. `delivered` means provider
+        # work ran and the finish committed — the business outcome lives in
+        # the companion `suggestion_finished`; `claim_timeout` /
+        # `claim_superseded` name claim-time commits; `discarded`/`no_work`
+        # and the failure/retry outcomes commit nothing. Only IDs,
+        # durations, queue delay, and safe error codes travel.
         extra: dict[str, object] = {
             "suggestion_id": suggestion_id,
-            "outcome": outcome,
             "duration_ms": int((time.monotonic() - started) * 1000),
         }
-        if error_code is not None:
-            extra["error_code"] = error_code.value
         if queue_wait_ms is not None:
             extra["queue_wait_ms"] = queue_wait_ms
-        logger.info("suggestion_task", extra=extra)
+        log_event(
+            "suggestion_delivery",
+            outcome=outcome,
+            error_code=error_code,
+            **extra,
+        )
+
+    def emit_finished(
+        suggestion_id: int,
+        outcome: str,
+        started: float,
+        error_code: SuggestionErrorCode | None = None,
+        queue_wait_ms: int | None = None,
+    ) -> None:
+        # Committed business truth (`suggestion_finished`): emitted only
+        # after a terminal transition commits, with the bounded business
+        # outcome (`ready`/`failed`/`superseded`) Task 4 metrics count.
+        # Never emitted for discards, replays, or uncommitted failures.
+        extra: dict[str, object] = {
+            "suggestion_id": suggestion_id,
+            "duration_ms": int((time.monotonic() - started) * 1000),
+        }
+        if queue_wait_ms is not None:
+            extra["queue_wait_ms"] = queue_wait_ms
+        log_event(
+            "suggestion_finished",
+            outcome=outcome,
+            error_code=error_code,
+            **extra,
+        )
 
     async def read_bounded_body(request: Request) -> bytes:
         # Enforce the 1024-byte task limit while reading chunks: Content-Length
@@ -426,9 +458,9 @@ def create_worker_app(
 
     def claim_once(
         factory: sessionmaker[Session], suggestion_id: int
-    ) -> ClaimedSuggestion | None:
+    ) -> ClaimResult:
         with factory() as session:
-            return claim_suggestion(session, suggestion_id)
+            return claim_suggestion_result(session, suggestion_id)
 
     def finish_ready(
         factory: sessionmaker[Session],
@@ -546,11 +578,11 @@ def create_worker_app(
             with _child_span(
                 tracer, "db.claim_suggestion", "claim_suggestion", suggestion_id
             ):
-                claim = await run_in_threadpool(claim_once, factory, suggestion_id)
+                claim_result = await run_in_threadpool(claim_once, factory, suggestion_id)
         except SuggestionInProgress:
             # A live claim means another delivery is executing: ask Cloud
             # Tasks to retry later without a second provider call.
-            log_outcome(suggestion_id, "live_claim_retry", started)
+            emit_delivery(suggestion_id, "live_claim_retry", started)
             raise HTTPException(
                 status_code=503,
                 detail={
@@ -560,20 +592,47 @@ def create_worker_app(
             ) from None
         except InvalidStoredSuggestion:
             # Fail-closed stored rows never reach the provider.
-            log_outcome(suggestion_id, "invalid_stored_row", started)
+            emit_delivery(suggestion_id, "invalid_stored_row", started)
             raise worker_unavailable() from None
         except (OperationalError, SQLAlchemyTimeoutError):
-            log_outcome(suggestion_id, "claim_unavailable", started)
+            emit_delivery(suggestion_id, "claim_unavailable", started)
             raise worker_unavailable() from None
         except Exception:  # noqa: BLE001 - worker errors stay sanitized
-            log_outcome(suggestion_id, "claim_failed", started)
+            emit_delivery(suggestion_id, "claim_failed", started)
             log_unexpected_fault("claim_failed", location="worker")
             raise worker_unavailable() from None
-        if claim is None:
-            # Missing, terminal, legacy, expired, superseded, cancelled, or
-            # stale rows never call the provider; acknowledge to discard.
-            log_outcome(suggestion_id, "no_work", started)
+        if claim_result.claim is None:
+            if claim_result.committed is not None:
+                # The claim transaction committed a terminal transition
+                # (expiry/claim-lapse timeout or supersession) instead of
+                # granting provider work. Name it truthfully: no provider
+                # call ran, and the business outcome is committed.
+                committed = claim_result.committed
+                if committed.status is SuggestionStatus.SUPERSEDED:
+                    emit_finished(
+                        suggestion_id, "superseded", started, None, None
+                    )
+                    emit_delivery(suggestion_id, "claim_superseded", started)
+                else:
+                    emit_finished(
+                        suggestion_id,
+                        "failed",
+                        started,
+                        committed.error_code,
+                        None,
+                    )
+                    emit_delivery(
+                        suggestion_id,
+                        "claim_timeout",
+                        started,
+                        committed.error_code,
+                    )
+                return Response(status_code=204)
+            # Missing, terminal, or legacy rows never call the provider;
+            # replays ack without a second commit.
+            emit_delivery(suggestion_id, "no_work", started)
             return Response(status_code=204)
+        claim = claim_result.claim
         if claim.queue_wait_ms is not None:
             # Database-clock queue delay travels as a diagnostic attribute
             # on the process span (the current span here): no fabricated
@@ -618,7 +677,7 @@ def create_worker_app(
                             finish_failed, factory, claim, error_code
                         )
                 if saved is None:
-                    log_outcome(
+                    emit_delivery(
                         suggestion_id,
                         "discarded",
                         started,
@@ -626,30 +685,55 @@ def create_worker_app(
                         claim.queue_wait_ms,
                     )
                 elif saved.status is SuggestionStatus.SUPERSEDED:
-                    log_outcome(
+                    emit_finished(
                         suggestion_id,
                         "superseded",
                         started,
                         error_code,
                         claim.queue_wait_ms,
                     )
+                    emit_delivery(
+                        suggestion_id,
+                        "delivered",
+                        started,
+                        error_code,
+                        claim.queue_wait_ms,
+                    )
                 elif error_code is not None:
-                    log_outcome(
+                    emit_finished(
                         suggestion_id,
                         "failed",
                         started,
                         error_code,
                         claim.queue_wait_ms,
                     )
+                    emit_delivery(
+                        suggestion_id,
+                        "delivered",
+                        started,
+                        error_code,
+                        claim.queue_wait_ms,
+                    )
                 else:
-                    log_outcome(
-                        suggestion_id, "ready", started, None, claim.queue_wait_ms
+                    emit_finished(
+                        suggestion_id,
+                        "ready",
+                        started,
+                        None,
+                        claim.queue_wait_ms,
+                    )
+                    emit_delivery(
+                        suggestion_id,
+                        "delivered",
+                        started,
+                        None,
+                        claim.queue_wait_ms,
                     )
         except (OperationalError, SQLAlchemyTimeoutError):
-            log_outcome(suggestion_id, "finalize_unavailable", started)
+            emit_delivery(suggestion_id, "finalize_unavailable", started)
             raise worker_unavailable() from None
         except Exception:  # noqa: BLE001 - worker errors stay sanitized
-            log_outcome(suggestion_id, "finalize_failed", started)
+            emit_delivery(suggestion_id, "finalize_failed", started)
             log_unexpected_fault("finalize_failed", location="worker")
             raise worker_unavailable() from None
         return Response(status_code=204)
@@ -738,6 +822,7 @@ def create_worker_app(
         state = getattr(request.app.state, "tracing_state", None)
         tracer = state.tracer if state is not None else None
         sweep_context = get_current_span().get_span_context()
+        sweep_started = time.monotonic()
 
         def sweep_once() -> list:
             with factory() as session:
@@ -746,16 +831,42 @@ def create_worker_app(
         try:
             expired_rows = await run_in_threadpool(sweep_once)
         except (OperationalError, SQLAlchemyTimeoutError):
-            logger.warning("worker_expire_failed", extra={"outcome": "unavailable"})
+            log_event(
+                "maintenance_finished",
+                outcome="unavailable",
+                expired=0,
+                duration_ms=int((time.monotonic() - sweep_started) * 1000),
+            )
             raise worker_unavailable() from None
         except Exception:  # noqa: BLE001 - worker errors stay sanitized
-            logger.warning("worker_expire_failed", extra={"outcome": "failed"})
+            log_event(
+                "maintenance_finished",
+                outcome="failed",
+                expired=0,
+                duration_ms=int((time.monotonic() - sweep_started) * 1000),
+            )
             log_unexpected_fault("expire_failed", location="worker")
             raise worker_unavailable() from None
         expired = len(expired_rows)
+        sweep_duration_ms = int((time.monotonic() - sweep_started) * 1000)
         for item in expired_rows:
             _emit_expire_span(tracer, sweep_context, item)
-        logger.info("suggestion_expire", extra={"expired": expired})
+            # Each expired row committed a failed/timeout transition in
+            # the sweep transaction: one business terminal event per row,
+            # after commit, for the Task 4 outcome metric.
+            log_event(
+                "suggestion_finished",
+                outcome="failed",
+                error_code=SuggestionErrorCode.TIMEOUT,
+                suggestion_id=getattr(item, "suggestion_id", None),
+                duration_ms=sweep_duration_ms,
+            )
+        log_event(
+            "maintenance_finished",
+            outcome="success",
+            expired=expired,
+            duration_ms=sweep_duration_ms,
+        )
         return {"expired": expired}
 
     return app

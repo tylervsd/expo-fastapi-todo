@@ -590,3 +590,64 @@ async def test_ai_output_rejected_event_on_invalid_suggestions(
     assert len(rejected) == 1
     assert rejected[0]["operation"] == "suggestions"
     assert "only-one" not in __import__("json").dumps(records)
+
+
+# Phase 21 Task 3 fix round 1 (TDD red): cancellation must still emit one
+# bounded `provider_call` (interrupted transport, no exception text, no
+# retry), and oversized HTTP 200 bodies must read as transport completion
+# plus content rejection, never a transport error.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_cancellation_emits_bounded_provider_call(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import asyncio as _asyncio
+
+    from app.observability import configure_logging as _configure
+
+    _configure("test-service")
+    capsys.readouterr()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise _asyncio.CancelledError()
+
+    with pytest.raises(_asyncio.CancelledError):
+        await request_todo_suggestions(
+            GOAL, CONFIG, transport=httpx.MockTransport(handler)
+        )
+    records = read_json_records(capsys)
+    calls = [record for record in records if record.get("event") == "provider_call"]
+    assert len(calls) == 1, "cancelled transport still reports one attempt"
+    assert calls[0]["outcome"] in ("cancelled", "interrupted")
+    assert calls[0]["operation"] == "suggestions"
+    assert isinstance(calls[0]["duration_ms"], int)
+    assert calls[0]["attempt_id"]
+
+
+@pytest.mark.anyio
+async def test_oversized_success_is_completed_plus_output_rejected(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from app.observability import configure_logging as _configure
+
+    _configure("test-service")
+    capsys.readouterr()
+    oversized_chunk = b"{" + b"x" * (16 * 1024) + b"}"
+    response = httpx.Response(200, stream=SingleChunkStream(oversized_chunk))
+    with pytest.raises(InvalidSuggestionOutput):
+        await request_todo_suggestions(
+            GOAL, CONFIG, transport=transport_for(response)
+        )
+    records = read_json_records(capsys)
+    calls = [record for record in records if record.get("event") == "provider_call"]
+    assert len(calls) == 1
+    assert calls[0]["outcome"] != "transport_error", (
+        "oversized HTTP 200 is transport completion, not a transport error"
+    )
+    rejected = [
+        record for record in records if record.get("event") == "ai_output_rejected"
+    ]
+    assert len(rejected) == 1
+    assert rejected[0]["operation"] == "suggestions"

@@ -1333,7 +1333,7 @@ def test_worker_unexpected_error_returns_sanitized_503(
     with worker_client(session_factory, provider) as client:
         monkeypatch = pytest.MonkeyPatch()
         with monkeypatch.context() as patch:
-            patch.setattr(worker_module, "claim_suggestion", explode)
+            patch.setattr(worker_module, "claim_suggestion_result", explode)
             response = post_task(client, suggestion_id)
             assert response.status_code == 503
             assert "seekrit-db-detail" not in response.text
@@ -1928,7 +1928,7 @@ def test_worker_late_result_is_discarded_never_saved_ready(
         return real_finish(session, claim, titles=titles, error_code=error_code)
 
     monkeypatch.setattr(worker_module, "finish_claimed_suggestion", late_finish)
-    with caplog.at_level("INFO", logger="app.worker"), worker_client(
+    with caplog.at_level("INFO", logger="app"), worker_client(
         session_factory, provider
     ) as client:
         response = post_task(client, suggestion_id)
@@ -1942,7 +1942,7 @@ def test_worker_late_result_is_discarded_never_saved_ready(
     outcomes = [
         getattr(record, "outcome", None)
         for record in caplog.records
-        if record.name == "app.worker"
+        if record.name == "app"
     ]
     assert "discarded" in outcomes, outcomes
     assert "ready" not in outcomes, outcomes
@@ -2102,3 +2102,216 @@ def test_expire_sweep_replay_emits_no_duplicate_terminal_span(
         if span.name == "suggestion.expire"
     ]
     assert len(expires) == 1
+
+
+# Phase 21 Task 3 fix round 1 (TDD): claim-time committed transitions carry
+# bounded metadata, and delivery/finished use the structured taxonomy with
+# disjoint outcome vocabularies.
+# ---------------------------------------------------------------------------
+
+
+def test_claim_result_names_committed_timeout_not_no_work(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    from app.suggestion_service import claim_suggestion_result
+
+    owner_id = setup_owner(session_factory)
+    workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
+    request_id, _ = reserve_cloud(
+        session_factory, owner_id, workflow_id, revision, step_id
+    )
+    suggestion_id = cloud_row_id(session_factory, owner_id, workflow_id, request_id)
+    with session_factory() as session:
+        session.execute(
+            text(
+                "UPDATE todo_workflow_suggestion_requests "
+                "SET queued_at = now() - interval '20 minutes', "
+                "expires_at = now() - interval '5 minutes' "
+                "WHERE id = :id"
+            ),
+            {"id": suggestion_id},
+        )
+        session.commit()
+    with session_factory() as session:
+        result = claim_suggestion_result(session, suggestion_id)
+    assert result.claim is None
+    assert result.outcome == "timeout"
+    assert result.committed is not None
+    assert result.committed.status is SuggestionStatus.FAILED
+    assert result.committed.error_code is SuggestionErrorCode.TIMEOUT
+    # Legacy contract is preserved: no provider work is granted.
+    with session_factory() as session:
+        assert claim_suggestion(session, suggestion_id) is None
+    status, error = row_status(session_factory, suggestion_id)
+    assert (status, error) == (
+        SuggestionStatus.FAILED.value,
+        SuggestionErrorCode.TIMEOUT.value,
+    )
+
+
+def test_claim_result_names_committed_supersession_not_no_work(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    from app.suggestion_service import claim_suggestion_result
+
+    owner_id = setup_owner(session_factory)
+    workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
+    request_id, _ = reserve_cloud(
+        session_factory, owner_id, workflow_id, revision, step_id
+    )
+    suggestion_id = cloud_row_id(session_factory, owner_id, workflow_id, request_id)
+    with session_factory() as session:
+        session.execute(
+            text(
+                "UPDATE todo_workflow_suggestion_requests "
+                "SET request_fingerprint = :fingerprint WHERE id = :id"
+            ),
+            {"fingerprint": "b" * 64, "id": suggestion_id},
+        )
+        session.commit()
+    with session_factory() as session:
+        result = claim_suggestion_result(session, suggestion_id)
+    assert result.claim is None
+    assert result.outcome == "superseded"
+    assert result.committed is not None
+    assert result.committed.status is SuggestionStatus.SUPERSEDED
+    with session_factory() as session:
+        assert claim_suggestion(session, suggestion_id) is None
+    status, _ = row_status(session_factory, suggestion_id)
+    assert status == SuggestionStatus.SUPERSEDED.value
+
+
+def test_claim_result_no_work_for_terminal_replay(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    from app.suggestion_service import claim_suggestion_result
+
+    provider = RecordingProvider()
+    suggestion_id = reserve_for_worker(session_factory)
+    with worker_client(session_factory, provider) as client:
+        assert post_task(client, suggestion_id).status_code == 204
+    with session_factory() as session:
+        result = claim_suggestion_result(session, suggestion_id)
+    assert result.claim is None
+    assert result.committed is None
+    assert result.outcome == "no_work"
+
+
+def test_worker_claim_timeout_emits_delivery_plus_finished(
+    database_session: Session,
+    session_factory: sessionmaker[Session],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    del database_session
+    import logging as _logging
+
+    provider = RecordingProvider()
+    suggestion_id = reserve_for_worker(session_factory)
+    with session_factory() as session:
+        session.execute(
+            text(
+                "UPDATE todo_workflow_suggestion_requests "
+                "SET queued_at = now() - interval '20 minutes', "
+                "expires_at = now() - interval '5 minutes' "
+                "WHERE id = :id"
+            ),
+            {"id": suggestion_id},
+        )
+        session.commit()
+    with caplog.at_level(_logging.INFO, logger="app"), worker_client(
+        session_factory, provider
+    ) as client:
+        assert post_task(client, suggestion_id).status_code == 204
+    assert provider.calls == [], "claim-time commit runs no provider work"
+    deliveries = [
+        getattr(record, "outcome", None)
+        for record in caplog.records
+        if getattr(record, "event", None) == "suggestion_delivery"
+    ]
+    finished = [
+        (getattr(record, "outcome", None), getattr(record, "error_code", None))
+        for record in caplog.records
+        if getattr(record, "event", None) == "suggestion_finished"
+    ]
+    assert "claim_timeout" in deliveries, deliveries
+    assert "no_work" not in deliveries, deliveries
+    assert ("failed", SuggestionErrorCode.TIMEOUT.value) in [
+        (outcome, str(code) if code is not None else None)
+        for outcome, code in finished
+    ], finished
+
+
+def test_worker_success_keeps_delivery_and_finished_disjoint(
+    database_session: Session,
+    session_factory: sessionmaker[Session],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    del database_session
+    import logging as _logging
+
+    provider = RecordingProvider()
+    suggestion_id = reserve_for_worker(session_factory)
+    with caplog.at_level(_logging.INFO, logger="app"), worker_client(
+        session_factory, provider
+    ) as client:
+        assert post_task(client, suggestion_id).status_code == 204
+    deliveries = [
+        getattr(record, "outcome", None)
+        for record in caplog.records
+        if getattr(record, "event", None) == "suggestion_delivery"
+    ]
+    finished = [
+        getattr(record, "outcome", None)
+        for record in caplog.records
+        if getattr(record, "event", None) == "suggestion_finished"
+    ]
+    assert deliveries == ["delivered"], deliveries
+    assert finished == ["ready"], finished
+    assert not (set(deliveries) & {"ready", "failed", "superseded"}), deliveries
+
+
+def test_worker_expire_emits_finished_per_row_plus_maintenance(
+    database_session: Session,
+    session_factory: sessionmaker[Session],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    del database_session
+    import logging as _logging
+
+    provider = RecordingProvider()
+    suggestion_id = reserve_for_worker(session_factory)
+    with session_factory() as session:
+        session.execute(
+            text(
+                "UPDATE todo_workflow_suggestion_requests "
+                "SET queued_at = now() - interval '20 minutes', "
+                "expires_at = now() - interval '5 minutes' "
+                "WHERE id = :id"
+            ),
+            {"id": suggestion_id},
+        )
+        session.commit()
+    with caplog.at_level(_logging.INFO, logger="app"), worker_client(
+        session_factory, provider
+    ) as client:
+        assert client.post("/internal/suggestions/expire", json={}).json() == {
+            "expired": 1
+        }
+    finished = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "suggestion_finished"
+    ]
+    assert len(finished) == 1
+    assert getattr(finished[0], "outcome", None) == "failed"
+    assert getattr(finished[0], "suggestion_id", None) == suggestion_id
+    maintenance = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "maintenance_finished"
+    ]
+    assert len(maintenance) == 1
+    assert getattr(maintenance[0], "outcome", None) == "success"

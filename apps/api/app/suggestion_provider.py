@@ -206,14 +206,20 @@ async def _post_openrouter_json(
                     response_body = bytearray()
                     async for chunk in response.aiter_bytes():
                         if len(response_body) + len(chunk) > MAX_RESPONSE_BYTES:
-                            _emit_provider_call(operation, "transport_error", started)
+                            # HTTP 200 transport completed; the application
+                            # rejects the over-cap body as invalid content.
+                            # Never a transport error, never a retry.
+                            _emit_provider_call(operation, "ok", started)
+                            emit_output_rejected(operation)
                             raise InvalidSuggestionOutput(
                                 "OpenRouter response exceeded the size limit"
                             )
                         response_body.extend(chunk)
     except asyncio.CancelledError:
         # Disconnects unwind: never mapped to a provider error, never
-        # logged as an attempt outcome, never retried.
+        # retried. One bounded interrupted-transport outcome is still
+        # emitted so Task 3 call counts stay truthful; no exception text.
+        _emit_provider_call(operation, "cancelled", started)
         raise
     except (TimeoutError, httpx.TimeoutException):
         _emit_provider_call(operation, "timeout", started)
