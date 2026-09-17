@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import {
   AccessibilityInfo,
   AppState,
@@ -313,7 +313,7 @@ export function TodoWorkflowScreen({
     getError.kind === "conflict" &&
     getError.conflictCode === "unsupported_workflow_definition";
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (stepId === undefined || stepId === previousStepId.current) return;
     previousStepId.current = stepId;
     tasksDraftRef.current = "";

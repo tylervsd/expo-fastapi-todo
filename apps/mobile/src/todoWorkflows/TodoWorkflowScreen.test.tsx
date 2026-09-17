@@ -836,6 +836,43 @@ const driveToCollect = async (api: MockWorkflowApi) => {
   await waitForQuiescence();
 };
 
+it("submits titles entered as the collect step first appears", async () => {
+  const api = makeApi();
+  await renderHost(api);
+  await startToAssess(api);
+  api.advanceWorkflow.mockResolvedValueOnce(offerWorkflow);
+  api.getWorkflow.mockResolvedValueOnce(offerWorkflow);
+  await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
+  await waitFor(() =>
+    expect(
+      screen.getByRole("header", {
+        name: "Would you like to split it into smaller todos?",
+      })
+    ).toBeTruthy()
+  );
+  api.advanceWorkflow.mockResolvedValueOnce(collectWorkflow);
+  api.getWorkflow.mockResolvedValueOnce(collectWorkflow);
+  await fireEvent.press(screen.getByRole("button", { name: "Yes" }));
+  await waitFor(() =>
+    expect(screen.getByRole("header", { name: "Break it into smaller todos" })).toBeTruthy()
+  );
+
+  await fireEvent.changeText(
+    screen.getByLabelText("Todo titles (one per line)"),
+    "Pack bag\nCheck weather",
+  );
+  await fireEvent.press(screen.getByRole("button", { name: "Save tasks" }));
+
+  await waitFor(() =>
+    expect(api.advanceWorkflow).toHaveBeenLastCalledWith(WORKFLOW_ID, {
+      request_id: REQUEST_ID,
+      expected_revision: 2,
+      step_id: `${WORKFLOW_ID}:COLLECT_TASKS`,
+      action: { action: "submit_tasks", titles: ["Pack bag", "Check weather"] },
+    })
+  );
+});
+
 it("offers suggestions only from the server-supported task breakdown template", async () => {
   const api = makeApi();
   await renderHost(api);
