@@ -258,6 +258,71 @@ def route_third_party_loggers_through_safe_formatter() -> None:
         existing.disabled = False
 
 
+_original_call_handlers: Any = None
+
+
+def _enforce_safe_handler_policy() -> None:
+    """Enforce the safe logging policy for handlers installed later.
+
+    ``configure_logging`` clears pre-existing third-party handlers, but a
+    library imported or configured afterwards can still attach its own
+    plain-text handler with ``propagate=False``, which would bypass the
+    sanitizing root formatter. This installs (once) a
+    ``logging.Logger.callHandlers`` policy\u2014a standard-library dispatch
+    hook, so it covers ``addHandler``, ``dictConfig``/``fileConfig``, and
+    direct ``handlers`` mutation alike\u2014under which:
+
+    - handlers on non-root loggers that are not ``StdoutProxyHandler``
+      are never invoked, so no raw record text escapes there;
+    - a logger that skips such an unsafe handler still propagates to the
+      root, so the record is emitted once through the safe formatter
+      even when the logger sets ``propagate=False``;
+    - root handlers are invoked normally, preserving operator tooling
+      such as pytest's ``caplog`` capture handler;
+    - ``uvicorn.access`` records stay silent (duplicate access output
+      remains disabled via ``disable_uvicorn_access_logs``);
+    - the stdlib ``lastResort`` raw-stderr fallback is never used, so a
+      handler-less state cannot leak raw text either.
+    """
+    global _original_call_handlers
+    if _original_call_handlers is not None:
+        return
+    _original_call_handlers = logging.Logger.callHandlers
+
+    def _phase21_call_handlers(
+        logger_self: logging.Logger, record: logging.LogRecord
+    ) -> None:
+        if record.name == "uvicorn.access" or record.name.startswith(
+            "uvicorn.access."
+        ):
+            return
+        current: logging.Logger | None = logger_self
+        found = 0
+        while current is not None:
+            skipped_unsafe = False
+            if current is logging.root:
+                for handler in current.handlers:
+                    found += 1
+                    if record.levelno >= handler.level:
+                        handler.handle(record)
+            else:
+                for handler in current.handlers:
+                    if isinstance(handler, StdoutProxyHandler):
+                        found += 1
+                        if record.levelno >= handler.level:
+                            handler.handle(record)
+                    else:
+                        skipped_unsafe = True
+            if not current.propagate and not skipped_unsafe:
+                current = None
+            else:
+                current = current.parent
+        if found == 0:
+            return
+
+    logging.Logger.callHandlers = _phase21_call_handlers  # type: ignore[method-assign]
+
+
 def configure_logging(service: str) -> logging.Logger:
     """Configure application JSON logging; idempotent across factories.
 
@@ -285,6 +350,7 @@ def configure_logging(service: str) -> logging.Logger:
             existing.disabled = False
     route_uvicorn_through_safe_formatter()
     route_third_party_loggers_through_safe_formatter()
+    _enforce_safe_handler_policy()
     disable_uvicorn_access_logs()
     return logging.getLogger(APP_LOGGER_NAME)
 

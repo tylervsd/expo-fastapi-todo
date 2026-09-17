@@ -218,6 +218,39 @@ def test_generic_third_party_handlers_cannot_bypass_formatter(
         assert record["message"] == "Third-party log record redacted."
 
 
+def test_late_third_party_handler_cannot_bypass_formatter(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A third-party logger created/configured AFTER configure_logging()
+    # with its own plain handler and propagate=False must still flow
+    # through the safe root policy: nothing raw in its handler or stdout.
+    configure_logging("test-service")
+    late_logger = logging.getLogger("late.vendor.sdk")
+    raw = io.StringIO()
+    plain = logging.StreamHandler(raw)
+    plain.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
+    late_logger.addHandler(plain)
+    late_logger.propagate = False
+    try:
+        late_logger.info("payload %s", QUERY_SECRET)
+        try:
+            raise ValueError(EXCEPTION_SECRET)
+        except ValueError:
+            late_logger.exception("late vendor failure")
+    finally:
+        late_logger.handlers = []
+        late_logger.propagate = True
+    assert QUERY_SECRET not in raw.getvalue()
+    assert EXCEPTION_SECRET not in raw.getvalue()
+    records = read_json_lines(capsys.readouterr().out)
+    assert_no_sentinels(records)
+    assert "Traceback" not in json.dumps(records)
+    assert records
+    for record in records:
+        assert record["event"] == "third_party_log"
+        assert record["message"] == "Third-party log record redacted."
+
+
 def test_third_party_records_are_redacted(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
