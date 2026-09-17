@@ -1887,6 +1887,7 @@ export function TodoWorkflowScreen({
             disabled={buttonsDisabled}
             submitting={advancePending}
             suggesting={suggestionInFlight}
+            draftReady={agentProbeReady}
             inputRef={tasksInput}
           />
         );
@@ -2158,6 +2159,7 @@ function TaskBreakdownTemplate({
   onConfirmStartAnother,
   onCancelStartAnother,
   suggesting,
+  draftReady,
   disabled,
   submitting,
   inputRef,
@@ -2186,6 +2188,7 @@ function TaskBreakdownTemplate({
   onCancelStartAnother: () => void;
   onWarnStartAnother?: () => void;
   suggesting: boolean;
+  draftReady: boolean;
   disabled: boolean;
   submitting: boolean;
   inputRef: InputRef;
@@ -2201,7 +2204,7 @@ function TaskBreakdownTemplate({
         ref={inputRef}
         testID="e2e-collect-titles"
         accessibilityLabel="Todo titles (one per line)"
-        editable={!disabled || suggesting || suggestion?.status === "pending"}
+        editable={draftReady && (!disabled || suggesting || suggestion?.status === "pending")}
         value={draft}
         multiline
         onChangeText={onChangeDraft}
