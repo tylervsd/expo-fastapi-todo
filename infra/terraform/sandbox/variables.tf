@@ -463,6 +463,41 @@ variable "github_delivery" {
   }
 }
 
+variable "observability" {
+  description = "Optional Phase 21 native observability (trace IAM, log metrics, dashboard, alerts). Null disables all additions. Notification channels reuse inventoried channel IDs; the SQL threshold is 80% of observed usable capacity. Never commit real channel IDs or thresholds to examples."
+  type = object({
+    notification_channels    = set(string)
+    sql_connection_threshold = number
+    runbook_url              = optional(string, "")
+    trace_sample_rate        = optional(number, 0.1)
+  })
+  default  = null
+  nullable = true
+
+  validation {
+    condition = var.observability == null || (
+      length(var.observability.notification_channels) > 0
+      && alltrue([for channel in var.observability.notification_channels : length(trimspace(channel)) > 0])
+    )
+    error_message = "observability.notification_channels must reuse at least one inventoried notification channel."
+  }
+
+  validation {
+    condition     = var.observability == null || var.observability.sql_connection_threshold > 0
+    error_message = "observability.sql_connection_threshold must be a positive deployment input (80% of observed usable capacity)."
+  }
+
+  validation {
+    condition     = var.observability == null || (var.observability.trace_sample_rate >= 0 && var.observability.trace_sample_rate <= 1)
+    error_message = "observability.trace_sample_rate must be within [0, 1] (0.1 sandbox default, 1.0 bounded drills)."
+  }
+
+  validation {
+    condition     = var.observability == null || (contains(var.enabled_services, "cloudtrace.googleapis.com") && contains(var.enabled_services, "monitoring.googleapis.com"))
+    error_message = "observability requires cloudtrace.googleapis.com and monitoring.googleapis.com in enabled_services."
+  }
+}
+
 variable "budget" {
   description = "Observed project-scoped billing budget, or null when none exists."
   type = object({
