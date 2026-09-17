@@ -374,6 +374,11 @@ def test_suggestion_table_constraints_and_owner_cascade(
         "status",
         "proposed_titles",
         "error_code",
+        "queued_at",
+        "expires_at",
+        "provider_started_at",
+        "goal_snapshot",
+        "clarification_snapshot",
     ]
     assert not {"created_at", "prompt", "raw_output"} & set(columns)
     checks = {
@@ -382,8 +387,13 @@ def test_suggestion_table_constraints_and_owner_cascade(
         )
     }
     assert checks == {
+        "ck_suggestion_requests_claim_order",
+        "ck_suggestion_requests_clarification_object",
         "ck_suggestion_requests_error_code",
+        "ck_suggestion_requests_execution_coherent",
+        "ck_suggestion_requests_expiry_order",
         "ck_suggestion_requests_fingerprint_hex",
+        "ck_suggestion_requests_goal_snapshot",
         "ck_suggestion_requests_revision_range",
         "ck_suggestion_requests_status",
         "ck_suggestion_requests_status_fields",
@@ -725,4 +735,6 @@ def test_clarification_text_never_enters_server_storage(
         assert set(row.__table__.columns.keys()) == {
             "id", "owner_id", "workflow_id", "request_id", "request_fingerprint",
             "base_revision", "step_id", "status", "proposed_titles", "error_code",
+            "queued_at", "expires_at", "provider_started_at", "goal_snapshot",
+            "clarification_snapshot",
         }

@@ -221,9 +221,9 @@ test("guided creation survives reload", async ({ page }) => {
   await signIn(page, account);
   await startCollectStep(page, "Prepare weekend");
 
-  await page
-    .getByLabel("Todo titles (one per line)", { exact: true })
-    .fill("Pack bag\nCheck weather");
+  const draft = page.getByLabel("Todo titles (one per line)", { exact: true });
+  await draft.fill("Pack bag\nCheck weather");
+  await expect(draft).toHaveValue("Pack bag\nCheck weather");
   await page.getByRole("button", { name: "Save tasks", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "Confirm plan", exact: true }),

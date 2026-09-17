@@ -1,3 +1,18 @@
+output "suggestion_worker_uri" {
+  description = "Worker Cloud Run URI for task targets and Scheduler OIDC audience, or null when async is disabled."
+  value       = var.async_suggestions == null ? null : google_cloud_run_v2_service.worker[0].uri
+}
+
+output "suggestion_queue_name" {
+  description = "Cloud Tasks suggestion queue name, or null when async is disabled."
+  value       = var.async_suggestions == null ? null : google_cloud_tasks_queue.suggestions[0].name
+}
+
+output "suggestion_invoker_email" {
+  description = "Shared Tasks/Scheduler invocation service account email, or null when async is disabled."
+  value       = var.async_suggestions == null ? null : google_service_account.async_invoker[0].email
+}
+
 output "github_workload_identity_provider" {
   description = "Full WIF provider name for CI authentication, or null when delivery is disabled."
   value       = var.github_delivery == null ? null : google_iam_workload_identity_pool_provider.github[0].name

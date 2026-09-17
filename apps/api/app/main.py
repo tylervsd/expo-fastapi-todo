@@ -1,4 +1,5 @@
 import json
+import os
 import re
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
@@ -25,10 +26,11 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from sqlalchemy import Engine
+from sqlalchemy import Engine, select
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from sqlalchemy.orm import Session, sessionmaker
+from starlette.concurrency import run_in_threadpool
 
 from app.agent import (
     MAX_AGENT_BODY_BYTES,
@@ -81,6 +83,12 @@ from app.suggestion_service import (
     normalize_clarification,
     reserve_suggestion,
 )
+from app.suggestion_tasks import (
+    EnqueueUnavailable,
+    build_enqueue_runner,
+    enqueue_suggestion,
+    read_cloud_config,
+)
 from app.title_validation import canonicalize_title
 from app.todo_repository import TodoRow, delete_todo, set_completed, set_title
 from app.todo_repository import create_todo as create_todo_row
@@ -99,7 +107,7 @@ from app.workflow_domain import (
     create_submit_tasks,
 )
 from app.workflow_presentation import WorkflowView, present_workflow
-from app.workflow_repository import InvalidStoredSnapshot
+from app.workflow_repository import InvalidStoredSnapshot, WorkflowSuggestionRequestRow
 from app.workflow_service import (
     RequestIdReused,
     RevisionExhausted,
@@ -398,11 +406,29 @@ class SuggestionCallable(Protocol):
     ) -> tuple[str, ...]: ...
 
 
+class EnqueueCallable(Protocol):
+    def __call__(self, suggestion_id: int, fingerprint: str) -> None: ...
+
+
 def create_app(
     session_factory: sessionmaker[Session] | None = None,
     suggestion_callable: SuggestionCallable | None = None,
     agent_choice: ChoiceCallable | None = None,
+    enqueue_callable: EnqueueCallable | None = None,
 ) -> FastAPI:
+    execution_mode = os.environ.get("SUGGESTION_EXECUTION", "inline")
+    if execution_mode not in ("inline", "cloud_tasks"):
+        raise ValueError(
+            f"unknown SUGGESTION_EXECUTION mode: {execution_mode!r}"
+        )
+    cloud_tasks_config = None
+    if execution_mode == "cloud_tasks":
+        # Validated once at startup; the validated config is retained and
+        # the default enqueue runner is bound to it, so per-request env
+        # changes can never alter routing. Incomplete config fails
+        # startup and never falls back to inline.
+        cloud_tasks_config = read_cloud_config()
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         engine: Engine | None = None
@@ -418,8 +444,14 @@ def create_app(
                 engine.dispose()
 
     app = FastAPI(title="Expo FastAPI Todo API", lifespan=lifespan)
+    app.state.cloud_tasks_config = cloud_tasks_config
     suggestion_runner: SuggestionCallable = (
         suggestion_callable or request_todo_suggestions
+    )
+    enqueue_runner: EnqueueCallable = enqueue_callable or (
+        build_enqueue_runner(cloud_tasks_config)
+        if cloud_tasks_config is not None
+        else enqueue_suggestion
     )
     agent_chooser: ChoiceCallable = agent_choice or choose_clarification
 
@@ -649,6 +681,31 @@ def create_app(
     def suggestion_conflict(code: str, message: str) -> HTTPException:
         return workflow_conflict(code, message)
 
+    def enqueue_unavailable() -> HTTPException:
+        # Transport error code only: the reservation stays saved as pending
+        # and is never persisted as a provider error enum.
+        return HTTPException(
+            status_code=503,
+            detail={
+                "code": "enqueue_unavailable",
+                "message": "Suggestion delivery is temporarily unavailable. "
+                "Retry with the same request ID.",
+            },
+        )
+
+    def lookup_suggestion_row(
+        session: Session, owner_id: int, workflow_id: UUID, request_id: UUID
+    ) -> WorkflowSuggestionRequestRow | None:
+        # Internal owner-scoped lookup for the row ID/fingerprint that the
+        # task name is derived from; never exposed in the public schema.
+        return session.scalar(
+            select(WorkflowSuggestionRequestRow).where(
+                WorkflowSuggestionRequestRow.owner_id == owner_id,
+                WorkflowSuggestionRequestRow.workflow_id == workflow_id,
+                WorkflowSuggestionRequestRow.request_id == request_id,
+            )
+        )
+
     @app.post(
         "/todo-workflows", response_model=TodoWorkflowResponse, status_code=201
     )
@@ -749,6 +806,7 @@ def create_app(
                 payload.expected_revision,
                 payload.step_id,
                 clarification=clarification,
+                queued=execution_mode == "cloud_tasks",
             )
         except RequestIdReused as exc:
             raise suggestion_conflict(
@@ -791,9 +849,60 @@ def create_app(
             if reservation.status is SuggestionStatus.FAILED:
                 assert reservation.error_code is not None
                 raise suggestion_failure(reservation.error_code)
-            response = as_suggestion_response(reservation)
+            if reservation.status is SuggestionStatus.READY:
+                response = as_suggestion_response(reservation)
+                return JSONResponse(
+                    status_code=200, content=jsonable_encoder(response.model_dump())
+                )
+            # A same-ID pending cloud replay falls through to retry enqueue
+            # and reconcile below. (Inline pending never reaches here: it
+            # raises SuggestionInProgress in reserve_suggestion.)
+
+        if execution_mode == "cloud_tasks":
+            # Cloud mode never calls the provider. The reservation above
+            # already committed; end database work, enqueue off the event
+            # loop, then reconcile the saved state (a task may finish
+            # before POST returns).
+            row = lookup_suggestion_row(
+                session, user.id, workflow_id, payload.request_id
+            )
+            session.commit()
+            if (
+                row is not None
+                and row.status == SuggestionStatus.PENDING.value
+                and row.provider_started_at is None
+            ):
+                try:
+                    await run_in_threadpool(
+                        enqueue_runner, row.id, row.request_fingerprint
+                    )
+                except EnqueueUnavailable as exc:
+                    raise enqueue_unavailable() from exc
+            try:
+                current = get_current_suggestion(session, user.id, workflow_id)
+            except UnsupportedWorkflowDefinition as exc:
+                raise suggestion_conflict(
+                    "unsupported_workflow_definition",
+                    "This plan uses an unsupported workflow definition.",
+                ) from exc
+            except InvalidStoredSuggestion as exc:
+                raise database_unavailable() from exc
+            except (OperationalError, SQLAlchemyTimeoutError) as exc:
+                raise database_unavailable() from exc
+            if current is None:
+                raise workflow_not_found()
+            if current.status is SuggestionStatus.FAILED:
+                assert current.error_code is not None
+                raise suggestion_failure(current.error_code)
+            reconciled = as_suggestion_response(current)
+            if current.status is SuggestionStatus.READY:
+                return JSONResponse(
+                    status_code=200,
+                    content=jsonable_encoder(reconciled.model_dump()),
+                )
             return JSONResponse(
-                status_code=200, content=jsonable_encoder(response.model_dump())
+                status_code=202,
+                content=jsonable_encoder(reconciled.model_dump()),
             )
 
         # The injected callable is a credential-free test seam. The real

@@ -1009,7 +1009,7 @@ export async function suggestWorkflowTodos(
   const body = await requestJson(
     `/todo-workflows/${id}/suggestions`,
     "POST",
-    [200, 201],
+    [200, 201, 202],
     "suggest-workflow",
     { ...options, timeoutMs: 35_000 },
     request,

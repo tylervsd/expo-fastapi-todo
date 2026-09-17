@@ -1,4 +1,5 @@
 from collections.abc import Mapping
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -6,6 +7,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    DateTime,
     ForeignKey,
     ForeignKeyConstraint,
     Identity,
@@ -216,11 +218,46 @@ class WorkflowSuggestionRequestRow(Base):
             "AND error_code IS NULL AND proposed_titles = '[]'::jsonb)",
             name="ck_suggestion_requests_status_fields",
         ),
+        CheckConstraint(
+            "(queued_at IS NULL AND expires_at IS NULL "
+            "AND provider_started_at IS NULL AND goal_snapshot IS NULL "
+            "AND clarification_snapshot IS NULL) "
+            "OR (queued_at IS NOT NULL AND expires_at IS NOT NULL "
+            "AND goal_snapshot IS NOT NULL)",
+            name="ck_suggestion_requests_execution_coherent",
+        ),
+        CheckConstraint(
+            "(expires_at IS NULL OR queued_at IS NULL OR expires_at > queued_at)",
+            name="ck_suggestion_requests_expiry_order",
+        ),
+        CheckConstraint(
+            "(provider_started_at IS NULL OR queued_at IS NULL "
+            "OR provider_started_at >= queued_at)",
+            name="ck_suggestion_requests_claim_order",
+        ),
+        CheckConstraint(
+            "(goal_snapshot IS NULL "
+            "OR char_length(goal_snapshot) BETWEEN 1 AND 120)",
+            name="ck_suggestion_requests_goal_snapshot",
+        ),
+        CheckConstraint(
+            "(clarification_snapshot IS NULL "
+            "OR jsonb_typeof(clarification_snapshot) = 'object')",
+            name="ck_suggestion_requests_clarification_object",
+        ),
         Index(
             "ix_suggestion_requests_owner_workflow_id",
             "owner_id",
             "workflow_id",
             "id",
+        ),
+        Index(
+            "ix_suggestion_requests_pending_cloud_expiry",
+            "expires_at",
+            "id",
+            postgresql_where=text(
+                "status = 'pending' AND queued_at IS NOT NULL"
+            ),
         ),
     )
 
@@ -240,6 +277,19 @@ class WorkflowSuggestionRequestRow(Base):
         JSONB, nullable=False, server_default=text("'[]'::jsonb")
     )
     error_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    queued_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    provider_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    goal_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+    clarification_snapshot: Mapped[dict[str, str] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
 
 
 # Short aliases keep the journal row discoverable to service and persistence callers.

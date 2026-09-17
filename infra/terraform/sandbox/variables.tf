@@ -375,6 +375,68 @@ variable "migration_job" {
   }
 }
 
+variable "async_suggestions" {
+  description = "Opt-in Cloud Tasks suggestion delivery: queue, private worker, invocation/runtime identities, and expiry schedule. Null disables all async resources. Secret keys must reference inventoried secret metadata; versions are numeric Secret Manager versions."
+  type = object({
+    worker_name             = string
+    worker_image            = string
+    queue_name              = string
+    scheduler_name          = string
+    invoker_account_id      = string
+    worker_account_id       = string
+    scheduler_paused        = optional(bool, true)
+    database_secret_key     = string
+    database_secret_version = string
+    provider_secret_key     = string
+    provider_secret_version = string
+    provider_model          = string
+  })
+  default  = null
+  nullable = true
+
+  validation {
+    condition     = var.async_suggestions == null || can(regex("@sha256:[0-9a-f]{64}$", var.async_suggestions.worker_image))
+    error_message = "async_suggestions.worker_image must end with an immutable SHA-256 digest."
+  }
+
+  validation {
+    condition = var.async_suggestions == null || alltrue([
+      can(regex("^[1-9][0-9]*$", var.async_suggestions.database_secret_version)),
+      can(regex("^[1-9][0-9]*$", var.async_suggestions.provider_secret_version)),
+    ])
+    error_message = "async_suggestions secret versions must be positive numeric Secret Manager versions."
+  }
+
+  validation {
+    condition = var.async_suggestions == null || alltrue([
+      contains(keys(var.secrets), var.async_suggestions.database_secret_key),
+      contains(keys(var.secrets), var.async_suggestions.provider_secret_key),
+    ])
+    error_message = "async_suggestions secret keys must reference existing secret metadata."
+  }
+
+  validation {
+    condition     = var.async_suggestions == null || length(trimspace(var.async_suggestions.provider_model)) > 0
+    error_message = "async_suggestions.provider_model must be a nonempty non-secret value."
+  }
+
+  validation {
+    condition = var.async_suggestions == null || alltrue([
+      length(trimspace(var.async_suggestions.worker_name)) > 0,
+      length(trimspace(var.async_suggestions.queue_name)) > 0,
+      length(trimspace(var.async_suggestions.scheduler_name)) > 0,
+      length(trimspace(var.async_suggestions.invoker_account_id)) > 0,
+      length(trimspace(var.async_suggestions.worker_account_id)) > 0,
+    ])
+    error_message = "async_suggestions names and account IDs must not be empty."
+  }
+
+  validation {
+    condition     = var.async_suggestions == null || (contains(var.enabled_services, "cloudtasks.googleapis.com") && contains(var.enabled_services, "cloudscheduler.googleapis.com"))
+    error_message = "async_suggestions requires cloudtasks.googleapis.com and cloudscheduler.googleapis.com in enabled_services."
+  }
+}
+
 variable "github_delivery" {
   description = "GitHub continuous-delivery identity settings, or null when delivery is not configured. Learner supplies real values locally; never commit them."
   type = object({
