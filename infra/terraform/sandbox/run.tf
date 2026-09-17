@@ -176,7 +176,12 @@ resource "google_cloud_run_v2_service" "api" {
     }
   }
 
-  depends_on = [google_project_service.required, google_project_iam_member.owned, google_secret_manager_secret_iam_member.access]
+  depends_on = [
+    google_project_service.required,
+    google_project_iam_member.owned,
+    google_secret_manager_secret_iam_member.access,
+    google_project_iam_member.trace_api,
+  ]
 
   # Release-owned fields: the release workflow deploys revisions by digest
   # and moves traffic. Terraform keeps all stable configuration.

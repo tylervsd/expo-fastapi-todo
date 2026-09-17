@@ -161,7 +161,12 @@ resource "google_cloud_run_v2_service" "worker" {
     }
   }
 
-  depends_on = [google_project_service.required, google_project_iam_member.worker_sql_client, google_secret_manager_secret_iam_member.worker_secret_access]
+  depends_on = [
+    google_project_service.required,
+    google_project_iam_member.worker_sql_client,
+    google_secret_manager_secret_iam_member.worker_secret_access,
+    google_project_iam_member.trace_worker,
+  ]
 
   # Release-owned field: the release workflow deploys worker revisions by
   # digest. Terraform keeps all stable configuration.

@@ -78,7 +78,23 @@ Enabling observability in Terraform sets `TRACE_EXPORT_ENABLED=true` on both API
 
 ## 4. Open one complete suggestion waterfall
 
-With authorization for a real provider call, create a disposable sandbox workflow with synthetic text. Submit a suggestion, find the API reservation log by its request ID, and follow its trace link into Cloud Trace. Record the `suggestion_id`, trace URL, and span IDs.
+With authorization for a real provider call, create a disposable sandbox workflow with synthetic text. Submit a suggestion and record the client request ID (`suggestion_request_id`). Find the committed reservation log with Logs Explorer:
+
+```text
+resource.type="cloud_run_revision"
+jsonPayload.event="suggestion_reserved"
+jsonPayload.suggestion_request_id="<suggestion-request-id>"
+```
+
+Then join to the enqueue attempt using the same request ID:
+
+```text
+resource.type="cloud_run_revision"
+jsonPayload.event="suggestion_enqueue"
+jsonPayload.suggestion_request_id="<suggestion-request-id>"
+```
+
+The enqueue log carries the `suggestion_id` and deterministic task ID. Use its trace fields or the reservation log's trace link to open Cloud Trace. Record the `suggestion_id`, trace URL, and span IDs.
 
 Verify these application spans share a trace ID:
 
