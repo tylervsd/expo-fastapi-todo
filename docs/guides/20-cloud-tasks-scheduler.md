@@ -255,14 +255,13 @@ First activation ships the compatible image **without** activating cloud mode.
    Set `api.runtime.revision = null` in local tfvars so Cloud Run generates a
    fresh revision name; an existing release revision is immutable. Temporarily
    remove `template[0].revision` from the API resource's `ignore_changes` in
-   `infra/terraform/sandbox/run.tf` for this configuration apply. Restore that
-   entry immediately afterward, before subsequent plans or releases, so
-   Terraform continues to ignore release-owned revision names. Do not commit
-   the temporary lifecycle edit. After restoring it, run a follow-up plan and
-   verify there is no API revision drift. Plan and
-   apply the reviewed configuration. This creates the API configuration
-   revision. Terraform preserves existing traffic, so explicitly route traffic
-   to the verified new revision below to enable enqueue; the queue stays paused.
+   `infra/terraform/sandbox/run.tf`, then plan and apply as shown below.
+   Immediately after apply, restore that ignore entry before further Terraform
+   work or releases. Do not commit the temporary lifecycle edit.
+
+   The apply creates the API configuration revision. Terraform preserves
+   existing traffic, so explicitly route traffic to the verified new revision
+   below to enable enqueue; the queue stays paused.
    GitHub variables alone do not configure the API container: `release.yml`
    consumes only the two worker release variables below.
 
@@ -270,6 +269,9 @@ First activation ships the compatible image **without** activating cloud mode.
    terraform -chdir=infra/terraform/sandbox plan -out=/tmp/sandbox-phase20-activate.tfplan
    # Inspect stable configuration, image preservation, and traffic before apply.
    terraform -chdir=infra/terraform/sandbox apply /tmp/sandbox-phase20-activate.tfplan
+   # NOW restore template[0].revision in the API resource's ignore_changes.
+   # Then verify no API revision drift before proceeding:
+   terraform -chdir=infra/terraform/sandbox plan -input=false
    gcloud run services describe "$CLOUD_SERVICE" \
      --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" \
      --format='yaml(spec.template.spec.containers[0].env)'
