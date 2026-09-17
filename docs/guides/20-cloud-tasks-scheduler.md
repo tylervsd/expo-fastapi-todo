@@ -253,7 +253,11 @@ First activation ships the compatible image **without** activating cloud mode.
    ```
 
    Set `api.runtime.revision = null` in local tfvars so Cloud Run generates a
-   fresh revision name; an existing release revision is immutable. Plan and
+   fresh revision name; an existing release revision is immutable. Temporarily
+   remove `template[0].revision` from the API resource's `ignore_changes` in
+   `infra/terraform/sandbox/run.tf` for this configuration apply. Restore that
+   entry immediately afterward, before subsequent plans or releases, so
+   Terraform continues to ignore release-owned revision names. Plan and
    apply the reviewed configuration. This creates the API configuration
    revision. Terraform preserves existing traffic, so explicitly route traffic
    to the verified new revision below to enable enqueue; the queue stays paused.

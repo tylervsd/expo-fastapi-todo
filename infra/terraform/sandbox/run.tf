@@ -155,12 +155,11 @@ resource "google_cloud_run_v2_service" "api" {
 
   # Release-owned fields: the release workflow deploys revisions by digest
   # and moves traffic. Terraform keeps all stable configuration.
-  # Keep api.runtime.revision null after adoption so configuration changes
-  # receive a fresh name instead of reusing an immutable release revision.
   lifecycle {
     prevent_destroy = true
     ignore_changes = [
       template[0].containers[0].image,
+      template[0].revision,
       traffic,
     ]
   }
