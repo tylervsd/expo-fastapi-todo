@@ -658,6 +658,14 @@ run "dashboard" {
     condition     = strcontains(google_monitoring_dashboard.observability[0].dashboard_json, "HTTP success is not a saved suggestion")
     error_message = "The dashboard must keep native request status distinct from saved outcomes."
   }
+  assert {
+    condition     = strcontains(google_monitoring_dashboard.observability[0].dashboard_json, "\"timeSeriesQueryLanguage\":\"fetch")
+    error_message = "MQL dashboard queries must emit timeSeriesQueryLanguage as a string."
+  }
+  assert {
+    condition     = !strcontains(google_monitoring_dashboard.observability[0].dashboard_json, "\"timeSeriesQueryLanguage\":{\"query\"")
+    error_message = "MQL dashboard queries must not wrap the query in an object; the API rejects it."
+  }
 }
 
 run "dashboard_without_async" {

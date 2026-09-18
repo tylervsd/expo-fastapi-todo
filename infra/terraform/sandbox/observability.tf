@@ -75,7 +75,7 @@ locals {
           xyChart = {
             dataSets = [{
               plotType        = "LINE"
-              timeSeriesQuery = { timeSeriesQueryLanguage = { query = local.observability_api_count_query } }
+              timeSeriesQuery = { timeSeriesQueryLanguage = local.observability_api_count_query }
             }]
           }
         }
@@ -88,7 +88,7 @@ locals {
           xyChart = {
             dataSets = [{
               plotType        = "LINE"
-              timeSeriesQuery = { timeSeriesQueryLanguage = { query = local.observability_api_latency_query } }
+              timeSeriesQuery = { timeSeriesQueryLanguage = local.observability_api_latency_query }
             }]
           }
         }
@@ -103,7 +103,7 @@ locals {
           xyChart = {
             dataSets = [{
               plotType        = "LINE"
-              timeSeriesQuery = { timeSeriesQueryLanguage = { query = "fetch cloud_run_revision | metric 'run.googleapis.com/request_count' | filter resource.service_name == '${local.observability_worker_name}' | group_by [metric.label.response_code_class] | align rate(60s) | every 60s" } }
+              timeSeriesQuery = { timeSeriesQueryLanguage = "fetch cloud_run_revision | metric 'run.googleapis.com/request_count' | filter resource.service_name == '${local.observability_worker_name}' | group_by [metric.label.response_code_class] | align rate(60s) | every 60s" }
             }]
           }
         }
@@ -116,7 +116,7 @@ locals {
           xyChart = {
             dataSets = [{
               plotType        = "LINE"
-              timeSeriesQuery = { timeSeriesQueryLanguage = { query = "fetch cloud_run_revision | metric 'run.googleapis.com/request_latencies' | filter resource.service_name == '${local.observability_worker_name}' | group_by [], [p95: percentile(value.request_latencies, 95)] | every 60s" } }
+              timeSeriesQuery = { timeSeriesQueryLanguage = "fetch cloud_run_revision | metric 'run.googleapis.com/request_latencies' | filter resource.service_name == '${local.observability_worker_name}' | group_by [], [p95: percentile(value.request_latencies, 95)] | every 60s" }
             }]
           }
         }
@@ -129,7 +129,7 @@ locals {
           xyChart = {
             dataSets = [{
               plotType        = "LINE"
-              timeSeriesQuery = { timeSeriesQueryLanguage = { query = "fetch cloud_tasks_queue | metric 'cloudtasks.googleapis.com/queue/depth' | filter resource.queue_id == '${local.observability_queue_name}' | align max(60s) | every 60s" } }
+              timeSeriesQuery = { timeSeriesQueryLanguage = "fetch cloud_tasks_queue | metric 'cloudtasks.googleapis.com/queue/depth' | filter resource.queue_id == '${local.observability_queue_name}' | align max(60s) | every 60s" }
             }]
           }
         }
@@ -142,7 +142,7 @@ locals {
           xyChart = {
             dataSets = [{
               plotType        = "LINE"
-              timeSeriesQuery = { timeSeriesQueryLanguage = { query = "fetch cloud_tasks_queue | metric 'cloudtasks.googleapis.com/queue/task_attempt_count' | filter resource.queue_id == '${local.observability_queue_name}' | group_by [metric.label.response_code] | align rate(60s) | every 60s" } }
+              timeSeriesQuery = { timeSeriesQueryLanguage = "fetch cloud_tasks_queue | metric 'cloudtasks.googleapis.com/queue/task_attempt_count' | filter resource.queue_id == '${local.observability_queue_name}' | group_by [metric.label.response_code] | align rate(60s) | every 60s" }
             }]
           }
         }
@@ -157,7 +157,7 @@ locals {
           xyChart = {
             dataSets = [{
               plotType        = "LINE"
-              timeSeriesQuery = { timeSeriesQueryLanguage = { query = "fetch cloudsql_database | metric 'cloudsql.googleapis.com/database/postgresql/num_backends' | filter resource.database_id == '${local.observability_sql_id}' | group_by [] | align max(60s) | every 60s" } }
+              timeSeriesQuery = { timeSeriesQueryLanguage = "fetch cloudsql_database | metric 'cloudsql.googleapis.com/database/postgresql/num_backends' | filter resource.database_id == '${local.observability_sql_id}' | group_by [] | align max(60s) | every 60s" }
             }]
           }
         }
@@ -170,7 +170,7 @@ locals {
           xyChart = {
             dataSets = [{
               plotType        = "LINE"
-              timeSeriesQuery = { timeSeriesQueryLanguage = { query = "fetch cloudsql_database | metric 'cloudsql.googleapis.com/database/cpu/utilization' | filter resource.database_id == '${local.observability_sql_id}' | align mean(60s) | every 60s" } }
+              timeSeriesQuery = { timeSeriesQueryLanguage = "fetch cloudsql_database | metric 'cloudsql.googleapis.com/database/cpu/utilization' | filter resource.database_id == '${local.observability_sql_id}' | align mean(60s) | every 60s" }
             }]
           }
         }
@@ -183,7 +183,7 @@ locals {
           xyChart = {
             dataSets = [{
               plotType        = "LINE"
-              timeSeriesQuery = { timeSeriesQueryLanguage = { query = "fetch cloudsql_database | metric 'cloudsql.googleapis.com/database/memory/utilization' | filter resource.database_id == '${local.observability_sql_id}' | align mean(60s) | every 60s" } }
+              timeSeriesQuery = { timeSeriesQueryLanguage = "fetch cloudsql_database | metric 'cloudsql.googleapis.com/database/memory/utilization' | filter resource.database_id == '${local.observability_sql_id}' | align mean(60s) | every 60s" }
             }]
           }
         }
@@ -196,7 +196,7 @@ locals {
           xyChart = {
             dataSets = [{
               plotType        = "LINE"
-              timeSeriesQuery = { timeSeriesQueryLanguage = { query = "fetch global | metric 'logging.googleapis.com/user/phase21_provider_calls' | group_by [metric.label.operation] | align rate(60s) | every 60s" } }
+              timeSeriesQuery = { timeSeriesQueryLanguage = "fetch global | metric 'logging.googleapis.com/user/phase21_provider_calls' | group_by [metric.label.operation] | align rate(60s) | every 60s" }
             }]
           }
         }
@@ -209,7 +209,7 @@ locals {
           xyChart = {
             dataSets = [{
               plotType        = "LINE"
-              timeSeriesQuery = { timeSeriesQueryLanguage = { query = "fetch global | metric 'logging.googleapis.com/user/phase21_provider_duration_ms' | group_by [metric.label.operation], [p95: percentile(value.distribution, 95)] | every 60s" } }
+              timeSeriesQuery = { timeSeriesQueryLanguage = "fetch global | metric 'logging.googleapis.com/user/phase21_provider_duration_ms' | group_by [metric.label.operation], [p95: percentile(value.distribution, 95)] | every 60s" }
             }]
           }
         }
@@ -222,7 +222,7 @@ locals {
           xyChart = {
             dataSets = [{
               plotType        = "LINE"
-              timeSeriesQuery = { timeSeriesQueryLanguage = { query = "fetch global | metric 'logging.googleapis.com/user/phase21_suggestion_outcomes' | group_by [metric.label.outcome] | align rate(60s) | every 60s" } }
+              timeSeriesQuery = { timeSeriesQueryLanguage = "fetch global | metric 'logging.googleapis.com/user/phase21_suggestion_outcomes' | group_by [metric.label.outcome] | align rate(60s) | every 60s" }
             }]
           }
         }
