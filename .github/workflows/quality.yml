@@ -46,8 +46,12 @@ jobs:
       - run: terraform -chdir=infra/terraform/sandbox validate
       - run: terraform -chdir=infra/terraform/drill init -backend=false -lockfile=readonly
       - run: terraform -chdir=infra/terraform/drill validate
+      - run: terraform -chdir=infra/terraform/kms-lab init -backend=false -lockfile=readonly
+      - run: terraform -chdir=infra/terraform/kms-lab fmt -check -recursive
+      - run: terraform -chdir=infra/terraform/kms-lab validate
       - run: terraform -chdir=infra/terraform/sandbox test -no-color
       - run: terraform -chdir=infra/terraform/drill test -no-color
+      - run: terraform -chdir=infra/terraform/kms-lab test -no-color
 
   application:
     runs-on: ubuntu-latest
@@ -89,6 +93,8 @@ jobs:
       - run: pnpm lint:api
       - run: pnpm test:api
       - run: pnpm test:release
+      - run: pnpm test:kms
+      - run: uv run --directory apps/api ruff check ../../scripts/kms_lab.py ../../tests/test_kms_lab.py
       - run: uv run --directory apps/api ruff check ../../scripts/release_smoke.py ../../scripts/release_deploy.py ../../tests/test_release.py
       - run: pnpm build:web
       - run: pnpm build:pages

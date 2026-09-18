@@ -12,6 +12,10 @@ billing link, state bucket, Cloudflare Pages, Secret Manager payloads or
 versions, SQL passwords, or Alembic execution. `terraform.tfvars.example` is
 sanitized mock input only, not an inventory or deployment target.
 
+## Phase 22 KMS lab
+
+`kms-lab/` is a separate root with its own `fullstack/phase22-kms` backend prefix. It provisions one protected software key and two lab-only identities for synthetic fixtures. IAM APIs remain owned by the sandbox; this root owns the KMS API only. No existing application CMEK settings change. See [Guide 22](../../docs/guides/22-cloud-kms.md) for inputs, audit prerequisites, offline checks, explicit lifecycle drills, cost review, and pending live acceptance. Never use `terraform destroy` as automatic lab cleanup.
+
 ## Local tooling
 
 Terraform is pinned to 1.14.7 in `.terraform-version`. On macOS ARM64, keep

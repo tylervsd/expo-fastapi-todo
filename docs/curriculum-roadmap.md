@@ -239,6 +239,7 @@ Phases 7-9 build one guided-todo creation feature to teach backend-owned state t
 - **Learning experiment:** Rotate a key and demonstrate that rotation changes the primary version without automatically re-encrypting existing ciphertext.
 - **Non-goals:** Encrypting ordinary todo fields without a threat-model need, HSM/EKM, asymmetric PKI, inventing cryptographic primitives, and destroying an in-use key version.
 - **Spec gate:** Approve the concrete data classification and use case, key location and purpose, IAM roles, rotation period, ciphertext metadata, re-encryption plan, disable/destroy approvals, recovery, and cost.
+- **Status:** Spec, plan, and local lab implementation authorized on 2026-09-18. The isolated Terraform root and synthetic-fixture runner are implemented; cloud provisioning and learner acceptance remain pending. See the [design](superpowers/specs/2026-09-18-cloud-kms-design.md), [plan](superpowers/plans/2026-09-18-cloud-kms.md), and [walkthrough](guides/22-cloud-kms.md).
 
 ## 23. Resilience and production operations
 

@@ -1,0 +1,3 @@
+# Use the existing protected state bucket, with this separate lab prefix.
+bucket = "example-fullstack-terraform-state"
+prefix = "fullstack/phase22-kms"
