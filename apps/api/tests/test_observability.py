@@ -30,17 +30,17 @@ from app.observability import (
 from app.tracing import current_span_ids as current_trace_ids
 from app.tracing import init_tracing, shutdown_tracing
 
-BODY_SECRET = "SENTINEL_BODY_SECRET_9f8a1c"
-QUERY_SECRET = "SENTINEL_QUERY_SECRET_7b2d4e"
-HEADER_SECRET = "SENTINEL_HEADER_SECRET_3e6f9a"
-SQL_SECRET = "SENTINEL_SQL_SECRET_5c1b8d"
-EXCEPTION_SECRET = "SENTINEL_EXCEPTION_SECRET_2a7e4f"
+BODY_SENTINEL = "SENTINEL_BODY_9f8a1c"
+QUERY_SENTINEL = "SENTINEL_QUERY_7b2d4e"
+HEADER_SENTINEL = "SENTINEL_HEADER_3e6f9a"
+SQL_SENTINEL = "SENTINEL_SQL_5c1b8d"
+EXCEPTION_SENTINEL = "SENTINEL_EXCEPTION_2a7e4f"
 ALL_SENTINELS = (
-    BODY_SECRET,
-    QUERY_SECRET,
-    HEADER_SECRET,
-    SQL_SECRET,
-    EXCEPTION_SECRET,
+    BODY_SENTINEL,
+    QUERY_SENTINEL,
+    HEADER_SENTINEL,
+    SQL_SENTINEL,
+    EXCEPTION_SENTINEL,
 )
 
 
@@ -69,11 +69,11 @@ def test_log_event_redacts_hostile_fields(
         outcome="transport_error",
         suggestion_id=42,
         attempt_id="attempt-1",
-        goal=BODY_SECRET,
-        query=QUERY_SECRET,
-        authorization=HEADER_SECRET,
-        sql=SQL_SECRET,
-        exc_text=EXCEPTION_SECRET,
+        goal=BODY_SENTINEL,
+        query=QUERY_SENTINEL,
+        authorization=HEADER_SENTINEL,
+        sql=SQL_SENTINEL,
+        exc_text=EXCEPTION_SENTINEL,
     )
     records = read_json_lines(capsys.readouterr().out)
     assert_no_sentinels(records)
@@ -91,7 +91,7 @@ def test_exception_records_exclude_traceback_text(
 ) -> None:
     logger = logging.getLogger(APP_LOGGER_NAME)
     try:
-        raise ValueError(f"query failed: {SQL_SECRET} {EXCEPTION_SECRET}")
+        raise ValueError(f"query failed: {SQL_SENTINEL} {EXCEPTION_SENTINEL}")
     except ValueError:
         logger.exception("database operation failed")
     records = read_json_lines(capsys.readouterr().out)
@@ -107,11 +107,11 @@ def test_direct_app_logger_calls_are_redacted(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     logger = logging.getLogger(APP_LOGGER_NAME)
-    logger.info("user said %s", BODY_SECRET)
-    logger.info(f"query {QUERY_SECRET} header {HEADER_SECRET}")
-    logger.warning("worker state %s", SQL_SECRET)
+    logger.info("user said %s", BODY_SENTINEL)
+    logger.info(f"query {QUERY_SENTINEL} header {HEADER_SENTINEL}")
+    logger.warning("worker state %s", SQL_SENTINEL)
     try:
-        raise ValueError(EXCEPTION_SECRET)
+        raise ValueError(EXCEPTION_SENTINEL)
     except ValueError:
         logger.exception("direct exception with traceback")
     records = read_json_lines(capsys.readouterr().out)
@@ -133,7 +133,7 @@ def test_direct_app_calls_keep_allowlisted_fields(
         extra={
             "suggestion_id": 7,
             "outcome": "ready",
-            "goal": BODY_SECRET,
+            "goal": BODY_SENTINEL,
         },
     )
     records = read_json_lines(capsys.readouterr().out)
@@ -160,16 +160,16 @@ def test_production_uvicorn_handlers_cannot_bypass_formatter(
         configure_logging("test-service")
         assert error_logger.handlers == []
         assert error_logger.propagate is True
-        error_logger.info("GET /todos?secret=%s", QUERY_SECRET)
+        error_logger.info("GET /todos?secret=%s", QUERY_SENTINEL)
         try:
-            raise ValueError(EXCEPTION_SECRET)
+            raise ValueError(EXCEPTION_SENTINEL)
         except ValueError:
             error_logger.exception("uvicorn worker crashed")
     finally:
         error_logger.handlers = []
         error_logger.propagate = True
-    assert QUERY_SECRET not in raw.getvalue()
-    assert EXCEPTION_SECRET not in raw.getvalue()
+    assert QUERY_SENTINEL not in raw.getvalue()
+    assert EXCEPTION_SENTINEL not in raw.getvalue()
     records = read_json_lines(capsys.readouterr().out)
     assert_no_sentinels(records)
     assert "Traceback" not in json.dumps(records)
@@ -199,16 +199,16 @@ def test_generic_third_party_handlers_cannot_bypass_formatter(
         assert access_logger.disabled or not access_logger.isEnabledFor(
             logging.INFO
         )
-        vendor_logger.info("query %s", QUERY_SECRET)
+        vendor_logger.info("query %s", QUERY_SENTINEL)
         try:
-            raise ValueError(EXCEPTION_SECRET)
+            raise ValueError(EXCEPTION_SENTINEL)
         except ValueError:
             vendor_logger.exception("vendor boom")
     finally:
         vendor_logger.handlers = []
         vendor_logger.propagate = True
-    assert QUERY_SECRET not in raw.getvalue()
-    assert EXCEPTION_SECRET not in raw.getvalue()
+    assert QUERY_SENTINEL not in raw.getvalue()
+    assert EXCEPTION_SENTINEL not in raw.getvalue()
     records = read_json_lines(capsys.readouterr().out)
     assert_no_sentinels(records)
     assert "Traceback" not in json.dumps(records)
@@ -232,16 +232,16 @@ def test_late_third_party_handler_cannot_bypass_formatter(
     late_logger.addHandler(plain)
     late_logger.propagate = False
     try:
-        late_logger.info("payload %s", QUERY_SECRET)
+        late_logger.info("payload %s", QUERY_SENTINEL)
         try:
-            raise ValueError(EXCEPTION_SECRET)
+            raise ValueError(EXCEPTION_SENTINEL)
         except ValueError:
             late_logger.exception("late vendor failure")
     finally:
         late_logger.handlers = []
         late_logger.propagate = True
-    assert QUERY_SECRET not in raw.getvalue()
-    assert EXCEPTION_SECRET not in raw.getvalue()
+    assert QUERY_SENTINEL not in raw.getvalue()
+    assert EXCEPTION_SENTINEL not in raw.getvalue()
     records = read_json_lines(capsys.readouterr().out)
     assert_no_sentinels(records)
     assert "Traceback" not in json.dumps(records)
@@ -257,10 +257,10 @@ def test_third_party_records_are_redacted(
     # uvicorn.error still flows (startup/exception output) and must be
     # sanitized; sqlalchemy stands in for other third-party libraries.
     logging.getLogger("uvicorn.error").info(
-        'GET /todos?secret=%s "Bearer %s"', QUERY_SECRET, HEADER_SECRET
+        'GET /todos?secret=%s "Bearer %s"', QUERY_SENTINEL, HEADER_SENTINEL
     )
     logging.getLogger("sqlalchemy.engine.Engine").info(
-        "SELECT * FROM todos WHERE title = '%s'", SQL_SECRET
+        "SELECT * FROM todos WHERE title = '%s'", SQL_SENTINEL
     )
     records = read_json_lines(capsys.readouterr().out)
     assert_no_sentinels(records)
@@ -282,8 +282,8 @@ def test_uvicorn_access_logging_disabled_centrally(
     access_logger = logging.getLogger("uvicorn.access")
     assert access_logger.disabled or not access_logger.isEnabledFor(logging.INFO)
     # Disabled access output emits nothing: no duplicate, no leak.
-    access_logger.info("GET /todos?secret=%s", QUERY_SECRET)
-    assert QUERY_SECRET not in capsys.readouterr().out
+    access_logger.info("GET /todos?secret=%s", QUERY_SENTINEL)
+    assert QUERY_SENTINEL not in capsys.readouterr().out
 
 
 def test_http_request_event_end_to_end(
@@ -297,7 +297,7 @@ def test_http_request_event_end_to_end(
     with TestClient(app) as client:
         # No credentials: 401 before any database work, keeping this test
         # DB-free. Header/query redaction is covered at the unit level.
-        response = client.get(f"/todos?secret={QUERY_SECRET}")
+        response = client.get(f"/todos?secret={QUERY_SENTINEL}")
     assert response.status_code == 401
     records = read_json_lines(capsys.readouterr().out)
     assert_no_sentinels(records)
@@ -410,7 +410,7 @@ def test_unexpected_fault_is_sanitized(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     try:
-        raise RuntimeError(f"raw failure: {EXCEPTION_SECRET}")
+        raise RuntimeError(f"raw failure: {EXCEPTION_SENTINEL}")
     except RuntimeError:
         # The exception instance is never attached: only a safe code travels.
         log_unexpected_fault("provider_timeout", location="test:1")

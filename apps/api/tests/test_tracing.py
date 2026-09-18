@@ -47,17 +47,17 @@ from app.tracing import (
     start_stored_span,
 )
 
-BODY_SECRET = "SENTINEL_BODY_SECRET_9f8a1c"
-QUERY_SECRET = "SENTINEL_QUERY_SECRET_7b2d4e"
-HEADER_SECRET = "SENTINEL_HEADER_SECRET_3e6f9a"
-SQL_SECRET = "SENTINEL_SQL_SECRET_5c1b8d"
-EXCEPTION_SECRET = "SENTINEL_EXCEPTION_SECRET_2a7e4f"
+BODY_SENTINEL = "SENTINEL_BODY_9f8a1c"
+QUERY_SENTINEL = "SENTINEL_QUERY_7b2d4e"
+HEADER_SENTINEL = "SENTINEL_HEADER_3e6f9a"
+SQL_SENTINEL = "SENTINEL_SQL_5c1b8d"
+EXCEPTION_SENTINEL = "SENTINEL_EXCEPTION_2a7e4f"
 ALL_SENTINELS = (
-    BODY_SECRET,
-    QUERY_SECRET,
-    HEADER_SECRET,
-    SQL_SECRET,
-    EXCEPTION_SECRET,
+    BODY_SENTINEL,
+    QUERY_SENTINEL,
+    HEADER_SENTINEL,
+    SQL_SENTINEL,
+    EXCEPTION_SENTINEL,
 )
 
 
@@ -308,10 +308,10 @@ def test_span_attributes_and_events_exclude_secrets(
         {
             "http.method": "POST",
             "http.route": "/todo-workflows/{workflow_id}/suggestions",
-            "goal": BODY_SECRET,
-            "query": QUERY_SECRET,
-            "authorization": HEADER_SECRET,
-            "sql": SQL_SECRET,
+            "goal": BODY_SENTINEL,
+            "query": QUERY_SENTINEL,
+            "authorization": HEADER_SENTINEL,
+            "sql": SQL_SENTINEL,
         }
     )
     assert attributes == {
@@ -325,8 +325,8 @@ def test_span_attributes_and_events_exclude_secrets(
             span,
             "provider_call",
             outcome="ok",
-            error_detail=EXCEPTION_SECRET,
-            body=BODY_SECRET,
+            error_detail=EXCEPTION_SENTINEL,
+            body=BODY_SENTINEL,
         )
         set_span_outcome(span, "success")
     assert flush_tracing(state) is True
@@ -342,7 +342,7 @@ def test_no_automatic_exception_recording(
         pytest.raises(RuntimeError, match="db failed"),
         start_safe_span(state.tracer, "db.reserve_suggestion"),
     ):
-        raise RuntimeError(f"db failed: {EXCEPTION_SECRET}")
+        raise RuntimeError(f"db failed: {EXCEPTION_SENTINEL}")
     assert flush_tracing(state) is True
     spans = exporter.get_finished_spans()
     assert len(spans) == 1
@@ -382,7 +382,7 @@ def make_stub_app(
             )
             seen["span_id_in_request"] = current_span_ids()[1]
         if mode == "raise":
-            raise RuntimeError(f"unexpected fault {EXCEPTION_SECRET}")
+            raise RuntimeError(f"unexpected fault {EXCEPTION_SENTINEL}")
         body_chunks = [b"chunk-a", b"chunk-b"] if mode == "stream" else [b"hello"]
         await send(  # type: ignore[operator]
             {
@@ -422,8 +422,8 @@ def drive_middleware(stack: object, path: str = "/todos") -> dict[str, list[obje
         "scheme": "http",
         "path": path,
         "raw_path": path.encode(),
-        "query_string": f"secret={QUERY_SECRET}".encode(),
-        "headers": [(b"authorization", f"Bearer {HEADER_SECRET}".encode())],
+        "query_string": f"secret={QUERY_SENTINEL}".encode(),
+        "headers": [(b"authorization", f"Bearer {HEADER_SENTINEL}".encode())],
         "client": ("test", 1234),
         "server": ("test", 80),
     }
@@ -821,7 +821,7 @@ def test_boundary_extraction_ignores_baggage_values() -> None:
     context = extract_boundary_context(
         [
             (b"traceparent", b"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"),
-            (b"baggage", f"secret={HEADER_SECRET}".encode("latin-1")),
+            (b"baggage", f"secret={HEADER_SENTINEL}".encode("latin-1")),
         ]
     )
     assert trace.get_current_span(context).get_span_context().is_valid
@@ -841,7 +841,7 @@ def test_inject_emits_traceparent_without_baggage(
     try:
         with state.tracer.start_as_current_span("op"):
             token = otel_context.attach(
-                baggage_api.set_baggage("secret", HEADER_SECRET)
+                baggage_api.set_baggage("secret", HEADER_SENTINEL)
             )
             try:
                 carrier: dict[str, str] = {}
@@ -905,7 +905,7 @@ def test_failing_probe_exception_flushes_before_raise(
         state.flush = counting_flush  # type: ignore[method-assign]
 
         async def boom(scope: object, receive: object, send: object) -> None:
-            raise RuntimeError(f"probe fault {EXCEPTION_SECRET}")
+            raise RuntimeError(f"probe fault {EXCEPTION_SENTINEL}")
 
         stack = TracingMiddleware(boom, state_provider=lambda: state)  # type: ignore[arg-type]
 
