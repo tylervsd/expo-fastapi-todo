@@ -215,7 +215,7 @@ Open the project billing view and provider-key usage separately. Compare dates, 
 | Saved expiry failure and actionable email | Partial live | Saved failure observed via provider invalid_output (suggestion 8); sweep-driven expiry drill not run |
 | SQL threshold email and restoration | Deferred by learner | Threshold 17 set from observed usable capacity (25 max − 3 reserved); email drill not run |
 | Sanitized Error Reporting fixture | Deferred by learner | Local exception-shape tests pass; live fixture not run |
-| Retention and cost review | Learner-verified 2026-09-18 | Billing/provider/retention reviewed by learner (notes local); log buckets confirmed 30d _Default / 400d _Required |
+| Retention and cost review | Learner-verified 2026-09-18 | Billing/provider/retention reviewed by learner (notes local); log buckets confirmed `30d _Default` / `400d _Required` |
 | Final Terraform state and restored sample rate/queue/configuration | Applied 2026-09-18 | Sample rate restored 0.1 on serving revisions (API 00025-jd7, worker 00007-jqj); queue RUNNING, Scheduler ENABLED; plan shows only cosmetic dashboard normalization diff |
 
 Implementation, automated verification, and live acceptance are separate milestones. Record observed evidence and agreed deferrals; do not mark this phase complete from a dashboard screenshot or a successful mock plan.
