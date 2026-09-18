@@ -392,3 +392,25 @@ test("agent suggestions create edited todos", async ({ page }) => {
 
   await signOut(page, ["Gather reusable supplies", "Prepare workspace"]);
 });
+
+// Phase 22 uses the real application and DB with a test-only KMS boundary.
+test("registration welcomes a name after login and refresh", async ({ page }) => {
+  const username = `name_${Date.now().toString(36)}`;
+  const password = "phase22-example-password";
+  await page.goto("/");
+  await page.getByRole("button", { name: "New here? Create an account." }).click();
+  await page.getByLabel("Real name (optional)", { exact: true }).fill("Élodie 王");
+  await page.getByLabel("Username", { exact: true }).fill(username);
+  await page.getByLabel("Password", { exact: true }).fill(password);
+  await page.getByRole("button", { name: "Create account", exact: true }).click();
+  await expect(page.getByText("Account created. Please sign in.")).toBeVisible();
+  await signIn(page, { username, password });
+  await expect(page.getByText("Welcome, Élodie 王", { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.getByText("Welcome, Élodie 王", { exact: true })).toBeVisible();
+  const persisted = await page.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage }));
+  expect(persisted).not.toContain("Élodie");
+  await page.getByRole("button", { name: "Sign out", exact: true }).click();
+  await expect(page.getByText("Welcome, Élodie 王", { exact: true })).not.toBeVisible();
+  await expect(page.getByRole("button", { name: "Sign in", exact: true })).toBeVisible();
+});

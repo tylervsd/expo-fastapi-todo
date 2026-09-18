@@ -59,6 +59,12 @@ from app.database import (
     create_session_factory,
     get_database_url,
 )
+from app.name_encryption import (
+    NameCipher,
+    NameUnavailable,
+    normalize_name,
+    validate_key,
+)
 from app.observability import RequestLoggingMiddleware, configure_logging, log_event
 from app.passwords import DUMMY_PASSWORD_HASH, hash_password, verify_password
 from app.suggestion_provider import (
@@ -171,6 +177,7 @@ def validate_password(password: str) -> str:
 class UserPublic(BaseModel):
     id: UUID
     username: str
+    real_name: str | None = None
 
 
 class UserSignup(BaseModel):
@@ -178,6 +185,12 @@ class UserSignup(BaseModel):
 
     username: StrictStr
     password: StrictStr
+    real_name: StrictStr | None = Field(default=None, max_length=100)
+
+    @field_validator("real_name")
+    @classmethod
+    def check_real_name(cls, name: str | None) -> str | None:
+        return normalize_name(name) if name is not None else None
 
     @field_validator("username")
     @classmethod
@@ -467,7 +480,11 @@ def create_app(
     suggestion_callable: SuggestionCallable | None = None,
     agent_choice: ChoiceCallable | None = None,
     enqueue_callable: EnqueueCallable | None = None,
+    name_cipher: NameCipher | None = None,
 ) -> FastAPI:
+    name_key = os.environ.get("REAL_NAME_KMS_KEY")
+    if name_key is not None:
+        validate_key(name_key)
     execution_mode = os.environ.get("SUGGESTION_EXECUTION", "inline")
     if execution_mode not in ("inline", "cloud_tasks"):
         raise ValueError(
@@ -489,6 +506,9 @@ def create_app(
             engine = create_database_engine(get_database_url())
             factory = create_session_factory(engine)
         app.state.session_factory = factory
+        app.state.name_cipher = name_cipher
+        if name_cipher is None and name_key is not None:
+            app.state.name_cipher = NameCipher(name_key)
         # Lifespan-owned tracer/exporter setup: initialized once per
         # process lifetime, closed on shutdown. Tests inject an in-memory
         # exporter via app.state.tracing_exporter before startup.
@@ -499,6 +519,8 @@ def create_app(
         try:
             yield
         finally:
+            if name_cipher is None and app.state.name_cipher is not None:
+                app.state.name_cipher.client.transport.close()
             shutdown_tracing(getattr(app.state, "tracing_state", None))
             app.state.tracing_state = None
             if engine is not None:
@@ -533,8 +555,16 @@ def create_app(
     def as_todo(row: TodoRow) -> Todo:
         return Todo(id=row.public_id, title=row.title, completed=row.completed)
 
-    def as_user(row: UserRow) -> UserPublic:
-        return UserPublic(id=row.public_id, username=row.username)
+    def as_user(row: UserRow, *, include_name: bool = False) -> UserPublic:
+        real_name = None
+        if include_name and row.real_name_ciphertext is not None:
+            try:
+                if app.state.name_cipher is None:
+                    raise NameUnavailable("Name decryption not configured.")
+                real_name = app.state.name_cipher.decrypt(row.public_id, row.real_name_ciphertext)
+            except NameUnavailable:
+                log_event("profile_name_unavailable", outcome="unavailable", error_code="name_decrypt_unavailable")
+        return UserPublic(id=row.public_id, username=row.username, real_name=real_name)
 
     def unauthorized() -> HTTPException:
         return HTTPException(status_code=401, detail="Not authenticated.")
@@ -581,9 +611,11 @@ def create_app(
         request: Request,
         exc: RequestValidationError,
     ) -> JSONResponse:
-        del request
-        detail = escape_surrogates(jsonable_encoder(exc.errors()))
-        return JSONResponse(status_code=422, content={"detail": detail})
+        errors = exc.errors()
+        if request.url.path.startswith("/auth/"):
+            errors = [{"loc": error["loc"], "type": error["type"], "msg": "Invalid account input."} for error in errors]
+        detail = escape_surrogates(jsonable_encoder(errors))
+        return JSONResponse(status_code=422, content={"detail": detail}, headers={"Cache-Control": "no-store"})
 
     app.add_middleware(
         CORSMiddleware,
@@ -593,18 +625,30 @@ def create_app(
         allow_headers=["Content-Type", "Authorization"],
     )
 
-    @app.post("/auth/signup", response_model=UserPublic, status_code=201)
+    @app.post("/auth/signup", response_model=UserPublic, status_code=201, response_model_exclude_none=True)
     def signup(
-        payload: UserSignup, session: Annotated[Session, Depends(get_session)]
+        payload: UserSignup, response: Response, session: Annotated[Session, Depends(get_session)]
     ) -> UserPublic:
+        response.headers["Cache-Control"] = "no-store"
+        public_id = uuid4()
+        ciphertext = None
+        if payload.real_name is not None:
+            try:
+                if app.state.name_cipher is None:
+                    raise NameUnavailable("Name encryption not configured.")
+                ciphertext = app.state.name_cipher.encrypt(public_id, payload.real_name)
+            except NameUnavailable as exc:
+                log_event("profile_name_unavailable", outcome="unavailable", error_code="name_encrypt_unavailable")
+                raise HTTPException(status_code=503, detail="Account creation temporarily unavailable.") from exc
         try:
             with session.begin():
                 user = as_user(
                     create_user(
                         session,
-                        uuid4(),
+                        public_id,
                         payload.username,
                         hash_password(payload.password),
+                        ciphertext,
                     )
                 )
             return user
@@ -615,10 +659,11 @@ def create_app(
                 status_code=503, detail="Database unavailable."
             ) from exc
 
-    @app.post("/auth/login", response_model=SessionResponse)
+    @app.post("/auth/login", response_model=SessionResponse, response_model_exclude_none=True)
     def login(
-        payload: UserLogin, session: Annotated[Session, Depends(get_session)]
+        payload: UserLogin, response: Response, session: Annotated[Session, Depends(get_session)]
     ) -> SessionResponse:
+        response.headers["Cache-Control"] = "no-store"
         try:
             with session.begin():
                 user = find_user_by_username(session, payload.username)
@@ -634,10 +679,9 @@ def create_app(
                 expires_at = datetime.now(UTC) + timedelta(days=30)
                 create_session(session, user.id, hash_token(token), expires_at)
                 delete_expired_sessions(session, user.id)
-                response = SessionResponse(
-                    token=token, expires_at=expires_at, user=as_user(user)
-                )
-            return response
+            return SessionResponse(
+                token=token, expires_at=expires_at, user=as_user(user, include_name=True)
+            )
         except (OperationalError, SQLAlchemyTimeoutError) as exc:
             raise HTTPException(
                 status_code=503, detail="Database unavailable."
@@ -660,9 +704,10 @@ def create_app(
                 status_code=503, detail="Database unavailable."
             ) from exc
 
-    @app.get("/auth/me", response_model=UserPublic)
-    def read_me(user: Annotated[UserRow, Depends(get_current_user)]) -> UserPublic:
-        return as_user(user)
+    @app.get("/auth/me", response_model=UserPublic, response_model_exclude_none=True)
+    def read_me(response: Response, user: Annotated[UserRow, Depends(get_current_user)]) -> UserPublic:
+        response.headers["Cache-Control"] = "no-store"
+        return as_user(user, include_name=True)
 
     def as_workflow_response(snapshot: WorkflowSnapshot) -> TodoWorkflowResponse:
         view: WorkflowView = present_workflow(snapshot)

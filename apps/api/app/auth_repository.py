@@ -8,6 +8,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Identity,
+    LargeBinary,
     Text,
     delete,
     func,
@@ -28,6 +29,7 @@ class UserRow(Base):
     )
     username: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    real_name_ciphertext: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
 
 
 class SessionRow(Base):
@@ -52,9 +54,11 @@ def hash_token(token: str) -> str:
 
 
 def create_user(
-    session: Session, public_id: UUID, username: str, password_hash: str
+    session: Session, public_id: UUID, username: str, password_hash: str,
+    real_name_ciphertext: bytes | None = None,
 ) -> UserRow:
-    user = UserRow(public_id=public_id, username=username, password_hash=password_hash)
+    user = UserRow(public_id=public_id, username=username, password_hash=password_hash,
+                   real_name_ciphertext=real_name_ciphertext)
     session.add(user)
     session.flush()
     return user

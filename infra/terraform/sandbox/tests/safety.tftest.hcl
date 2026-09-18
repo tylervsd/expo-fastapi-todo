@@ -417,3 +417,52 @@ run "delivery_identity" {
     error_message = "The deploy identity must hold no secret-access grants."
   }
 }
+
+# Phase 22: application key is separate from the destructive fixture lab.
+override_resource {
+  target          = google_kms_crypto_key.profile
+  override_during = plan
+  values = {
+    id = "projects/example-phase18-project/locations/us-west1/keyRings/fullstack-profile/cryptoKeys/real-name"
+  }
+}
+
+run "profile_encryption_disabled" {
+  command = plan
+  assert {
+    condition     = length(google_kms_crypto_key.profile) == 0 && length(google_kms_crypto_key_iam_member.profile_api) == 0
+    error_message = "Default configuration must not create a profile key or crypto grants."
+  }
+  assert {
+    condition     = !contains([for env in google_cloud_run_v2_service.api.template[0].containers[0].env : env.name], "REAL_NAME_KMS_KEY")
+    error_message = "Unconfigured API must not point at a key."
+  }
+}
+
+run "profile_encryption_api_only" {
+  command = plan
+  variables {
+    real_name_encryption = true
+  }
+  assert {
+    condition = (
+      google_kms_crypto_key.profile[0].name == "real-name" &&
+      google_kms_key_ring.profile[0].name == "fullstack-profile" &&
+      google_kms_crypto_key.profile[0].deletion_policy == "PREVENT" &&
+      google_kms_crypto_key.profile[0].rotation_period == "7776000s" &&
+      google_kms_crypto_key.profile[0].destroy_scheduled_duration == "2592000s" &&
+      google_kms_crypto_key.profile[0].version_template[0].protection_level == "SOFTWARE"
+    )
+    error_message = "Keep application names separate from the lab and protect key recovery."
+  }
+  assert {
+    condition = (
+      length(google_kms_crypto_key_iam_member.profile_api) == 1 &&
+      google_kms_crypto_key_iam_member.profile_api[0].role == "roles/cloudkms.cryptoKeyEncrypterDecrypter" &&
+      google_kms_crypto_key_iam_member.profile_api[0].member == "serviceAccount:${var.api.identity}" &&
+      google_kms_crypto_key_iam_member.profile_api[0].crypto_key_id == google_kms_crypto_key.profile[0].id &&
+      one([for env in google_cloud_run_v2_service.api.template[0].containers[0].env : env.value if env.name == "REAL_NAME_KMS_KEY"]) == google_kms_crypto_key.profile[0].id
+    )
+    error_message = "Only the API identity receives key-scoped crypto access and the API receives its key ID."
+  }
+}

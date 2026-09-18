@@ -80,7 +80,7 @@ it("restores a stored session into the todo experience", async () => {
   await render(<App />);
 
   await waitFor(() => expect(screen.getByText("No todos yet. Add one above.")).toBeTruthy());
-  expect(screen.getByText("Signed in as alice")).toBeTruthy();
+  expect(screen.getByText("Welcome, alice")).toBeTruthy();
   expect(mockedFetchMe).toHaveBeenCalledWith({ token: "tok" });
   expect(mockedListTodos).toHaveBeenCalledTimes(1);
   expect(mockedListTodos.mock.calls[0]?.[0]?.signal).toBeInstanceOf(AbortSignal);

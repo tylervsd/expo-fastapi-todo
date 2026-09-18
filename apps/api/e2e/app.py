@@ -17,6 +17,8 @@ from contextlib import asynccontextmanager
 
 from app.database import create_database_engine, create_session_factory
 from app.main import create_app
+from app.name_encryption import NameCipher
+from e2e.name_kms import FakeNameKms
 from e2e.support import choice, suggestions, validated_database_url
 
 _ingress_logger = logging.getLogger("e2e.ingress")
@@ -97,6 +99,10 @@ app = create_app(
     _session_factory,
     suggestion_callable=suggestions,
     agent_choice=choice,
+    name_cipher=NameCipher(
+        "projects/example-project/locations/us-west1/keyRings/fullstack-profile/cryptoKeys/real-name",
+        client=FakeNameKms(),
+    ),
 )
 
 

@@ -67,6 +67,20 @@ it("renders sign-in form with a create-account toggle", async () => {
   expect(screen.getByRole("button", { name: "Have an account? Sign in." })).toBeTruthy();
 });
 
+it("submits an optional real name only at registration and clears the draft", async () => {
+  const { signup } = await setup();
+  expect(screen.queryByLabelText("Real name (optional)")).toBeNull();
+  await fireEvent.press(screen.getByRole("button", { name: "New here? Create an account." }));
+  await fireEvent.changeText(screen.getByLabelText("Real name (optional)"), "  Élodie 王  ");
+  await fireEvent.changeText(screen.getByLabelText("Username"), "alice");
+  await fireEvent.changeText(screen.getByLabelText("Password"), "long-enough-password");
+  await fireEvent.press(screen.getByRole("button", { name: "Create account" }));
+  await waitFor(() => expect(signup).toHaveBeenCalledWith("alice", "long-enough-password", "Élodie 王"));
+  await waitFor(() => expect(screen.queryByLabelText("Real name (optional)")).toBeNull());
+  await fireEvent.press(screen.getByRole("button", { name: "New here? Create an account." }));
+  expect(screen.getByLabelText("Real name (optional)")).toHaveProp("value", "");
+});
+
 it("shows local copy for empty fields without a request", async () => {
   const { login, signup } = await setup();
 

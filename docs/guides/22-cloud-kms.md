@@ -1,6 +1,74 @@
 # Phase 22: Cloud KMS and encryption lifecycle
 
-**Status:** Local lab implementation; live provisioning and learner acceptance have not been performed. Use synthetic data only. [Spec](../superpowers/specs/2026-09-18-cloud-kms-design.md) and [implementation plan](../superpowers/plans/2026-09-18-cloud-kms.md).
+**Status:** Full-stack encrypted-name implementation plus a separate lifecycle lab. Live KMS provisioning and learner acceptance have not been performed. Use synthetic data only. [Spec](../superpowers/specs/2026-09-18-cloud-kms-design.md) and [implementation plan](../superpowers/plans/2026-09-18-cloud-kms.md).
+
+## Full-stack exercise: encrypted registration names
+
+The main application now accepts an optional **Real name** at registration. After sign-in or session restoration, web and iOS show `Welcome, <name>`; existing users and unavailable names show the username. Use invented names throughout this learning exercise.
+
+```text
+Registration form → HTTPS API → Cloud KMS Encrypt → users.real_name_ciphertext
+Authenticated login / GET /auth/me → Cloud KMS Decrypt → Welcome, <name>
+```
+
+The database has a nullable BYTEA column, not a plaintext name column. The backend uses the Python KMS SDK; key material never enters the browser, app container or database. AAD binds each name to its owner's UUID and the `users.real_name` field. This prevents copying a ciphertext into another user's row and successfully decrypting it there. CRC32C checks cover transport integrity; RPCs have a 3-second timeout and no automatic retries.
+
+**Protection boundary:** someone who obtains only a database dump cannot read names without KMS access. An authorized API process can decrypt them, so a compromised API identity is still a threat. Names necessarily exist as plaintext in the registration form, API memory, authenticated response, and welcome screen. TLS, application authorization, data minimization and retention still matter. Password hashing remains unchanged.
+
+### Provision and deploy the application key
+
+The sandbox's opt-in `real_name_encryption = true` creates a **separate** `fullstack-profile/real-name` key and grants only the API runtime identity key-scoped encrypt/decrypt. The worker, migration job, browser and lab identities get no grant. The lab root below owns KMS API enablement: apply it first (or resolve the single existing API owner before adoption). Never run disable/destroy exercises against the application key.
+
+1. Review the application migration, dependency lockfile and deployment using the existing Phase 19 release workflow. Migration `2026091801` must run before the new API revision; existing rows remain NULL. An old API can still run against the additive column.
+2. In the ignored sandbox tfvars, set `real_name_encryption = true`. Review the sandbox plan: one application key ring, one key, one key-scoped IAM member and the API's `REAL_NAME_KMS_KEY` environment variable. Preserve release-owned images/traffic and other existing resources. Apply only the reviewed plan, then deploy the compatible API image through the existing migration-first release path. If infrastructure is applied while the old image is serving, it ignores the new environment variable until code rollout.
+3. Deploy the updated web/iOS clients and coordinate supported client versions before using names. Old clients strictly validate user responses and cannot display named accounts; ensure those clients are updated. New clients tolerate old nameless responses. Until the new API and KMS permissions are ready, entering a name can fail registration; omitting it remains supported.
+4. Keep key rotation at 90 days and destruction scheduling at 30 days, following the same cost/audit review as the lab. Names add an encryption call on named signup and a decryption call on each named login/session restoration, not on every todo operation. Enable KMS DATA_READ logs through the existing policy owner and review access/retention.
+
+```sh
+terraform -chdir=infra/terraform/sandbox plan -out=profile.tfplan
+terraform -chdir=infra/terraform/sandbox show profile.tfplan
+# After reviewing the concrete plan:
+terraform -chdir=infra/terraform/sandbox apply profile.tfplan
+terraform -chdir=infra/terraform/sandbox output -raw real_name_key_id
+```
+
+For local development, apply the migration to your development database, use authorized ADC, and export the observed key resource into the API process before starting it. The `.env.example` is documentation, not an automatically loaded configuration. Prefer service-account impersonation scoped to the application key; no downloaded key files. The ordinary application has no fake encryption mode. If `REAL_NAME_KMS_KEY` is absent, nameless signup still works, but supplying a name returns 503 and creates no user. Invalid key configuration fails startup.
+
+### Verify the vertical slice
+
+- Register a fresh account with an invented Unicode name, for example `Élodie 王`. Sign in and verify the greeting. Refresh web/restart iOS and verify session restoration obtains the same name. Sign out and verify the greeting disappears. Names must not appear in localStorage, sessionStorage, SecureStore, workflow drafts or token contents; only the existing session token is persisted.
+- Query your own test row using an authorized DB connection. Check ciphertext existence and length without exposing name plaintext or dumping all user data:
+
+```sql
+SELECT public_id, username,
+       real_name_ciphertext IS NOT NULL AS has_encrypted_name,
+       octet_length(real_name_ciphertext) AS encrypted_bytes
+FROM users WHERE username = 'your_synthetic_test_username';
+```
+
+- Confirm there is no plaintext name column or plaintext name in a private dump of that row. A byte count alone does not prove encryption; combine DB inspection with a real successful KMS round trip and audit evidence. Do not commit database dumps.
+- Check authenticated `/auth/me` and login include `real_name` only for that user and send `Cache-Control: no-store`. Signup does not return the name. Anonymous access and wrong-password login must not trigger a decrypt call. No profile name is sent to the AI provider.
+- Test KMS outage/permission denial in local automated tests: a named signup fails with no account inserted; an existing login and `/auth/me` still work with no `real_name`, producing the username greeting and a safe `profile_name_unavailable` log event. The name returns on the next successful login/session restoration after recovery. There is no polling, cache or profile editor.
+- Rotate the **application** key by creating a new primary while keeping older versions enabled. Revisit an older account and create a new named account: both names must display. Rotation does not rewrite stored rows. Do not disable or destroy old application versions; database backups retain dependencies on them. The isolated lab below is where state-failure exercises belong.
+- Review logs/traces and audit metadata for the request. They must not contain names, ciphertext, credentials or raw SDK errors. Auth validation responses exclude raw input/context. Use synthetic fixtures for fault injection.
+
+Rollback retains the nullable column, application key, IAM grant and old key versions. Do not downgrade the name migration, set the adopted Terraform flag back to false, or remove deletion protections: those actions can lose names or attempt key destruction. Rolling back code may temporarily remove the greeting, but it must preserve decryptability. Changing to an entirely different logical key requires a separate data migration; automatic version rotation within the same key does not.
+
+### Automated and live acceptance
+
+Automated API tests use the real PostgreSQL schema and a fake KMS client at the SDK boundary. Browser E2E uses the real exported application, auth/session routes and database with that same test-only boundary. The fake stores opaque test handles and lives only in `e2e/`; the production Docker image copies `app/` and excludes it. These checks prove integration behavior, not Google encryption or IAM.
+
+| Application acceptance | Status |
+| --- | --- |
+| API/storage, SDK integrity, owner binding, failure and privacy tests | Local verification recorded below |
+| Shared form/header, strict transport, legacy users and session cleanup | Local verification recorded below |
+| Browser signup → login → refresh → sign-out | Local verification recorded below |
+| Real KMS-backed web signup and private DB inspection | Pending live setup |
+| Real KMS-backed iOS signup and restored greeting | Pending live setup/device acceptance |
+| Application-key rotation with old/new named users | Pending live setup |
+| Runtime IAM, audit evidence and log/trace privacy inspection | Pending live setup |
+
+The remaining sections retain the separate synthetic lifecycle lab and its acceptance table.
 
 ## 1. What you should learn as a fintech CTO
 
@@ -297,12 +365,20 @@ Do not use `terraform destroy` for routine cleanup. Leave the protected key and 
 
 ### Local verification record
 
-Observed on 2026-09-18:
+Initial isolated-lab checks observed on 2026-09-18:
 
 - Nine Python runner tests pass; only the gcloud subprocess is faked. Initial tests failed before implementation. Atomic publication and concurrent no-clobber behavior are covered.
 - Four Terraform mock-plan runs pass; `fmt -check` and `validate` pass against Terraform 1.14.7 / Google 8.2.0. Tests first failed on absent lab resources. Provider socket access required running offline Terraform checks outside the filesystem sandbox.
 - Ruff, changed-document Markdown lint, relative file-link checks, and walkthrough shell syntax checks pass. The gcloud encryption flags were checked against the installed CLI's help.
 - The 21 repository contract checks pass.
-- The pnpm wrapper initially attempted an unnecessary dependency install in the fresh worktree and hit restricted network access. The same `test:kms` command passed with `pnpm_config_verify_deps_before_run=false`; no dependency changes were made.
+- The pnpm wrapper initially attempted an unnecessary dependency install in the fresh worktree and hit restricted network access. The same `test:kms` command passed with `pnpm_config_verify_deps_before_run=false`; that initial isolated-lab implementation made no dependency changes. The full-stack extension subsequently added the KMS SDK and CRC32C helper.
+
+Full-stack extension verified on 2026-09-18:
+
+- API: 710 tests pass against local PostgreSQL, including the encrypted-name contracts with a fake KMS SDK boundary.
+- Shared mobile/web code: 548 tests pass; TypeScript checks pass. Expo lint has no errors (44 existing warnings).
+- Terraform sandbox: 50 mock-plan checks pass, including opt-in application key and API-only grant; validation passes.
+- Exported web: registration, named greeting after login/refresh, sign-out, and no name in browser storage pass in Playwright. The test-only API fakes KMS, not authentication or PostgreSQL.
+- Ruff, changed-document Markdown lint and local relative file links pass. The full external-link checker could not reach remote sites in this environment (status 0); this is not evidence that those links are broken.
 
 No real cloud API, IAM, billing, encryption, audit delivery or recovery results are implied by these checks. All live acceptance rows remain pending.

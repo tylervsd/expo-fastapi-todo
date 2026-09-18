@@ -11,7 +11,7 @@ import {
 import { TodoApiError, type AuthUser, type Session } from "../todos/todoApi";
 
 export type AuthApi = {
-  signup: (username: string, password: string) => Promise<AuthUser>;
+  signup: (username: string, password: string, realName?: string) => Promise<AuthUser>;
   login: (username: string, password: string) => Promise<Session>;
 };
 
@@ -42,6 +42,7 @@ export function AuthScreen({
   const [mode, setMode] = useState<Mode>("signin");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [realName, setRealName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const busy = useRef(false);
@@ -55,7 +56,8 @@ export function AuthScreen({
     busy.current = true;
     setPending(true);
     setError(null);
-    const attempt = mode === "signin" ? login(username, password) : signup(username, password);
+    const attempt = mode === "signin" ? login(username, password)
+      : realName.trim() ? signup(username, password, realName.trim()) : signup(username, password);
     void attempt.then(
       (result) => {
         if (mode === "signin") {
@@ -64,6 +66,7 @@ export function AuthScreen({
           setMode("signin");
           setUsername(username);
           setPassword("");
+          setRealName("");
           setError(CREATED_MESSAGE);
         }
       },
@@ -79,6 +82,7 @@ export function AuthScreen({
   const toggleMode = () => {
     if (busy.current || pending) return;
     setError(null);
+    setRealName("");
     setMode((current) => (current === "signin" ? "signup" : "signin"));
   };
 
@@ -98,6 +102,22 @@ export function AuthScreen({
           </Text>
         )}
         <View style={styles.form}>
+          {mode === "signup" && <>
+            <Text style={styles.fieldLabel}>Real name (optional)</Text>
+            <TextInput
+              accessibilityLabel="Real name (optional)"
+              testID="e2e-auth-real-name"
+              editable={!pending}
+              value={realName}
+              maxLength={100}
+              autoComplete="name"
+              autoCapitalize="words"
+              autoCorrect={false}
+              onChangeText={setRealName}
+              placeholder="Your name"
+              style={styles.input}
+            />
+          </>}
           <Text style={styles.fieldLabel}>Username</Text>
           <TextInput
             accessibilityLabel="Username"

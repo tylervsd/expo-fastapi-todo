@@ -6,7 +6,7 @@ This is a planned curriculum extension after Phase 6, not an implementation guid
 
 The [curriculum roadmap](curriculum-roadmap.md) adds Phase 7 for backend workflow modeling, Phase 8 for server-directed screens, and Phase 9 for workflow reliability. Phase 10 adds Python/OpenRouter suggestions, and Phase 11 adds assistant-ui/AG-UI interactions. A CI security baseline and cross-platform E2E follow before the provisional cloud curriculum in Phases 13–29. Phase 28 adds Hex dashboards over Phase 26 BigQuery analytics; Phase 29 adds Datadog RUM for web and iOS, building on Phase 21 observability. Existing guide numbers and checkpoint tags remain unchanged.
 
-Phase 22 now has an isolated synthetic-PII KMS lab: [spec](superpowers/specs/2026-09-18-cloud-kms-design.md), [implementation plan](superpowers/plans/2026-09-18-cloud-kms.md), and [walkthrough](guides/22-cloud-kms.md). Local implementation is available; live cloud and learner acceptance are pending. The lab does not change application storage.
+Phase 22 now adds encrypted registration names and a welcome greeting, alongside an isolated synthetic-PII KMS lifecycle lab: [spec](superpowers/specs/2026-09-18-cloud-kms-design.md), [implementation plan](superpowers/plans/2026-09-18-cloud-kms.md), and [walkthrough](guides/22-cloud-kms.md). Local implementation is available; live cloud and learner acceptance are pending. The application stores names only as ciphertext; destructive exercises stay on a separate lab key.
 
 ## Design principle
 

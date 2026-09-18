@@ -197,9 +197,21 @@ it("restores a stored session and shows the user with sign-out", async () => {
   await storage.set("tok-1");
   await renderProvider({ authApi, storage });
 
-  await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
+  await waitFor(() => expect(screen.getByText("Welcome, alice")).toBeTruthy());
   expect(authApi.fetchMe).toHaveBeenCalledWith({ token: "tok-1" });
   expect(screen.getByRole("button", { name: "Sign out" })).toBeTruthy();
+});
+
+it("welcomes the restored real name and clears it at sign-out", async () => {
+  const authApi = makeAuthApi();
+  authApi.fetchMe.mockResolvedValue({ ...alice, real_name: "Élodie 王" });
+  const storage = createMemoryTokenStorage();
+  await storage.set("tok-1");
+  await renderProvider({ authApi, storage });
+  await waitFor(() => expect(screen.getByText("Welcome, Élodie 王")).toBeTruthy());
+  await fireEvent.press(screen.getByRole("button", { name: "Sign out" }));
+  await waitFor(() => expect(screen.queryByText("Welcome, Élodie 王")).toBeNull());
+  expect(await storage.get()).toBeNull();
 });
 
 it("clears a revoked token and falls back to sign-in", async () => {
@@ -286,7 +298,7 @@ it("completes sign-in from the form and stores the session", async () => {
   await fireEvent.changeText(screen.getByLabelText("Password"), "long-enough-password");
   await fireEvent.press(screen.getByRole("button", { name: "Sign in" }));
 
-  await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
+  await waitFor(() => expect(screen.getByText("Welcome, alice")).toBeTruthy());
   expect(await storage.get()).toBe("tok-1");
   expect(authApi.login).toHaveBeenCalledWith("alice", "long-enough-password");
 });
@@ -356,7 +368,7 @@ describe("session identity", () => {
       pendingSets[1]();
     });
     await act(async () => {});
-    expect(screen.getByText("Signed in as bob")).toBeTruthy();
+    expect(screen.getByText("Welcome, bob")).toBeTruthy();
     expect(await storage.get()).toBe("tok-B");
   });
 
@@ -373,18 +385,18 @@ describe("session identity", () => {
 
     await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
     await signInThroughForm("alice", "long-enough-password");
-    await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Welcome, alice")).toBeTruthy());
 
     await fireEvent.press(screen.getByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
     await signInThroughForm("bob", "long-enough-password");
-    await waitFor(() => expect(screen.getByText("Signed in as bob")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Welcome, bob")).toBeTruthy());
 
     await act(async () => {
       pendingList.reject(new TodoApiError("auth-required", "Please sign in again."));
     });
 
-    expect(screen.getByText("Signed in as bob")).toBeTruthy();
+    expect(screen.getByText("Welcome, bob")).toBeTruthy();
     expect(await storage.get()).toBe("tok-B");
     expect(authApi.logout).toHaveBeenCalledTimes(1);
     expect(authApi.logout).toHaveBeenCalledWith({ token: "tok-A" });
@@ -403,7 +415,7 @@ describe("session identity", () => {
     transport.setTodoCompleted.mockReturnValueOnce(pendingUpdate.promise);
     await renderProvider({ authApi, storage, transport });
 
-    await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Welcome, alice")).toBeTruthy());
     await waitFor(() =>
       expect(screen.getByRole("checkbox", { name: "Row" })).toBeTruthy()
     );
@@ -426,7 +438,7 @@ describe("session identity", () => {
     authApi.logout.mockReturnValueOnce(pendingLogout.promise as Promise<undefined>);
     await renderProvider({ authApi, storage });
 
-    await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Welcome, alice")).toBeTruthy());
     await fireEvent.press(screen.getByRole("button", { name: "Sign out" }));
 
     expect(screen.queryByLabelText("Username")).toBeNull();
@@ -497,7 +509,7 @@ describe("workflow shell integration", () => {
 
     await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
     await signInThroughForm("alice", "long-enough-password");
-    await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Welcome, alice")).toBeTruthy());
     await fireEvent.press(screen.getByRole("button", { name: "Help me plan a task" }));
     await fireEvent.changeText(screen.getByLabelText("Task title"), "Plan birthday party");
     await fireEvent.press(screen.getByRole("button", { name: "Start planning" }));
@@ -531,7 +543,7 @@ describe("workflow shell integration", () => {
 
     await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
     await signInThroughForm("alice", "long-enough-password");
-    await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Welcome, alice")).toBeTruthy());
     await fireEvent.press(screen.getByRole("button", { name: "Help me plan a task" }));
     await fireEvent.changeText(screen.getByLabelText("Task title"), "Plan birthday party");
     await fireEvent.press(screen.getByRole("button", { name: "Start planning" }));
@@ -539,13 +551,13 @@ describe("workflow shell integration", () => {
     await fireEvent.press(screen.getByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
     await signInThroughForm("bob", "long-enough-password");
-    await waitFor(() => expect(screen.getByText("Signed in as bob")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Welcome, bob")).toBeTruthy());
 
     await act(async () => {
       pendingStart.reject(new TodoApiError("auth-required", "Please sign in again."));
     });
 
-    expect(screen.getByText("Signed in as bob")).toBeTruthy();
+    expect(screen.getByText("Welcome, bob")).toBeTruthy();
     expect(await storage.get()).toBe("tok-B");
     expect(authApi.logout).toHaveBeenCalledTimes(1);
   });
@@ -561,7 +573,7 @@ describe("workflow shell integration", () => {
 
     await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
     await signInThroughForm("alice", "long-enough-password");
-    await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Welcome, alice")).toBeTruthy());
     await fireEvent.press(screen.getByRole("button", { name: "Help me plan a task" }));
     await fireEvent.changeText(screen.getByLabelText("Task title"), "Plan birthday party");
     await fireEvent.press(screen.getByRole("button", { name: "Start planning" }));
@@ -612,7 +624,7 @@ describe("session epoch", () => {
     await storage.set("tok-1");
     const { seen } = await renderWithProbe({ authApi, storage });
 
-    await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Welcome, alice")).toBeTruthy());
     expect(latest(seen).epoch).toBe(1);
     expect(latest(seen).current(1)).toBe(true);
     expect(latest(seen).current(0)).toBe(false);
@@ -635,7 +647,7 @@ describe("session epoch", () => {
     expect(latest(seen).epoch).toBe(1);
 
     await signInThroughForm("alice", "long-enough-password");
-    await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Welcome, alice")).toBeTruthy());
     expect(latest(seen).epoch).toBe(2);
     expect(latest(seen).current(1)).toBe(false);
 
@@ -644,7 +656,7 @@ describe("session epoch", () => {
     expect(latest(seen).epoch).toBe(3);
 
     await signInThroughForm("alice", "long-enough-password");
-    await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Welcome, alice")).toBeTruthy());
     expect(latest(seen).epoch).toBe(4);
     expect(latest(seen).current(3)).toBe(false);
     expect(latest(seen).current(4)).toBe(true);
@@ -675,19 +687,19 @@ describe("session epoch", () => {
 
     await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
     await signInThroughForm("alice", "long-enough-password");
-    await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Welcome, alice")).toBeTruthy());
 
     await fireEvent.press(screen.getByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
     await signInThroughForm("bob", "long-enough-password");
-    await waitFor(() => expect(screen.getByText("Signed in as bob")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Welcome, bob")).toBeTruthy());
     const epochAfterSwitch = latest(seen).epoch;
 
     await act(async () => {
       pendingList.reject(new TodoApiError("auth-required", "Please sign in again."));
     });
 
-    expect(screen.getByText("Signed in as bob")).toBeTruthy();
+    expect(screen.getByText("Welcome, bob")).toBeTruthy();
     expect(latest(seen).epoch).toBe(epochAfterSwitch);
     expect(latest(seen).current(epochAfterSwitch)).toBe(true);
   });
@@ -705,7 +717,7 @@ describe("session epoch", () => {
 
     await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
     await signInThroughForm("alice", "long-enough-password");
-    await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Welcome, alice")).toBeTruthy());
     await fireEvent.press(screen.getByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
     void storage;
@@ -779,7 +791,7 @@ describe("agent session factory", () => {
     const seen: Array<AgentFactory | null> = [];
     await renderProvider({ authApi, storage, children: <AgentProbe seen={seen} /> });
 
-    await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Welcome, alice")).toBeTruthy());
     const factory = lastFactory(seen);
     expect(Object.keys(factory)).toEqual(["createAgent"]);
 
@@ -797,7 +809,7 @@ describe("agent session factory", () => {
 
     await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
     await signInThroughForm("alice", "long-enough-password");
-    await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Welcome, alice")).toBeTruthy());
     const first = lastFactory(seen);
     expect(first.createAgent(WORKFLOW_ID).headers).toEqual({
       Authorization: "Bearer tok-A",
@@ -806,7 +818,7 @@ describe("agent session factory", () => {
     await fireEvent.press(screen.getByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
     await signInThroughForm("bob", "long-enough-password");
-    await waitFor(() => expect(screen.getByText("Signed in as bob")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Welcome, bob")).toBeTruthy());
 
     const second = lastFactory(seen);
     expect(second).not.toBe(first);
@@ -824,7 +836,7 @@ describe("agent session factory", () => {
 
     await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
     await signInThroughForm("alice", "long-enough-password");
-    await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Welcome, alice")).toBeTruthy());
 
     const agent = lastFactory(seen).createAgent(WORKFLOW_ID);
     const abortSpy = jest.spyOn(HttpAgent.prototype, "abortRun");
@@ -843,7 +855,7 @@ describe("agent session factory", () => {
 
     await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
     await signInThroughForm("alice", "long-enough-password");
-    await waitFor(() => expect(screen.getByText("Signed in as alice")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Welcome, alice")).toBeTruthy());
 
     for (const query of client.getQueryCache().getAll()) {
       expect(JSON.stringify(query.queryKey)).not.toContain("tok-A");
