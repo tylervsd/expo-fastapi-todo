@@ -666,6 +666,22 @@ run "dashboard" {
     condition     = !strcontains(google_monitoring_dashboard.observability[0].dashboard_json, "\"timeSeriesQueryLanguage\":{\"query\"")
     error_message = "MQL dashboard queries must not wrap the query in an object; the API rejects it."
   }
+  assert {
+    condition     = !strcontains(google_monitoring_dashboard.observability[0].dashboard_json, "fetch global")
+    error_message = "User log-based metric tiles must fetch cloud_run_revision; the series inherit the log resource, so fetch global matches nothing."
+  }
+  assert {
+    condition     = !strcontains(google_monitoring_dashboard.observability[0].dashboard_json, "align max(")
+    error_message = "Gauge tiles must use group_by aggregation; align max() with a duration is rejected."
+  }
+  assert {
+    condition     = !strcontains(google_monitoring_dashboard.observability[0].dashboard_json, "align mean(")
+    error_message = "Gauge tiles must use group_by aggregation; align mean() with a duration is rejected."
+  }
+  assert {
+    condition     = strcontains(google_monitoring_dashboard.observability[0].dashboard_json, "max(value.")
+    error_message = "Gauge max tiles must aggregate the value column in group_by form."
+  }
 }
 
 run "dashboard_without_async" {
