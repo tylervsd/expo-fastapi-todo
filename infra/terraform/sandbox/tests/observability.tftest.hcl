@@ -682,6 +682,10 @@ run "dashboard" {
     condition     = strcontains(google_monitoring_dashboard.observability[0].dashboard_json, "max(value.")
     error_message = "Gauge max tiles must aggregate the value column in group_by form."
   }
+  assert {
+    condition     = !strcontains(google_monitoring_dashboard.observability[0].dashboard_json, "metric.label.")
+    error_message = "Dashboard MQL must use bare label names in group_by; the metric.label. qualifier fails to resolve."
+  }
 }
 
 run "dashboard_without_async" {
