@@ -231,6 +231,23 @@ async_suggestions = null
 #   provider_model          = "openrouter/free"
 # }
 
+# Phase 21 native observability is opt-in. Keep null in committed config; the
+# learner sets real deployment inputs locally after inventory: the existing
+# email notification-channel ID(s), the SQL threshold at 80% of observed
+# usable connection capacity, and the runbook URL. Never commit real channel
+# IDs or thresholds. Enabling observability also requires adding
+# "cloudtrace.googleapis.com" to enabled_services above (monitoring and
+# logging APIs are already listed). Trace/log retention stays separately
+# recorded: a 30-day log policy does not set Cloud Trace retention.
+observability = null
+# Example bootstrap inputs (sanitized mock values only, never committed set):
+# observability = {
+#   notification_channels    = ["projects/example-phase18-project/notificationChannels/1234567890123456789"]
+#   sql_connection_threshold = 40
+#   runbook_url              = "https://example.invalid/runbooks/observability"
+#   trace_sample_rate        = 0.1
+# }
+
 # Keep optional operations absent until inventory records existing IDs/settings or
 # a learner approves the separate additive budget/monitoring plan.
 budget     = null

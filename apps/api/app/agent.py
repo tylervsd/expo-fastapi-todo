@@ -41,13 +41,16 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from sqlalchemy.orm import Session
 
+from app.observability import log_event, log_unexpected_fault
 from app.suggestion_provider import (
     MAX_OUTPUT_TOKENS,
     InvalidSuggestionOutput,
     OpenRouterConfig,
     ProviderUnavailable,
     SuggestionsNotConfigured,
+    SuggestionTimeout,
     _post_openrouter_json,
+    emit_output_rejected,
     get_openrouter_config,
 )
 from app.suggestion_service import (
@@ -57,6 +60,7 @@ from app.suggestion_service import (
     suggestion_snapshot_from_row,
 )
 from app.title_validation import canonicalize_title
+from app.tracing import safe_span_attributes, start_safe_span
 from app.workflow_domain import (
     MAX_WORKFLOW_REVISION,
     WorkflowState,
@@ -262,8 +266,13 @@ async def choose_clarification(
         _choice_payload(canonical_goal, config.model.strip()),
         config,
         transport=transport,
+        operation="clarification",
     )
-    return _extract_choice_field(response_body)
+    try:
+        return _extract_choice_field(response_body)
+    except InvalidSuggestionOutput:
+        emit_output_rejected("clarification")
+        raise
 
 
 @dataclass(frozen=True)
@@ -550,11 +559,67 @@ def _current_suggestion(
         return None
 
 
+def _set_choice_outcome(span: Any, outcome: str) -> None:
+    # Bounded clarification outcome vocabulary (ok, timeout, unavailable,
+    # invalid_output, invalid_request): safe scalars only, never exception
+    # text. Telemetry failures stay silent.
+    if span is None:
+        return
+    try:
+        span.set_attributes(safe_span_attributes({"outcome": outcome}))
+    except Exception:  # noqa: BLE001, S110 - telemetry must never raise
+        pass
+
+
 async def agent_events(
     run_input: RunAgentInput,
     owner_id: int,
     session: Session,
     choose: ChoiceCallable = choose_clarification,
+    tracer: Any = None,
+) -> AsyncIterator[BaseEvent]:
+    """Stream one authenticated agent run as AG-UI events.
+
+    Emits `RUN_STARTED`, balanced tool-call events, then exactly one
+    `RUN_FINISHED` or `RUN_ERROR`. Reads the owner-scoped workflow and
+    suggestion rows, closes the read transaction before any provider call or
+    further event, and never calls `advance_workflow` or creates todos.
+    Cancellation (disconnect) propagates: provider work unwinds with the run.
+
+    One `agent_finished` log fires per terminal event (never on
+    cancellation) with a safe outcome; the clarification choice runs in a
+    `provider.clarification` span when a tracer is supplied. Semantic
+    errors travel inside the HTTP 200 stream, so the log carries the
+    outcome the status code cannot.
+    """
+    outcome: str | None = None
+    try:
+        async for event in _agent_events_inner(
+            run_input, owner_id, session, choose=choose, tracer=tracer
+        ):
+            event_type = getattr(event, "type", None)
+            if event_type == "RUN_FINISHED":
+                outcome = "success"
+            elif event_type == "RUN_ERROR":
+                outcome = (
+                    "invalid_request"
+                    if getattr(event, "code", None) == "invalid_request"
+                    else "agent_failed"
+                )
+            yield event
+    finally:
+        # Terminal events only: a disconnect closes the generator without
+        # a terminal event, so no finished log fires for cancelled runs.
+        if outcome is not None:
+            log_event("agent_finished", outcome=outcome)
+
+
+async def _agent_events_inner(
+    run_input: RunAgentInput,
+    owner_id: int,
+    session: Session,
+    choose: ChoiceCallable = choose_clarification,
+    tracer: Any = None,
 ) -> AsyncIterator[BaseEvent]:
     """Stream one authenticated agent run as AG-UI events.
 
@@ -674,7 +739,35 @@ async def agent_events(
         try:
             # Config stays unresolved until a real choice runs: injected test
             # doubles receive None and no provider call happens on other paths.
-            field = await choose(snapshot.title, None)
+            if tracer is None:
+                field = await choose(snapshot.title, None)
+            else:
+                with start_safe_span(
+                    tracer,
+                    "provider.clarification",
+                    attributes={"operation": "choose_clarification"},
+                ) as choice_span:
+                    try:
+                        field = await choose(snapshot.title, None)
+                    except SuggestionTimeout:
+                        _set_choice_outcome(choice_span, "timeout")
+                        raise
+                    except (ProviderUnavailable, SuggestionsNotConfigured):
+                        _set_choice_outcome(choice_span, "unavailable")
+                        raise
+                    except InvalidSuggestionOutput:
+                        _set_choice_outcome(choice_span, "invalid_output")
+                        raise
+                    except AgentValidationError:
+                        _set_choice_outcome(choice_span, "invalid_request")
+                        raise
+                    except Exception:
+                        _set_choice_outcome(choice_span, "unavailable")
+                        raise
+                    if field not in _CLARIFICATION_FIELDS:
+                        _set_choice_outcome(choice_span, "invalid_request")
+                        raise AgentValidationError("agent choice failed")
+                    _set_choice_outcome(choice_span, "ok")
         except AgentValidationError:
             raise
         except Exception as exc:
@@ -694,6 +787,7 @@ async def agent_events(
         yield RunErrorEvent(message=_SAFE_INVALID_MESSAGE, code="invalid_request")
     except Exception:  # noqa: BLE001 - map unexpected failures to a safe error event
         session.rollback()
+        log_unexpected_fault("agent_failed", location="agent")
         yield RunErrorEvent(message=_SAFE_PROVIDER_MESSAGE, code="agent_failed")
 
 
@@ -704,6 +798,7 @@ async def agent_sse_body(
     *,
     choose: ChoiceCallable = choose_clarification,
     is_disconnected: Callable[[], Awaitable[bool]],
+    tracer: Any = None,
 ) -> AsyncIterator[str]:
     """Encode one run as SSE chunks, stopping promptly on disconnect.
 
@@ -712,7 +807,7 @@ async def agent_sse_body(
     provider work instead of leaking it.
     """
     encoder = EventEncoder()
-    events = agent_events(run_input, owner_id, session, choose=choose)
+    events = agent_events(run_input, owner_id, session, choose=choose, tracer=tracer)
     try:
         async for event in events:
             if await is_disconnected():

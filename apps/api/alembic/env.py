@@ -13,7 +13,10 @@ from app.workflow_repository import (
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # Never disable existing loggers: in-process migration runs (tests,
+    # tooling) share the process with application logging, and the
+    # application owns its logging policy (see app/observability.py).
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = TodoRow.metadata
 

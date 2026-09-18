@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -61,6 +62,36 @@ class InvalidStoredSuggestion(ValueError):
 
 
 ClarificationField = Literal["date", "location", "people", "budget", "constraints"]
+
+# Phase 21 Task 2: canonical version-00 W3C traceparent carried as
+# diagnostic lineage alongside a cloud reservation. Exactly 55 characters
+# (`00-<32 hex>-<16 hex>-<2 hex>`), nonzero trace/parent IDs, never a
+# fingerprint or idempotency input.
+_TRACE_PARENT_RE = re.compile(r"^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$")
+
+
+def canonical_trace_parent(value: object) -> str | None:
+    """Validate an untrusted traceparent for durable lineage storage.
+
+    Returns the canonical value when it is a well-formed version-00 W3C
+    traceparent with nonzero IDs, else None. Telemetry input never fails
+    a reservation: callers store None for anything else.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if len(text) > 55 or _TRACE_PARENT_RE.match(text) is None:
+        return None
+    try:
+        from app.tracing import extract_stored_context
+    except Exception:  # noqa: BLE001 - tracing stays optional here
+        return None
+    if extract_stored_context(text) is None:
+        return None
+    parts = text.split("-")
+    if parts[1] == "0" * 32 or parts[2] == "0" * 16:
+        return None
+    return text
 
 # Cloud execution bounds from the Phase 20 spec: a reservation stays useful
 # for 15 minutes, while a committed provider claim lapses after 2 minutes.
@@ -281,6 +312,7 @@ def reserve_suggestion(
     clarification: Clarification | None = None,
     *,
     queued: bool = False,
+    trace_parent: str | None = None,
 ) -> SuggestionReservation | SuggestionSnapshot | None:
     canonical_clarification = (
         normalize_clarification(clarification) if clarification is not None else None
@@ -376,6 +408,10 @@ def reserve_suggestion(
             provider_started_at=None,
             goal_snapshot=goal_snapshot,
             clarification_snapshot=clarification_snapshot,
+            # A same-ID replay returns above without reaching this insert,
+            # so stored lineage is written once and never rewritten.
+            # Inline rows keep ordinary request-child spans: no stored parent.
+            trace_parent=canonical_trace_parent(trace_parent) if queued else None,
         )
         session.add(row)
         session.flush()
@@ -460,6 +496,12 @@ class ClaimedSuggestion:
     owner_id: int
     reservation: SuggestionReservation
     provider_started_at: datetime
+    # Stored lineage read with the claimed row; controls worker processing
+    # lineage where available. None for legacy rows without context.
+    trace_parent: str | None = None
+    # Database-clock queue delay (queued_at to claim), recorded as span
+    # and log metadata only; never a metric label or deadline input.
+    queue_wait_ms: int | None = None
 
 
 def _is_cloud_row(row: WorkflowSuggestionRequestRow) -> bool:
@@ -520,7 +562,25 @@ def _claim_fingerprint_matches(
     )
 
 
-def claim_suggestion(session: Session, suggestion_id: int) -> ClaimedSuggestion | None:
+@dataclass(frozen=True)
+class ClaimResult:
+    """Bounded outcome of one claim attempt.
+
+    Exactly one shape holds: `claim` set means provider work was granted
+    (`outcome == "claimed"`); `committed` set means the claim transaction
+    committed a terminal transition instead (`outcome` names it:
+    `"timeout"` for a claim-time expiry/claim-lapse failure, `"superseded"`
+    for a supersession); both None means no work and no commit
+    (`outcome == "no_work"`: missing/legacy/terminal rows and replays).
+    Only IDs, statuses, and error codes travel; never goals or titles.
+    """
+
+    claim: ClaimedSuggestion | None = None
+    committed: SuggestionSnapshot | None = None
+    outcome: str = "no_work"
+
+
+def _claim_inner(session: Session, suggestion_id: int) -> ClaimResult:
     # Discover ownership with a plain read first, then close that read
     # transaction before taking locks in the existing workflow-then-row order.
     # No provider or cloud call runs in either transaction.
@@ -532,7 +592,7 @@ def claim_suggestion(session: Session, suggestion_id: int) -> ClaimedSuggestion 
             ).where(WorkflowSuggestionRequestRow.id == suggestion_id)
         ).one_or_none()
     if discovered is None:
-        return None
+        return ClaimResult(outcome="no_work")
     owner_id, workflow_id = discovered
     with session.begin():
         workflow = lock_workflow(session, workflow_id, owner_id)
@@ -548,14 +608,19 @@ def claim_suggestion(session: Session, suggestion_id: int) -> ClaimedSuggestion 
             or row.status != SuggestionStatus.PENDING.value
             or not _is_cloud_row(row)
         ):
-            return None
+            # Missing, already terminal, legacy, or non-cloud rows: a
+            # replay/no-op with no commit. Callers ack `no_work`.
+            return ClaimResult(outcome="no_work")
         goal = _require_canonical_goal(row.goal_snapshot)
         clarification = _decode_stored_clarification(row.clarification_snapshot)
         now = session.scalar(select(func.now()))
         assert now is not None
         if row.expires_at is None or now >= row.expires_at:
             _fail_row(row)
-            return None
+            session.flush()
+            return ClaimResult(
+                committed=suggestion_snapshot_from_row(row), outcome="timeout"
+            )
         if row.provider_started_at is not None:
             if now < row.provider_started_at + SUGGESTION_CLAIM_TTL:
                 raise SuggestionInProgress(
@@ -566,7 +631,10 @@ def claim_suggestion(session: Session, suggestion_id: int) -> ClaimedSuggestion 
             # timeout instead of granting replacement provider work. Users
             # explicitly retry uncertain work with a new request.
             _fail_row(row)
-            return None
+            session.flush()
+            return ClaimResult(
+                committed=suggestion_snapshot_from_row(row), outcome="timeout"
+            )
         latest = _latest_suggestion(session, owner_id, workflow_id)
         if (
             not _validate_claimed_workflow(workflow, row)
@@ -575,23 +643,60 @@ def claim_suggestion(session: Session, suggestion_id: int) -> ClaimedSuggestion 
             or not _claim_fingerprint_matches(row, goal, clarification)
         ):
             _supersede_row(row)
-            return None
+            session.flush()
+            return ClaimResult(
+                committed=suggestion_snapshot_from_row(row),
+                outcome="superseded",
+            )
         row.provider_started_at = now
         session.flush()
-        return ClaimedSuggestion(
-            suggestion_id=row.id,
-            owner_id=row.owner_id,
-            reservation=SuggestionReservation(
-                workflow_id=row.workflow_id,
-                request_id=row.request_id,
-                base_revision=row.base_revision,
-                step_id=row.step_id,
-                goal=goal,
-                request_fingerprint=row.request_fingerprint,
-                clarification=clarification,
+        queue_wait_ms: int | None = None
+        if row.queued_at is not None:
+            # Database-clock delay between enqueue and this claim: a
+            # diagnostic attribute for the process span and delivery log.
+            # Cloud rows always carry queued_at (see _is_cloud_row above).
+            queue_wait_ms = int((now - row.queued_at).total_seconds() * 1000)
+            queue_wait_ms = max(queue_wait_ms, 0)
+        return ClaimResult(
+            claim=ClaimedSuggestion(
+                suggestion_id=row.id,
+                owner_id=row.owner_id,
+                reservation=SuggestionReservation(
+                    workflow_id=row.workflow_id,
+                    request_id=row.request_id,
+                    base_revision=row.base_revision,
+                    step_id=row.step_id,
+                    goal=goal,
+                    request_fingerprint=row.request_fingerprint,
+                    clarification=clarification,
+                ),
+                provider_started_at=now,
+                trace_parent=row.trace_parent,
+                queue_wait_ms=queue_wait_ms,
             ),
-            provider_started_at=now,
+            outcome="claimed",
         )
+
+
+def claim_suggestion(session: Session, suggestion_id: int) -> ClaimedSuggestion | None:
+    """Claim one cloud suggestion row, preserving the legacy contract.
+
+    Returns the granted claim, or None when no provider work was granted
+    (replay/no-op rows as well as claim-time committed transitions).
+    Callers that need to name a claim-time commit use
+    `claim_suggestion_result` instead; the worker does.
+    """
+    return claim_suggestion_result(session, suggestion_id).claim
+
+
+def claim_suggestion_result(session: Session, suggestion_id: int) -> ClaimResult:
+    """Claim with bounded metadata: granted claim vs committed terminal
+    transition vs no work. Committed snapshots are built after flush inside
+    the same claim transaction so callers can emit `suggestion_finished`
+    after commit. Already-terminal/missing rows stay `no_work` with no
+    snapshot; business outcomes and lock ordering are unchanged.
+    """
+    return _claim_inner(session, suggestion_id)
 
 
 def finish_claimed_suggestion(
@@ -663,8 +768,13 @@ def finish_claimed_suggestion(
             or latest is None
             or latest.id != row.id
         ):
+            # A committed supersession is a real transition, not a no-op:
+            # return the saved SUPERSEDED snapshot so callers can tell it
+            # apart from the None paths above (missing, marker mismatch,
+            # already terminal, or past a deadline).
             _supersede_row(row)
-            return None
+            session.flush()
+            return suggestion_snapshot_from_row(row)
         if canonical_titles is not None:
             row.status = SuggestionStatus.READY.value
             row.proposed_titles = list(canonical_titles)
@@ -689,7 +799,27 @@ def _supersede_row(row: WorkflowSuggestionRequestRow) -> None:
     row.error_code = None
 
 
+@dataclass(frozen=True)
+class ExpiredSuggestion:
+    """Minimal committed-transition metadata for one expired suggestion row.
+
+    Exposes only the row ID and the stored trace context so the caller can
+    emit one `suggestion.expire` span per row under its own lineage. No
+    user content, fingerprints, or task bodies travel here. A None
+    `trace_parent` marks a legacy/context-less row, which remains valid and
+    is traced under the sweep exchange instead.
+    """
+
+    suggestion_id: int
+    trace_parent: str | None = None
+
+
 def expire_suggestions(session: Session) -> int:
+    """Expire past-due pending cloud rows; returns the expired count."""
+    return len(expire_suggestions_with_context(session))
+
+
+def expire_suggestions_with_context(session: Session) -> list[ExpiredSuggestion]:
     # One bounded sweep: at most SUGGESTION_EXPIRE_BATCH_LIMIT pending cloud
     # rows past either database-clock expiry become failed/timeout. No
     # provider or cloud call runs inside this transaction.
@@ -714,8 +844,8 @@ def expire_suggestions(session: Session) -> int:
                 .limit(SUGGESTION_EXPIRE_BATCH_LIMIT)
             )
         )
-        expired = 0
-        for row_id in candidate_ids:
+        expired: list[ExpiredSuggestion] = []
+        for row_id in candidate_ids: 
             target = session.execute(
                 select(
                     WorkflowSuggestionRequestRow.owner_id,
@@ -755,7 +885,11 @@ def expire_suggestions(session: Session) -> int:
             ):
                 continue
             _fail_row(row)
-            expired += 1
+            expired.append(
+                ExpiredSuggestion(
+                    suggestion_id=row.id, trace_parent=row.trace_parent
+                )
+            )
         return expired
 
 

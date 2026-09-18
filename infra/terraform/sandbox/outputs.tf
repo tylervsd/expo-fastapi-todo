@@ -13,6 +13,30 @@ output "suggestion_invoker_email" {
   value       = var.async_suggestions == null ? null : google_service_account.async_invoker[0].email
 }
 
+output "observability_dashboard_id" {
+  description = "Native observability dashboard ID, or null when observability is disabled."
+  value       = var.observability == null ? null : google_monitoring_dashboard.observability[0].id
+}
+
+output "observability_log_metrics" {
+  description = "The three specified application log-metric names, or null when observability is disabled."
+  value       = var.observability == null ? null : [google_logging_metric.provider_calls[0].name, google_logging_metric.provider_duration[0].name, google_logging_metric.suggestion_outcomes[0].name]
+}
+
+output "observability_alert_policies" {
+  description = "Observability alert policy IDs keyed by signal, or null when observability is disabled."
+  value = var.observability == null ? null : {
+    app_failure     = google_monitoring_alert_policy.app_failure[0].id
+    queue_backlog   = try(google_monitoring_alert_policy.queue_backlog[0].id, null)
+    sql_connections = google_monitoring_alert_policy.sql_connections[0].id
+  }
+}
+
+output "observability_trace_sample_rate" {
+  description = "Configured trace sample rate (0.1 sandbox default, 1.0 bounded drills), or null when observability is disabled."
+  value       = var.observability == null ? null : var.observability.trace_sample_rate
+}
+
 output "github_workload_identity_provider" {
   description = "Full WIF provider name for CI authentication, or null when delivery is disabled."
   value       = var.github_delivery == null ? null : google_iam_workload_identity_pool_provider.github[0].name

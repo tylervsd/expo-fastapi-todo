@@ -102,6 +102,29 @@ resource "google_cloud_run_v2_service" "worker" {
         value = var.async_suggestions.provider_model
       }
 
+      # Observability-owned runtime input, mirroring the API seam: set only
+      # when observability is enabled, without touching release-owned image
+      # or revision fields. Terraform normalizes 1.0 to "1"; the app
+      # parses it back to 1.0.
+      dynamic "env" {
+        for_each = var.observability == null ? [] : [var.observability.trace_sample_rate]
+        content {
+          name  = "TRACE_SAMPLE_RATE"
+          value = tostring(env.value)
+        }
+      }
+
+      # Cloud Trace export switch, mirroring the API seam: set only when
+      # observability is enabled. The worker has no caller-supplied env
+      # maps, so no manual-collision guard is needed here.
+      dynamic "env" {
+        for_each = var.observability == null ? [] : [true]
+        content {
+          name  = "TRACE_EXPORT_ENABLED"
+          value = "true"
+        }
+      }
+
       dynamic "env" {
         for_each = local.async_worker_secrets
         content {
@@ -138,7 +161,12 @@ resource "google_cloud_run_v2_service" "worker" {
     }
   }
 
-  depends_on = [google_project_service.required, google_project_iam_member.worker_sql_client, google_secret_manager_secret_iam_member.worker_secret_access]
+  depends_on = [
+    google_project_service.required,
+    google_project_iam_member.worker_sql_client,
+    google_secret_manager_secret_iam_member.worker_secret_access,
+    google_project_iam_member.trace_worker,
+  ]
 
   # Release-owned field: the release workflow deploys worker revisions by
   # digest. Terraform keeps all stable configuration.

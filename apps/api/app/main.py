@@ -2,7 +2,7 @@ import json
 import os
 import re
 from collections.abc import AsyncIterator, Iterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Literal, Protocol
 from uuid import UUID, uuid4
@@ -15,6 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from opentelemetry.trace import Link, get_current_span
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -58,6 +59,7 @@ from app.database import (
     create_session_factory,
     get_database_url,
 )
+from app.observability import RequestLoggingMiddleware, configure_logging, log_event
 from app.passwords import DUMMY_PASSWORD_HASH, hash_password, verify_password
 from app.suggestion_provider import (
     InvalidSuggestionOutput,
@@ -76,6 +78,7 @@ from app.suggestion_service import (
     StaleSuggestion,
     SuggestionErrorCode,
     SuggestionInProgress,
+    SuggestionReservation,
     SuggestionSnapshot,
     SuggestionStatus,
     finish_suggestion,
@@ -84,15 +87,28 @@ from app.suggestion_service import (
     reserve_suggestion,
 )
 from app.suggestion_tasks import (
+    ENQUEUE_ACCEPTED,
+    ENQUEUE_DEDUPLICATED,
     EnqueueUnavailable,
     build_enqueue_runner,
     enqueue_suggestion,
     read_cloud_config,
+    task_name_for,
 )
 from app.title_validation import canonicalize_title
 from app.todo_repository import TodoRow, delete_todo, set_completed, set_title
 from app.todo_repository import create_todo as create_todo_row
 from app.todo_repository import list_todos as list_todo_rows
+from app.tracing import (
+    ResponseStatusMiddleware,
+    TracingMiddleware,
+    extract_stored_context,
+    init_tracing,
+    inject_traceparent,
+    safe_span_attributes,
+    shutdown_tracing,
+    start_safe_span,
+)
 from app.workflow_domain import (
     MAX_WORKFLOW_REVISION,
     AnswerMultipleSteps,
@@ -407,7 +423,43 @@ class SuggestionCallable(Protocol):
 
 
 class EnqueueCallable(Protocol):
-    def __call__(self, suggestion_id: int, fingerprint: str) -> None: ...
+    def __call__(
+        self,
+        suggestion_id: int,
+        fingerprint: str,
+        trace_parent: str | None = None,
+    ) -> str | None: ...
+
+
+@contextmanager
+def _maybe_span(tracer: object, name: str, attributes: dict[str, object],
+                 links: list[Link] | None = None):
+    """Start a fixed-name span when tracing is available, else a no-op."""
+    if tracer is None:
+        yield None
+    else:
+        with start_safe_span(tracer, name, attributes=attributes, links=links) as span:  # type: ignore[arg-type]
+            yield span
+
+
+def _request_tracer(request: Request):
+    state = getattr(request.app.state, "tracing_state", None)
+    return state.tracer if state is not None else None
+
+
+def _active_traceparent() -> str | None:
+    """Capture the API server span context as a storable traceparent.
+
+    Called while the request server span is active, before any child span
+    starts, so the stored lineage names the API exchange itself. Returns
+    None when no valid span is active; telemetry never fails the request.
+    """
+    carrier: dict[str, str] = {}
+    inject_traceparent(carrier)
+    candidate = carrier.get("traceparent")
+    if candidate is None or extract_stored_context(candidate) is None:
+        return None
+    return candidate
 
 
 def create_app(
@@ -437,13 +489,32 @@ def create_app(
             engine = create_database_engine(get_database_url())
             factory = create_session_factory(engine)
         app.state.session_factory = factory
+        # Lifespan-owned tracer/exporter setup: initialized once per
+        # process lifetime, closed on shutdown. Tests inject an in-memory
+        # exporter via app.state.tracing_exporter before startup.
+        app.state.tracing_state = init_tracing(
+            "todo-api",
+            exporter=getattr(app.state, "tracing_exporter", None),
+        )
         try:
             yield
         finally:
+            shutdown_tracing(getattr(app.state, "tracing_state", None))
+            app.state.tracing_state = None
             if engine is not None:
                 engine.dispose()
 
+    configure_logging("todo-api")
     app = FastAPI(title="Expo FastAPI Todo API", lifespan=lifespan)
+    # Telemetry middlewares wrap the router inside CORS so preflights stay
+    # out of spans/logs. First-added is innermost: status recorder, then
+    # request logging (sees the active span), then tracing (outermost).
+    app.add_middleware(ResponseStatusMiddleware)
+    app.add_middleware(RequestLoggingMiddleware, service="todo-api")
+    app.add_middleware(
+        TracingMiddleware,
+        state_provider=lambda: getattr(app.state, "tracing_state", None),
+    )
     app.state.cloud_tasks_config = cloud_tasks_config
     suggestion_runner: SuggestionCallable = (
         suggestion_callable or request_todo_suggestions
@@ -789,7 +860,12 @@ def create_app(
         payload: TodoWorkflowSuggestionRequest,
         user: Annotated[UserRow, Depends(get_current_user)],
         session: Annotated[Session, Depends(get_session)],
+        request: Request,
     ) -> TodoWorkflowSuggestionResponse | JSONResponse:
+        # Capture the server span context before any child span starts: the
+        # stored lineage names this API exchange, not an inner DB span.
+        tracer = _request_tracer(request)
+        active_trace_parent = _active_traceparent()
         try:
             clarification = (
                 Clarification(
@@ -798,16 +874,22 @@ def create_app(
                 if payload.clarification is not None
                 else None
             )
-            reservation = reserve_suggestion(
-                session,
-                user.id,
-                workflow_id,
-                payload.request_id,
-                payload.expected_revision,
-                payload.step_id,
-                clarification=clarification,
-                queued=execution_mode == "cloud_tasks",
-            )
+            with _maybe_span(
+                tracer,
+                "db.reserve_suggestion",
+                {"operation": "reserve_suggestion"},
+            ):
+                reservation = reserve_suggestion(
+                    session,
+                    user.id,
+                    workflow_id,
+                    payload.request_id,
+                    payload.expected_revision,
+                    payload.step_id,
+                    clarification=clarification,
+                    queued=execution_mode == "cloud_tasks",
+                    trace_parent=active_trace_parent,
+                )
         except RequestIdReused as exc:
             raise suggestion_conflict(
                 "request_id_reused",
@@ -858,11 +940,26 @@ def create_app(
             # and reconcile below. (Inline pending never reaches here: it
             # raises SuggestionInProgress in reserve_suggestion.)
 
+        if isinstance(reservation, SuggestionReservation):
+            # One newly committed reservation only: a same-ID replay
+            # returns a SuggestionSnapshot above (or raises), never
+            # another reservation, so this event never duplicates.
+            log_event(
+                "suggestion_reserved",
+                outcome="reserved",
+                workflow_id=str(workflow_id),
+                suggestion_request_id=str(payload.request_id),
+            )
+
         if execution_mode == "cloud_tasks":
             # Cloud mode never calls the provider. The reservation above
             # already committed; end database work, enqueue off the event
             # loop, then reconcile the saved state (a task may finish
             # before POST returns).
+            # A pending snapshot here is a same-ID replay: the row already
+            # exists, so the enqueue below retries against original
+            # deadlines instead of creating new lineage.
+            is_replay = isinstance(reservation, SuggestionSnapshot)
             row = lookup_suggestion_row(
                 session, user.id, workflow_id, payload.request_id
             )
@@ -872,12 +969,67 @@ def create_app(
                 and row.status == SuggestionStatus.PENDING.value
                 and row.provider_started_at is None
             ):
+                # Enqueue repair reuses the original stored lineage, never
+                # the replay request's trace: the argument crosses the
+                # threadpool boundary explicitly, not via contextvars.
+                # A same-ID replay keeps its own request parent and links
+                # to the validated stored context instead of reparenting.
+                stored_trace_parent = row.trace_parent
+                replay_links: list[Link] | None = None
+                if is_replay and stored_trace_parent is not None:
+                    stored_ctx = extract_stored_context(stored_trace_parent)
+                    if stored_ctx is not None:
+                        stored_sc = get_current_span(stored_ctx).get_span_context()
+                        current_sc = get_current_span().get_span_context()
+                        if (
+                            current_sc.is_valid
+                            and stored_sc.trace_id != current_sc.trace_id
+                        ):
+                            replay_links = [Link(stored_sc)]
                 try:
-                    await run_in_threadpool(
-                        enqueue_runner, row.id, row.request_fingerprint
-                    )
+                    with _maybe_span(
+                        tracer,
+                        "cloudtasks.enqueue",
+                        {
+                            "operation": "enqueue",
+                            "suggestion_id": row.id,
+                        },
+                        links=replay_links,
+                    ):
+                        enqueue_result = await run_in_threadpool(
+                            enqueue_runner,
+                            row.id,
+                            row.request_fingerprint,
+                            stored_trace_parent,
+                        )
                 except EnqueueUnavailable as exc:
+                    # The reservation stays saved for retry; acceptance is
+                    # not proof of eventual execution.
+                    log_event(
+                        "suggestion_enqueue",
+                        outcome="unavailable",
+                        workflow_id=str(workflow_id),
+                        suggestion_request_id=str(payload.request_id),
+                        suggestion_id=row.id,
+                        task_id=task_name_for(row.id, row.request_fingerprint),
+                    )
                     raise enqueue_unavailable() from exc
+                # Injected legacy callables return None; the real runner
+                # returns accepted/deduplicated. Unknown values stay
+                # accepted: the transport succeeded either way.
+                enqueue_outcome = (
+                    enqueue_result
+                    if enqueue_result in (ENQUEUE_ACCEPTED, ENQUEUE_DEDUPLICATED)
+                    else ENQUEUE_ACCEPTED
+                )
+                log_event(
+                    "suggestion_enqueue",
+                    outcome=enqueue_outcome,
+                    workflow_id=str(workflow_id),
+                    suggestion_request_id=str(payload.request_id),
+                    suggestion_id=row.id,
+                    task_id=task_name_for(row.id, row.request_fingerprint),
+                )
             try:
                 current = get_current_suggestion(session, user.id, workflow_id)
             except UnsupportedWorkflowDefinition as exc:
@@ -920,16 +1072,53 @@ def create_app(
         else:
             # Without clarification the legacy two-argument seam is retained so
             # Phase 10 callables keep working; the keyword is only used when
-            # a clarification was supplied.
+            # a clarification was supplied. The provider leg runs in a
+            # `provider.suggestions` span with a truthful bounded outcome;
+            # cancellation unwinds the request instead of mapping to an
+            # error code.
+            provider_outcome = "ok"
             try:
-                if reservation.clarification is None:
-                    titles = await suggestion_runner(reservation.goal, config)
-                else:
-                    titles = await suggestion_runner(
-                        reservation.goal,
-                        config,
-                        clarification=reservation.clarification,
-                    )
+                with _maybe_span(
+                    tracer,
+                    "provider.suggestions",
+                    {"operation": "provider_suggestions"},
+                ) as provider_span:
+                    try:
+                        if reservation.clarification is None:
+                            titles = await suggestion_runner(
+                                reservation.goal, config
+                            )
+                        else:
+                            titles = await suggestion_runner(
+                                reservation.goal,
+                                config,
+                                clarification=reservation.clarification,
+                            )
+                    except SuggestionTimeout:
+                        provider_outcome = "timeout"
+                        raise
+                    except ProviderUnavailable:
+                        provider_outcome = "unavailable"
+                        raise
+                    except InvalidSuggestionOutput:
+                        provider_outcome = "invalid_output"
+                        raise
+                    except SuggestionsNotConfigured:
+                        provider_outcome = "unavailable"
+                        raise
+                    except Exception:
+                        provider_outcome = "unavailable"
+                        raise
+                    finally:
+                        if provider_span is not None:
+                            try:
+                                provider_span.set_attributes(
+                                    safe_span_attributes(
+                                        {"outcome": provider_outcome}
+                                    )
+                                )
+                            except Exception:  # noqa: BLE001, S110
+                                pass
                 error_code = None
             except SuggestionTimeout:
                 titles = None
@@ -1065,6 +1254,7 @@ def create_app(
                 session,
                 choose=agent_chooser,
                 is_disconnected=request.is_disconnected,
+                tracer=_request_tracer(request),
             ):
                 yield chunk
 

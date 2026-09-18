@@ -409,3 +409,245 @@ async def test_blank_configuration_checked_before_goal_validation() -> None:
             OpenRouterConfig(api_key="", model="test/model"),
             transport=transport_for(httpx.Response(200, json=provider_response(["a", "b"]))),
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 21 Task 3 (TDD red): shared provider transport semantics.
+#
+# `_post_openrouter_json` serves suggestions and clarification. Both paths
+# must map success, timeout, HTTP failure, invalid output, and cancellation
+# identically, preserve the deadline/size/token bounds, emit one
+# `provider_call` event per transport attempt plus `ai_output_rejected`
+# when content is rejected, and never retry or leak content.
+# ---------------------------------------------------------------------------
+
+
+def read_json_records(capsys: pytest.CaptureFixture[str]) -> list[dict]:
+    import json as _json
+
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert lines, "expected serialized log output"
+    return [_json.loads(line) for line in lines]
+
+
+def choice_response(field: str) -> dict[str, object]:
+    import json as _json
+
+    return {
+        "choices": [{"message": {"content": _json.dumps({"field": field})}}]
+    }
+
+
+@pytest.mark.anyio
+async def test_suggestions_cancellation_propagates_without_mapping() -> None:
+    import asyncio as _asyncio
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise _asyncio.CancelledError()
+
+    with pytest.raises(_asyncio.CancelledError):
+        await request_todo_suggestions(
+            GOAL, CONFIG, transport=httpx.MockTransport(handler)
+        )
+
+
+@pytest.mark.anyio
+async def test_clarification_cancellation_propagates_without_mapping() -> None:
+    import asyncio as _asyncio
+
+    from app.agent import choose_clarification
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise _asyncio.CancelledError()
+
+    with pytest.raises(_asyncio.CancelledError):
+        await choose_clarification(
+            GOAL, CONFIG, transport=httpx.MockTransport(handler)
+        )
+
+
+@pytest.mark.anyio
+async def test_clarification_timeout_maps_to_safe_timeout() -> None:
+    from app.agent import choose_clarification
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("secret timeout details", request=request)
+
+    with pytest.raises(SuggestionTimeout) as error:
+        await choose_clarification(
+            GOAL, CONFIG, transport=httpx.MockTransport(handler)
+        )
+    assert "secret timeout" not in str(error.value)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("status_code", [400, 429, 500])
+async def test_clarification_http_failure_maps_to_provider_unavailable(
+    status_code: int,
+) -> None:
+    from app.agent import choose_clarification
+
+    secret_body = "provider body with secret title"
+    with pytest.raises(ProviderUnavailable) as error:
+        await choose_clarification(
+            GOAL,
+            CONFIG,
+            transport=transport_for(
+                httpx.Response(status_code, content=secret_body)
+            ),
+        )
+    assert secret_body not in str(error.value)
+    assert GOAL not in str(error.value)
+    assert "test-key" not in str(error.value)
+
+
+@pytest.mark.anyio
+async def test_clarification_invalid_output_maps_without_leak() -> None:
+    from app.agent import choose_clarification
+
+    with pytest.raises(InvalidSuggestionOutput) as error:
+        await choose_clarification(
+            GOAL,
+            CONFIG,
+            transport=transport_for(
+                httpx.Response(200, json=choice_response("music"))
+            ),
+        )
+    assert "music" not in str(error.value)
+
+
+@pytest.mark.anyio
+async def test_provider_call_event_emitted_for_suggestions(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from app.observability import configure_logging as _configure
+
+    _configure("test-service")
+    capsys.readouterr()
+    result = await request_todo_suggestions(
+        GOAL,
+        CONFIG,
+        transport=transport_for(
+            httpx.Response(200, json=provider_response(["Choose a date", "Invite guests"]))
+        ),
+    )
+    assert result == ("Choose a date", "Invite guests")
+    records = read_json_records(capsys)
+    calls = [record for record in records if record.get("event") == "provider_call"]
+    assert len(calls) == 1, "one provider_call per transport attempt"
+    call = calls[0]
+    assert call["outcome"] == "ok"
+    assert call["operation"] == "suggestions"
+    assert isinstance(call["duration_ms"], int)
+    assert call["attempt_id"]
+    text = __import__("json").dumps(records)
+    assert GOAL not in text
+    assert "test-key" not in text
+
+
+@pytest.mark.anyio
+async def test_provider_call_event_emitted_for_clarification(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from app.agent import choose_clarification
+    from app.observability import configure_logging as _configure
+
+    _configure("test-service")
+    capsys.readouterr()
+    field = await choose_clarification(
+        GOAL,
+        CONFIG,
+        transport=transport_for(httpx.Response(200, json=choice_response("date"))),
+    )
+    assert field == "date"
+    records = read_json_records(capsys)
+    calls = [record for record in records if record.get("event") == "provider_call"]
+    assert len(calls) == 1, "one provider_call per transport attempt"
+    assert calls[0]["outcome"] == "ok"
+    assert calls[0]["operation"] == "clarification"
+
+
+@pytest.mark.anyio
+async def test_ai_output_rejected_event_on_invalid_suggestions(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from app.observability import configure_logging as _configure
+
+    _configure("test-service")
+    capsys.readouterr()
+    with pytest.raises(InvalidSuggestionOutput):
+        await request_todo_suggestions(
+            GOAL,
+            CONFIG,
+            transport=transport_for(
+                httpx.Response(200, json=provider_response(["only-one"]))
+            ),
+        )
+    records = read_json_records(capsys)
+    rejected = [
+        record for record in records if record.get("event") == "ai_output_rejected"
+    ]
+    assert len(rejected) == 1
+    assert rejected[0]["operation"] == "suggestions"
+    assert "only-one" not in __import__("json").dumps(records)
+
+
+# Phase 21 Task 3 fix round 1 (TDD red): cancellation must still emit one
+# bounded `provider_call` (interrupted transport, no exception text, no
+# retry), and oversized HTTP 200 bodies must read as transport completion
+# plus content rejection, never a transport error.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_cancellation_emits_bounded_provider_call(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import asyncio as _asyncio
+
+    from app.observability import configure_logging as _configure
+
+    _configure("test-service")
+    capsys.readouterr()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise _asyncio.CancelledError()
+
+    with pytest.raises(_asyncio.CancelledError):
+        await request_todo_suggestions(
+            GOAL, CONFIG, transport=httpx.MockTransport(handler)
+        )
+    records = read_json_records(capsys)
+    calls = [record for record in records if record.get("event") == "provider_call"]
+    assert len(calls) == 1, "cancelled transport still reports one attempt"
+    assert calls[0]["outcome"] in ("cancelled", "interrupted")
+    assert calls[0]["operation"] == "suggestions"
+    assert isinstance(calls[0]["duration_ms"], int)
+    assert calls[0]["attempt_id"]
+
+
+@pytest.mark.anyio
+async def test_oversized_success_is_completed_plus_output_rejected(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from app.observability import configure_logging as _configure
+
+    _configure("test-service")
+    capsys.readouterr()
+    oversized_chunk = b"{" + b"x" * (16 * 1024) + b"}"
+    response = httpx.Response(200, stream=SingleChunkStream(oversized_chunk))
+    with pytest.raises(InvalidSuggestionOutput):
+        await request_todo_suggestions(
+            GOAL, CONFIG, transport=transport_for(response)
+        )
+    records = read_json_records(capsys)
+    calls = [record for record in records if record.get("event") == "provider_call"]
+    assert len(calls) == 1
+    assert calls[0]["outcome"] != "transport_error", (
+        "oversized HTTP 200 is transport completion, not a transport error"
+    )
+    rejected = [
+        record for record in records if record.get("event") == "ai_output_rejected"
+    ]
+    assert len(rejected) == 1
+    assert rejected[0]["operation"] == "suggestions"

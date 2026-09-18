@@ -49,6 +49,31 @@ resource "google_cloud_run_v2_service" "api" {
         value = jsonencode(var.api.cors_origins)
       }
 
+      # Observability-owned runtime input: the application parses
+      # TRACE_SAMPLE_RATE with a 0.1 default (1.0 bounded drills), so the
+      # variable stays unset (app default) when observability is disabled.
+      # Terraform normalizes 1.0 to "1"; the app parses it back to 1.0.
+      dynamic "env" {
+        for_each = var.observability == null ? [] : [var.observability.trace_sample_rate]
+        content {
+          name  = "TRACE_SAMPLE_RATE"
+          value = tostring(env.value)
+        }
+      }
+
+      # Cloud Trace export switch: the application only builds its
+      # production exporter when TRACE_EXPORT_ENABLED is set, so the
+      # variable stays unset (no export) when observability is disabled.
+      # It lands in the same apply as the trace IAM grants, so export
+      # starts only with writer rights in place.
+      dynamic "env" {
+        for_each = var.observability == null ? [] : [true]
+        content {
+          name  = "TRACE_EXPORT_ENABLED"
+          value = "true"
+        }
+      }
+
       dynamic "env" {
         for_each = var.api.secret_env
         content {
@@ -151,12 +176,33 @@ resource "google_cloud_run_v2_service" "api" {
     }
   }
 
-  depends_on = [google_project_service.required, google_project_iam_member.owned, google_secret_manager_secret_iam_member.access]
+  depends_on = [
+    google_project_service.required,
+    google_project_iam_member.owned,
+    google_secret_manager_secret_iam_member.access,
+    google_project_iam_member.trace_api,
+  ]
 
   # Release-owned fields: the release workflow deploys revisions by digest
   # and moves traffic. Terraform keeps all stable configuration.
   lifecycle {
     prevent_destroy = true
+    precondition {
+      condition     = var.observability == null || !contains(keys(var.api.plain_env), "TRACE_SAMPLE_RATE")
+      error_message = "api.plain_env must not set TRACE_SAMPLE_RATE when observability is enabled; var.observability.trace_sample_rate owns it."
+    }
+    precondition {
+      condition     = var.observability == null || !contains(keys(var.api.secret_env), "TRACE_SAMPLE_RATE")
+      error_message = "api.secret_env must not set TRACE_SAMPLE_RATE when observability is enabled; var.observability.trace_sample_rate owns it."
+    }
+    precondition {
+      condition     = var.observability == null || !contains(keys(var.api.plain_env), "TRACE_EXPORT_ENABLED")
+      error_message = "api.plain_env must not set TRACE_EXPORT_ENABLED when observability is enabled; observability owns it (always \"true\" when enabled)."
+    }
+    precondition {
+      condition     = var.observability == null || !contains(keys(var.api.secret_env), "TRACE_EXPORT_ENABLED")
+      error_message = "api.secret_env must not set TRACE_EXPORT_ENABLED when observability is enabled; observability owns it (always \"true\" when enabled)."
+    }
     ignore_changes = [
       template[0].containers[0].image,
       template[0].revision,

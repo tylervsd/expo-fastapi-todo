@@ -379,6 +379,7 @@ def test_suggestion_table_constraints_and_owner_cascade(
         "provider_started_at",
         "goal_snapshot",
         "clarification_snapshot",
+        "trace_parent",
     ]
     assert not {"created_at", "prompt", "raw_output"} & set(columns)
     checks = {
@@ -399,6 +400,7 @@ def test_suggestion_table_constraints_and_owner_cascade(
         "ck_suggestion_requests_status_fields",
         "ck_suggestion_requests_step_id",
         "ck_suggestion_requests_titles_array",
+        "ck_suggestion_requests_trace_parent",
     }
 
 
@@ -736,5 +738,183 @@ def test_clarification_text_never_enters_server_storage(
             "id", "owner_id", "workflow_id", "request_id", "request_fingerprint",
             "base_revision", "step_id", "status", "proposed_titles", "error_code",
             "queued_at", "expires_at", "provider_started_at", "goal_snapshot",
-            "clarification_snapshot",
+            "clarification_snapshot", "trace_parent",
         }
+
+
+# ---------------------------------------------------------------------------
+# Phase 21 Task 2 (TDD red): durable W3C trace context on the suggestion row.
+#
+# Trace metadata rides alongside the reservation; it never enters the
+# request fingerprint or idempotency decisions, and a same-ID replay never
+# rewrites it.
+
+
+TRACE_A = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+TRACE_B = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"
+
+
+def reserve_queued_with_trace(
+    session_factory,
+    owner_id,
+    workflow_id,
+    revision,
+    step_id,
+    request_id=None,
+    trace_parent=None,
+):
+    request_id = request_id or uuid4()
+    with session_factory() as session:
+        result = reserve_suggestion(
+            session,
+            owner_id,
+            workflow_id,
+            request_id,
+            revision,
+            step_id,
+            queued=True,
+            trace_parent=trace_parent,
+        )
+    return request_id, result
+
+
+def stored_trace_parent(session_factory, owner_id, workflow_id, request_id):
+    with session_factory() as session:
+        return session.scalar(
+            select(WorkflowSuggestionRequestRow.trace_parent).where(
+                WorkflowSuggestionRequestRow.owner_id == owner_id,
+                WorkflowSuggestionRequestRow.workflow_id == workflow_id,
+                WorkflowSuggestionRequestRow.request_id == request_id,
+            )
+        )
+
+
+def test_cloud_reserve_stores_canonical_trace_parent(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    owner_id = setup_owner(session_factory)
+    workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
+    request_id, reserved = reserve_queued_with_trace(
+        session_factory, owner_id, workflow_id, revision, step_id,
+        trace_parent=TRACE_A,
+    )
+    assert isinstance(reserved, SuggestionReservation)
+    stored = stored_trace_parent(session_factory, owner_id, workflow_id, request_id)
+    assert stored == TRACE_A
+    assert len(stored) <= 55
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        None,
+        "",
+        "   ",
+        "bogus",
+        "00-00000000000000000000000000000000-00f067aa0ba902b7-01",
+        "00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000000-01",
+        "01-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+        TRACE_A + "00",
+        "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-0g",
+    ],
+)
+def test_cloud_reserve_invalid_trace_parent_stores_none(
+    database_session: Session, session_factory: sessionmaker[Session], bad: object
+) -> None:
+    del database_session
+    owner_id = setup_owner(session_factory)
+    workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
+    request_id, reserved = reserve_queued_with_trace(
+        session_factory, owner_id, workflow_id, revision, step_id,
+        trace_parent=bad,  # type: ignore[arg-type]
+    )
+    assert isinstance(reserved, SuggestionReservation)
+    assert stored_trace_parent(session_factory, owner_id, workflow_id, request_id) is None
+
+
+def test_cloud_replay_preserves_original_trace_parent(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    owner_id = setup_owner(session_factory)
+    workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
+    request_id = uuid4()
+    with session_factory() as session:
+        before = session.scalar(
+            select(
+                WorkflowSuggestionRequestRow.queued_at,
+                WorkflowSuggestionRequestRow.expires_at,
+            ).where(WorkflowSuggestionRequestRow.request_id == uuid4())
+        )
+    del before
+    _, first = reserve_queued_with_trace(
+        session_factory, owner_id, workflow_id, revision, step_id,
+        request_id=request_id, trace_parent=TRACE_A,
+    )
+    assert isinstance(first, SuggestionReservation)
+    with session_factory() as session:
+        deadlines = session.scalar(
+            select(
+                WorkflowSuggestionRequestRow.queued_at,
+            ).where(WorkflowSuggestionRequestRow.request_id == request_id)
+        )
+    assert deadlines is not None
+    with session_factory() as session:
+        replay = reserve_suggestion(
+            session, owner_id, workflow_id, request_id, revision, step_id,
+            queued=True, trace_parent=TRACE_B,
+        )
+    assert isinstance(replay, SuggestionSnapshot)
+    assert replay.status is SuggestionStatus.PENDING
+    assert stored_trace_parent(session_factory, owner_id, workflow_id, request_id) == TRACE_A
+
+
+def test_trace_parent_never_enters_fingerprint_or_idempotency(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    owner_id = setup_owner(session_factory)
+    workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
+    first_id, first = reserve_queued_with_trace(
+        session_factory, owner_id, workflow_id, revision, step_id,
+        trace_parent=TRACE_A,
+    )
+    second_id, second = reserve_queued_with_trace(
+        session_factory, owner_id, workflow_id, revision, step_id,
+        trace_parent=TRACE_B,
+    )
+    assert isinstance(first, SuggestionReservation)
+    assert isinstance(second, SuggestionReservation)
+    with session_factory() as session:
+        fingerprints = list(
+            session.scalars(
+                select(WorkflowSuggestionRequestRow.request_fingerprint).where(
+                    WorkflowSuggestionRequestRow.owner_id == owner_id,
+                    WorkflowSuggestionRequestRow.workflow_id == workflow_id,
+                )
+            )
+        )
+    # Distinct rows (second supersedes the first) but identical fingerprints:
+    # trace metadata is not part of the hashed identity.
+    assert len(fingerprints) == 2
+    assert fingerprints[0] == fingerprints[1]
+    assert TRACE_A[:8] not in fingerprints[0]
+    assert stored_trace_parent(session_factory, owner_id, workflow_id, first_id) == TRACE_A
+    assert stored_trace_parent(session_factory, owner_id, workflow_id, second_id) == TRACE_B
+
+
+def test_inline_reserve_stores_no_trace_parent(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    del database_session
+    owner_id = setup_owner(session_factory)
+    workflow_id, revision, step_id = make_collecting(session_factory, owner_id)
+    request_id = uuid4()
+    with session_factory() as session:
+        reserved = reserve_suggestion(
+            session, owner_id, workflow_id, request_id, revision, step_id,
+            trace_parent=TRACE_A,
+        )
+    assert isinstance(reserved, SuggestionReservation)
+    assert stored_trace_parent(session_factory, owner_id, workflow_id, request_id) is None
