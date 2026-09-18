@@ -206,16 +206,16 @@ Open the project billing view and provider-key usage separately. Compare dates, 
 | Check | Result | Evidence/date |
 | --- | --- | --- |
 | Structured stdout/stderr privacy and context tests | Local pass | 688-test API suite observed 2026-09-17, including serialized-output redaction, context isolation, SSE/threadpool/shutdown checks; live Cloud Run log-output check pending |
-| One API → database → task → worker → provider → saved result waterfall | Pending | Requires deployed Phase 21 and trace URL |
-| Queue delay and repeated-delivery context | Local pass (harness); live pending | Local duplicate/retry/queue-wait tests pass; live queue-delay drill and trace evidence pending |
+| One API → database → task → worker → provider → saved result waterfall | Passed live 2026-09-18 | Suggestion 9 (request 58294207) ready on trace 219d474d; suggestion 8 saved failed/invalid_output on trace dd08c603 (transport ok, output rejected) |
+| Queue delay and repeated-delivery context | Live delay pass; live duplicate deferred | Suggestion 13 waited 207s of paused queue (queue_wait_ms 207179) on trace 2d42051e; live duplicate drill deferred by learner, test evidence stands |
 | Replay/legacy context and unchanged business behavior | Local pass | Same-ID replay link, legacy/malformed fallback, and unchanged business outcomes covered by API tests observed 2026-09-17 |
 | Span/log privacy and sampling behavior | Local pass | Sentinel redaction and sampled-out-failure logging covered by API tests observed 2026-09-17; Cloud Trace attribute check pending |
 | Bounded export and idle/shutdown delivery | Local pass | 2 s flush budget, unreachable-exporter, idle/shutdown delivery covered by API tests observed 2026-09-17; Cloud Run idle check pending |
-| Backlog email and recovery | Pending | Requires authorized drill |
-| Saved expiry failure and actionable email | Pending | Requires authorized drill |
-| SQL threshold email and restoration | Pending | Requires authorized drill |
-| Sanitized Error Reporting fixture | Pending | Requires deployed telemetry |
-| Retention and cost review | Pending | Requires live inventory |
-| Final Terraform state and restored sample rate/queue/configuration | Pending | Requires deployment/drills |
+| Backlog email and recovery | Passed live 2026-09-18 | Suggestion 15 parked ~10min; backlog email received with correct queue id and working runbook link; resumed, queue_wait_ms 606317, finished ready |
+| Saved expiry failure and actionable email | Partial live | Saved failure observed via provider invalid_output (suggestion 8); sweep-driven expiry drill not run |
+| SQL threshold email and restoration | Deferred by learner | Threshold 17 set from observed usable capacity (25 max − 3 reserved); email drill not run |
+| Sanitized Error Reporting fixture | Deferred by learner | Local exception-shape tests pass; live fixture not run |
+| Retention and cost review | Learner-verified 2026-09-18 | Billing/provider/retention reviewed by learner (notes local); log buckets confirmed `30d _Default` / `400d _Required` |
+| Final Terraform state and restored sample rate/queue/configuration | Applied 2026-09-18 | Sample rate restored 0.1 on serving revisions (API 00025-jd7, worker 00007-jqj); queue RUNNING, Scheduler ENABLED; plan shows only cosmetic dashboard normalization diff |
 
 Implementation, automated verification, and live acceptance are separate milestones. Record observed evidence and agreed deferrals; do not mark this phase complete from a dashboard screenshot or a successful mock plan.
