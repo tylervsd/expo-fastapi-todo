@@ -1,6 +1,10 @@
 # Phase 22: Cloud KMS and encryption lifecycle
 
-**Status:** Full-stack encrypted-name implementation plus a separate lifecycle lab. Live KMS provisioning and learner acceptance have not been performed. Use synthetic data only. [Spec](../superpowers/specs/2026-09-18-cloud-kms-design.md) and [implementation plan](../superpowers/plans/2026-09-18-cloud-kms.md).
+**Status:** Complete with learner sign-off on 2026-09-20. The learner reported completing the lifecycle guide and successfully deploying the encrypted-name application. Use synthetic data only. [Spec](../superpowers/specs/2026-09-18-cloud-kms-design.md) and [implementation plan](../superpowers/plans/2026-09-18-cloud-kms.md).
+
+## Acceptance record
+
+On 2026-09-20, the learner reported completing the guide, confirmed the application deployment worked, and explicitly signed off Phase 22. Implementation was merged in [PR #31](https://github.com/tylervsd/expo-fastapi-todo/pull/31). Live acceptance is learner-reported; individual cloud audit artifacts, application-key rotation results and iOS device results were not independently captured in this task. The local verification record below remains separate evidence.
 
 ## Full-stack exercise: encrypted registration names
 
@@ -63,10 +67,10 @@ Automated API tests use the real PostgreSQL schema and a fake KMS client at the 
 | API/storage, SDK integrity, owner binding, failure and privacy tests | Local verification recorded below |
 | Shared form/header, strict transport, legacy users and session cleanup | Local verification recorded below |
 | Browser signup → login → refresh → sign-out | Local verification recorded below |
-| Real KMS-backed web signup and private DB inspection | Pending live setup |
-| Real KMS-backed iOS signup and restored greeting | Pending live setup/device acceptance |
-| Application-key rotation with old/new named users | Pending live setup |
-| Runtime IAM, audit evidence and log/trace privacy inspection | Pending live setup |
+| Real KMS-backed web signup and private DB inspection | Covered by learner phase sign-off; individual evidence not captured |
+| Real KMS-backed iOS signup and restored greeting | Phase signed off; device-specific evidence not captured |
+| Application-key rotation with old/new named users | Covered by learner phase sign-off; individual evidence not captured |
+| Runtime IAM, audit evidence and log/trace privacy inspection | Covered by learner phase sign-off; individual evidence not captured |
 
 The remaining sections retain the separate synthetic lifecycle lab and its acceptance table.
 
@@ -352,16 +356,16 @@ Do not use `terraform destroy` for routine cleanup. Leave the protected key and 
 | Acceptance item | Evidence/status |
 | --- | --- |
 | Local runner tests and Terraform mock checks | See local verification record below |
-| Correct project/region, isolated backend, reviewed plan/cost | Not performed |
-| Reader round trip; writer encrypt succeeds/decrypt denied for the correct permission | Not performed |
-| New primary, new ciphertext, unchanged old ciphertext still decrypts | Not performed |
-| Old version disabled: old fails for state, new passes; original restored | Not performed |
-| Verified replacement; backup/export dependencies explained | Not performed |
-| Unused version scheduled with deadline, restored disabled, re-enabled | Not performed |
-| Changed metadata and ciphertext rejected; original control passes | Not performed |
-| Admin and Data Access audit identities/methods observed | Not performed |
-| No scheduled destruction, all fixtures decrypt, no-change final plan | Not performed |
-| Learner sign-off | Pending |
+| Correct project/region, isolated backend, reviewed plan/cost | Guide completion reported by learner, 2026-09-20 |
+| Reader round trip; writer encrypt succeeds/decrypt denied for the correct permission | Guide completion reported by learner, 2026-09-20 |
+| New primary, new ciphertext, unchanged old ciphertext still decrypts | Guide completion reported by learner, 2026-09-20 |
+| Old version disabled: old fails for state, new passes; original restored | Guide completion reported by learner, 2026-09-20 |
+| Verified replacement; backup/export dependencies explained | Guide completion reported by learner, 2026-09-20 |
+| Unused version scheduled with deadline, restored disabled, re-enabled | Guide completion reported by learner, 2026-09-20 |
+| Changed metadata and ciphertext rejected; original control passes | Guide completion reported by learner, 2026-09-20 |
+| Admin and Data Access audit identities/methods observed | Guide completion reported by learner, 2026-09-20 |
+| No scheduled destruction, all fixtures decrypt, no-change final plan | Guide completion reported by learner, 2026-09-20 |
+| Learner sign-off | Confirmed 2026-09-20 |
 
 ### Local verification record
 
@@ -381,4 +385,4 @@ Full-stack extension verified on 2026-09-18:
 - Exported web: registration, named greeting after login/refresh, sign-out, and no name in browser storage pass in Playwright. The test-only API fakes KMS, not authentication or PostgreSQL.
 - Ruff, changed-document Markdown lint and local relative file links pass. The full external-link checker could not reach remote sites in this environment (status 0); this is not evidence that those links are broken.
 
-No real cloud API, IAM, billing, encryption, audit delivery or recovery results are implied by these checks. All live acceptance rows remain pending.
+No real cloud API, IAM, billing, encryption, audit delivery or recovery results are implied by these checks. Live completion and phase sign-off were subsequently reported by the learner on 2026-09-20; see the acceptance record above.
