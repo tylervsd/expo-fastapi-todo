@@ -252,3 +252,6 @@ observability = null
 # a learner approves the separate additive budget/monitoring plan.
 budget     = null
 monitoring = null
+# Phase 22: apply the kms-lab root first (owns the KMS API), migrate the DB,
+# then opt in. This creates a separate application key; keep it on rollback.
+real_name_encryption = false

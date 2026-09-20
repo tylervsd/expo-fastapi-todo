@@ -503,6 +503,7 @@ export async function deleteTodo(id: string, options: TodoRequestOptions = {}): 
 export type AuthUser = {
   id: string;
   username: string;
+  real_name?: string | null;
 };
 
 export type Session = {
@@ -518,12 +519,18 @@ function isAuthUser(value: unknown): value is AuthUser {
   const record = value as Record<string, unknown>;
   const keys = Reflect.ownKeys(record);
   return (
-    keys.length === 2 &&
-    keys.every((key) => typeof key === "string") &&
+    keys.length >= 2 && keys.length <= 3 &&
+    keys.every((key) => key === "id" || key === "username" || key === "real_name") &&
     typeof record.id === "string" &&
     uuidPattern.test(record.id) &&
     typeof record.username === "string" &&
-    usernamePattern.test(record.username)
+    usernamePattern.test(record.username) &&
+    (record.real_name == null || (
+      typeof record.real_name === "string" &&
+      record.real_name.trim() === record.real_name &&
+      Array.from(record.real_name).length >= 1 && Array.from(record.real_name).length <= 100 &&
+      !/[\p{Cc}\p{Cs}\p{Zl}\p{Zp}]/u.test(record.real_name)
+    ))
   );
 }
 
@@ -545,11 +552,12 @@ function isSession(value: unknown): value is Session {
 export async function signup(
   username: string,
   password: string,
-  options: TodoRequestOptions = {},
+  options: TodoRequestOptions & { realName?: string } = {},
 ): Promise<AuthUser> {
   const body = await requestJson("/auth/signup", "POST", 201, "signup", options, {
     username,
     password,
+    ...(options.realName === undefined ? {} : { real_name: options.realName }),
   });
   if (!isAuthUser(body)) throw new TodoApiError("invalid-data", operationMessages.signup.invalidData);
   return body;

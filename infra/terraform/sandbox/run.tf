@@ -49,6 +49,14 @@ resource "google_cloud_run_v2_service" "api" {
         value = jsonencode(var.api.cors_origins)
       }
 
+      dynamic "env" {
+        for_each = var.real_name_encryption ? [google_kms_crypto_key.profile[0].id] : []
+        content {
+          name  = "REAL_NAME_KMS_KEY"
+          value = env.value
+        }
+      }
+
       # Observability-owned runtime input: the application parses
       # TRACE_SAMPLE_RATE with a 0.1 default (1.0 bounded drills), so the
       # variable stays unset (app default) when observability is disabled.
@@ -181,12 +189,17 @@ resource "google_cloud_run_v2_service" "api" {
     google_project_iam_member.owned,
     google_secret_manager_secret_iam_member.access,
     google_project_iam_member.trace_api,
+    google_kms_crypto_key_iam_member.profile_api,
   ]
 
   # Release-owned fields: the release workflow deploys revisions by digest
   # and moves traffic. Terraform keeps all stable configuration.
   lifecycle {
     prevent_destroy = true
+    precondition {
+      condition     = !contains(keys(var.api.plain_env), "REAL_NAME_KMS_KEY") && !contains(keys(var.api.secret_env), "REAL_NAME_KMS_KEY")
+      error_message = "REAL_NAME_KMS_KEY is owned by real_name_encryption, not api plain_env/secret_env."
+    }
     precondition {
       condition     = var.observability == null || !contains(keys(var.api.plain_env), "TRACE_SAMPLE_RATE")
       error_message = "api.plain_env must not set TRACE_SAMPLE_RATE when observability is enabled; var.observability.trace_sample_rate owns it."

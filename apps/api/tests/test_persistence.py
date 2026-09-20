@@ -31,7 +31,7 @@ from app.todo_repository import (
 )
 from app.todo_repository import set_title as set_todo_title
 
-REVISION = "2026091701"
+REVISION = "2026091801"
 
 
 def test_alembic_cli_loads_api_package() -> None:
@@ -218,7 +218,9 @@ def test_migration_creates_expected_todos_shape(database_engine: Engine) -> None
     users_columns = {
         column["name"]: column for column in inspector.get_columns("users")
     }
-    assert list(users_columns) == ["id", "public_id", "username", "password_hash"]
+    assert list(users_columns) == ["id", "public_id", "username", "password_hash", "real_name_ciphertext"]
+    assert users_columns["real_name_ciphertext"]["nullable"] is True
+    assert str(users_columns["real_name_ciphertext"]["type"]) == "BYTEA"
     sessions_columns = {
         column["name"]: column for column in inspector.get_columns("sessions")
     }

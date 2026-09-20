@@ -233,12 +233,13 @@ Phases 7-9 build one guided-todo creation feature to teach backend-owned state t
 ## 22. Cloud KMS and encryption lifecycle
 
 - **Learning goal:** Distinguish default Google encryption, customer-managed encryption keys, application-layer envelope encryption, and secret storage.
-- **Visible outcome:** A contained lab encrypts and decrypts a non-production fixture, rotates its key, reads ciphertext produced by an older version, tests disable/restore, and documents safe destruction checks.
+- **Visible outcome:** Registration accepts an optional real name, stores only ciphertext, and displays it in the authenticated web/iOS greeting. A separate lab rotates its synthetic-fixture key, reads older ciphertext, tests disable/restore, and documents safe destruction checks.
 - **New technology/pattern:** Key rings, cryptographic keys and versions, IAM separation of duties, automatic symmetric rotation, envelope encryption, CMEK integration, audit logs, disable/restore/destroy states, and re-encryption responsibilities.
 - **Verification emphasis:** Old-version decryptability, denied decrypt permissions, rotation behavior, backup/state dependencies, restoration during the destruction window, and a no-data-loss destruction checklist.
 - **Learning experiment:** Rotate a key and demonstrate that rotation changes the primary version without automatically re-encrypting existing ciphertext.
-- **Non-goals:** Encrypting ordinary todo fields without a threat-model need, HSM/EKM, asymmetric PKI, inventing cryptographic primitives, and destroying an in-use key version.
+- **Non-goals:** Encrypting ordinary todo fields without a threat-model need, profile editing or encrypted-name search, HSM/EKM, asymmetric PKI, inventing cryptographic primitives, and destroying an in-use key version.
 - **Spec gate:** Approve the concrete data classification and use case, key location and purpose, IAM roles, rotation period, ciphertext metadata, re-encryption plan, disable/destroy approvals, recovery, and cost.
+- **Status:** Spec, plan, and local lab implementation authorized on 2026-09-18. The full-stack encrypted-name feature, separate application key, isolated Terraform lab and synthetic-fixture runner are implemented; cloud provisioning and learner acceptance remain pending. See the [design](superpowers/specs/2026-09-18-cloud-kms-design.md), [plan](superpowers/plans/2026-09-18-cloud-kms.md), and [walkthrough](guides/22-cloud-kms.md).
 
 ## 23. Resilience and production operations
 

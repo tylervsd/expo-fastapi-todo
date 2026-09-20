@@ -65,6 +65,7 @@ SAFE_LOG_FIELDS = frozenset(
 
 # Fixed messages per event: messages are code constants, never user content.
 EVENT_MESSAGES = {
+    "profile_name_unavailable": "Encrypted profile name unavailable.",
     "http_request": "HTTP request completed.",
     "unexpected_fault": "Unexpected fault reported.",
     "third_party_log": "Third-party log record redacted.",

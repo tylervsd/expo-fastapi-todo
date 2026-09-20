@@ -1,0 +1,4 @@
+# Fictional placeholders. Copy to ignored terraform.tfvars before live use.
+project_id      = "example-phase22-project"
+region          = "us-west1"
+operator_member = "user:learner@example.test"

@@ -351,6 +351,21 @@ describe("auth transport", () => {
   const user = { id: "6fc33b84-16a8-4d8e-ae94-fc50bb457d72", username: "alice" };
   const session = { token: "tok-1", expires_at: "2026-10-07T00:00:00+00:00", user };
 
+  it("sends the optional name and accepts it on the authenticated user", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(201, user));
+    await signup("alice", "long-enough-password", { apiUrl, fetchImpl, realName: "Élodie 王" });
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toEqual({
+      username: "alice", password: "long-enough-password", real_name: "Élodie 王",
+    });
+    fetchImpl.mockResolvedValue(response(200, { ...user, real_name: "Élodie 王" }));
+    await expect(fetchMe({ apiUrl, fetchImpl })).resolves.toEqual({ ...user, real_name: "Élodie 王" });
+  });
+
+  it.each(["", " ", 42, "x".repeat(101), "bad\nname", "bad\ud800"])("rejects invalid real name %p", async (real_name) => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(200, { ...user, real_name }));
+    await expect(fetchMe({ apiUrl, fetchImpl })).rejects.toHaveProperty("kind", "invalid-data");
+  });
+
   it("signs up with an exact POST JSON request", async () => {
     const fetchImpl = jest.fn().mockResolvedValue(response(201, user));
 

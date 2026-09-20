@@ -34,6 +34,7 @@ infra/terraform/.local/
 apps/mobile/ios/
 apps/mobile/dist-e2e/
 artifacts/e2e/
+artifacts/kms-lab/
 playwright-report/
 test-results/
 e2e/web/test-results/

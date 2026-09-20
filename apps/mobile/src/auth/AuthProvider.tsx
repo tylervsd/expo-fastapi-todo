@@ -18,13 +18,16 @@ import { AuthScreen } from "./AuthScreen";
 import { tokenStorage, type TokenStorage } from "./tokenStorage";
 
 export type ProviderAuthApi = {
-  signup: (username: string, password: string) => Promise<AuthUser>;
+  signup: (username: string, password: string, realName?: string) => Promise<AuthUser>;
   login: (username: string, password: string) => Promise<Session>;
   logout: (options?: TodoRequestOptions) => Promise<void>;
   fetchMe: (options?: TodoRequestOptions) => Promise<AuthUser>;
 };
 
-const defaultAuthApi: ProviderAuthApi = { signup, login, logout, fetchMe };
+const defaultAuthApi: ProviderAuthApi = {
+  signup: (username, password, realName) => signup(username, password, { realName }),
+  login, logout, fetchMe,
+};
 
 type Status = "unknown" | "signed-out" | "signed-in";
 
@@ -248,7 +251,7 @@ export function AuthProvider({
         <View style={styles.signedIn}>
           <SafeAreaView style={styles.headerSafe}>
             <View style={styles.header}>
-              <Text style={styles.username}>Signed in as {user.username}</Text>
+              <Text style={styles.username}>Welcome, {user.real_name ?? user.username}</Text>
               <Pressable
                 accessibilityRole="button"
                 testID="e2e-sign-out"

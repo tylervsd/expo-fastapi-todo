@@ -33,6 +33,7 @@
     "test": "pnpm test:contracts && pnpm test:doctor",
     "test:contracts": "bats tests/repository_contract.bats",
     "test:release": "python3 -m unittest discover -s tests -p test_release.py -v",
+    "test:kms": "python3 -m unittest discover -s tests -p test_kms_lab.py -v",
     "test:doctor": "bats tests/doctor",
     "test:e2e:web": "uv run --directory apps/api python -m e2e.support prepare && EXPO_NO_DOTENV=1 EXPO_PUBLIC_API_URL=http://127.0.0.1:8001 pnpm --dir apps/mobile exec expo export --clear --platform web --output-dir dist-e2e && pnpm exec playwright test -c e2e/web/playwright.config.ts",
     "typecheck:e2e": "pnpm exec tsc --noEmit -p e2e/web/tsconfig.json",

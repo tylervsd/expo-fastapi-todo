@@ -24,6 +24,7 @@ REVISION = "2026091001"
 
 # Keep module-level app construction independent of an operator's shell.
 os.environ.pop("CORS_ALLOWED_ORIGINS", None)
+os.environ.pop("REAL_NAME_KMS_KEY", None)
 
 
 def get_test_database_url() -> URL:
