@@ -1,12 +1,18 @@
 """Single-call, in-memory test IVR. No outbound dialing."""
 
+import asyncio
+import json
+import logging
 import os
 import re
 import secrets
+import time
 from dataclasses import dataclass, fields
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from uuid import uuid4
 
-from telnyx_commands import make_command
+from telnyx_commands import CommandError, make_command
 
 DIGIT_WORDS = [
     "zero",
@@ -318,3 +324,238 @@ class Flow:
             self.outcome = "speech_timeout"
             return self.hangup(now=now)
         return self.fail("completion_timeout", now=now)
+
+
+logger = logging.getLogger("ivr.fixture")
+logger.setLevel(logging.INFO)
+logger.parent = logging.getLogger("uvicorn.error")
+EVENTS = frozenset(
+    {
+        "call.initiated",
+        "call.answered",
+        "call.gather.ended",
+        "call.speak.ended",
+        "call.hangup",
+    }
+)
+
+
+class Fixture:
+    def __init__(self, settings, send, *, started_at, clock=time.monotonic):
+        self.settings, self.send = settings, send
+        self.started_at, self.clock = started_at, clock
+        self.active = None
+        self.seen = set()
+        # ponytail: process-local retention, max 1000 calls; durable storage for restarts/scale.
+        self.tombstones = set()
+        self.busy = {}
+        self.tasks = {}
+        self.closed = False
+        # ponytail: one worker and one short-held lock; per-call locks if concurrency grows.
+        self.lock = asyncio.Lock()
+        self.run_id = str(uuid4())
+
+    def _log(self, reason, command=None):
+        flow = self.active
+        logger.info(
+            json.dumps(
+                {
+                    "run_id": self.run_id,
+                    "reason": reason,
+                    "stage": flow.stage if flow else "idle",
+                    "attempt": flow.attempt if flow else 0,
+                    "action": command.action if command else None,
+                    "elapsed": round(self.clock() - flow.started_at, 3) if flow else 0,
+                }
+            )
+        )
+
+    def _owned(self, command):
+        if self.active and self.active.pending is command:
+            return True
+        busy = self.busy.get(command.call_control_id)
+        return busy is not None and busy[0] is command
+
+    def _sync(self, command=None):
+        if self.active and self.active.stage == "ended":
+            self._log(self.active.outcome)
+            self.tombstones.add(self.active.call_control_id)
+            self.active = None
+            self.seen.clear()
+        for task, pending in list(self.tasks.items()):
+            if (
+                not self._owned(pending)
+                and task is not asyncio.current_task()
+                and not task.cancelling()
+            ):
+                task.cancel()
+        if command is not None:
+            self._log("command_reserved", command)
+            task = asyncio.create_task(self._run(command))
+            self.tasks[task] = command
+            task.add_done_callback(lambda done: self.tasks.pop(done, None))
+
+    async def _run(self, command):
+        try:
+            if not self._owned(command):
+                return
+            await self.send(command)
+        except Exception as error:  # noqa: BLE001 — contain task errors without leaking call tokens
+            # Exceptions never escape to asyncio's raw exception/URL logger.
+            async with self.lock:
+                if not self._owned(command):
+                    return
+                self._log(
+                    error.reason
+                    if isinstance(error, CommandError)
+                    else "internal_error",
+                    command,
+                )
+                if self.active and self.active.pending is command:
+                    self._sync(
+                        self.active.command_failed(command.command_id, now=self.clock())
+                    )
+                else:
+                    self._log("hangup_unconfirmed", command)
+        else:
+            if self._owned(command):
+                self._log("command_accepted", command)
+
+    @staticmethod
+    def _validate(data):
+        payload = data["payload"]
+        for name, limit in (
+            ("call_control_id", 1024),
+            ("call_leg_id", 256),
+            ("connection_id", 256),
+        ):
+            value = payload.get(name)
+            if not isinstance(value, str) or not 1 <= len(value) <= limit:
+                raise ValueError("Invalid call event")
+        kind = data["event_type"]
+        if kind == "call.initiated":
+            try:
+                occurred = datetime.fromisoformat(data["occurred_at"])
+                if occurred.tzinfo is None:
+                    raise ValueError
+                if payload.get("direction") not in ("incoming", "outgoing"):
+                    raise ValueError
+            except KeyError, TypeError, ValueError:
+                raise ValueError("Invalid call event") from None
+            return occurred
+        if kind in ("call.gather.ended", "call.speak.ended"):
+            status = payload.get("status")
+            if not isinstance(status, str) or not 1 <= len(status) <= 128:
+                raise ValueError("Invalid call event")
+            if kind == "call.gather.ended":
+                digits = payload.get("digits", "" if status != "valid" else None)
+                if not isinstance(digits, str) or len(digits) > 128:
+                    raise ValueError("Invalid call event")
+        # Malformed/missing correlation cannot advance; let the watchdog end the wait.
+        return None
+
+    async def accept(self, data):
+        kind = data["event_type"]
+        if kind not in EVENTS:
+            return
+        occurred = self._validate(data)
+        payload = data["payload"]
+        call = payload["call_control_id"]
+        if payload["connection_id"] != self.settings.connection_id:
+            return
+        async with self.lock:
+            if self.closed:
+                return
+            now = self.clock()
+            if kind == "call.hangup":
+                if self.active and call == self.active.call_control_id:
+                    if payload["call_leg_id"] != self.active.call_leg_id:
+                        return
+                    self.active.handle(kind, payload, now=now)
+                    self._sync()
+                elif call in self.busy:
+                    if payload["call_leg_id"] == self.busy[call][1]:
+                        del self.busy[call]
+                        self._sync()
+                elif len(self.tombstones) + bool(self.active) < 1000:
+                    self.tombstones.add(call)
+                return
+            if call in self.tombstones:
+                return
+            if kind == "call.initiated":
+                if self.active and call == self.active.call_control_id:
+                    return
+                if (
+                    payload["direction"] != "incoming"
+                    or occurred < self.started_at
+                    or occurred > datetime.now(UTC) + timedelta(seconds=300)
+                ):
+                    return
+                if len(self.tombstones) + bool(self.active) >= 1000:
+                    self._log("capacity_reached")
+                    return
+                if self.active:
+                    command = make_command(call, "hangup", {})
+                    self.tombstones.add(call)
+                    self.busy[call] = (command, payload["call_leg_id"], now + 15)
+                else:
+                    self.active = Flow(
+                        self.settings, call, payload["call_leg_id"], now=now
+                    )
+                    self.seen = {data["id"]}
+                    command = self.active.pending
+                self._sync(command)
+                return
+            if not self.active or call != self.active.call_control_id:
+                return
+            if (
+                payload["call_leg_id"] != self.active.call_leg_id
+                or data["id"] in self.seen
+            ):
+                return
+            token = payload.get("client_state")
+            if not isinstance(token, str) or not 1 <= len(token) <= 256:
+                return
+            if len(self.seen) >= 4096 and self.active.stage not in (
+                "failure",
+                "hanging_up",
+            ):
+                self._sync(self.active.fail("event_capacity_reached", now=now))
+                return
+            if len(self.seen) < 4096:
+                self.seen.add(data["id"])
+            self._sync(self.active.handle(kind, payload, now=now))
+
+    async def tick(self):
+        async with self.lock:
+            now = self.clock()
+            for call, (command, leg, deadline) in list(self.busy.items()):
+                if now >= deadline:
+                    self._log("hangup_unconfirmed", command)
+                    del self.busy[call]
+            command = self.active.expire(now=now) if self.active else None
+            self._sync(command)
+
+    async def drain(self):
+        while self.tasks:
+            await asyncio.gather(*list(self.tasks), return_exceptions=True)
+
+    async def close(self):
+        async with self.lock:
+            self.closed = True
+            command = self.active.hangup(now=self.clock()) if self.active else None
+            self._sync(command)
+        try:
+            async with asyncio.timeout(15):
+                await self.drain()
+        except TimeoutError:
+            pass
+        finally:
+            for task in list(self.tasks):
+                task.cancel()
+            await self.drain()
+            async with self.lock:
+                self.busy.clear()
+                if self.active:
+                    self.active.end("hangup_unconfirmed")
+                self._sync()

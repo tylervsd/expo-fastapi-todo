@@ -1,8 +1,12 @@
+import asyncio
 import json
+from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import pytest
 
 from fixture import (
+    Fixture,
     Flow,
     Settings,
     digit_words,
@@ -11,6 +15,7 @@ from fixture import (
     new_challenge,
     result_prompt,
 )
+from telnyx_commands import CommandError
 
 
 def settings(**changes):
@@ -356,3 +361,250 @@ def test_zero_challenge_and_attempt_setting():
     assert flow.stage == "menu"
     complete(flow, status="valid", digits="3")
     assert flow.stage == "failure"
+
+
+def event(kind="call.initiated", *, call="call", leg="leg", **payload):
+    return {
+        "id": str(uuid4()),
+        "event_type": kind,
+        "occurred_at": datetime.now(UTC).isoformat(),
+        "payload": {
+            "call_control_id": call,
+            "call_leg_id": leg,
+            "connection_id": "app",
+            "direction": "incoming",
+            "state": "parked",
+            **payload,
+        },
+    }
+
+
+def runtime(send, clock=lambda: 0):
+    return Fixture(
+        settings(),
+        send,
+        started_at=datetime.now(UTC) - timedelta(seconds=1),
+        clock=clock,
+    )
+
+
+async def runtime_complete(ivr, kind="call.gather.ended", **payload):
+    data = event(kind, client_state=ivr.active.pending.client_state, **payload)
+    await asyncio.gather(ivr.accept(data), ivr.accept(data))
+    await ivr.drain()
+
+
+def test_runtime_duplicate_full_flow_and_tombstone():
+    async def exercise():
+        sent = []
+
+        async def send(command):
+            sent.append(command)
+
+        ivr = runtime(send)
+        data = event()
+        await asyncio.gather(ivr.accept(data), ivr.accept(data))
+        await ivr.drain()
+        assert [c.action for c in sent] == ["answer"]
+        await runtime_complete(ivr, "call.answered")
+        code = ivr.active.challenge
+        for digits in ("1", code + "#", "1", "000123456#", "1"):
+            await runtime_complete(ivr, status="valid", digits=digits)
+        await runtime_complete(ivr, "call.speak.ended", status="completed")
+        assert [c.action for c in sent] == ["answer"] + ["gather_using_speak"] * 5 + [
+            "speak",
+            "hangup",
+        ]
+        await ivr.accept(event("call.hangup"))
+        await ivr.accept(event())
+        await ivr.drain()
+        assert ivr.active is None and "call" in ivr.tombstones
+        assert len(sent) == 8
+        await ivr.close()
+
+    asyncio.run(exercise())
+
+
+def test_reordered_and_old_admission():
+    async def exercise():
+        async def forbidden(command):
+            pytest.fail("Must not control this call")
+
+        ivr = runtime(forbidden)
+        await ivr.accept(event("call.hangup"))
+        await ivr.accept(event())
+        old = event(call="old")
+        old["occurred_at"] = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+        await ivr.accept(old)
+        await ivr.accept(event(call="other-app", connection_id="other"))
+        await ivr.accept(event(call="out", direction="outgoing"))
+        future = event(call="future")
+        future["occurred_at"] = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+        await ivr.accept(future)
+        await ivr.accept(event("call.answered", call="unknown"))
+        await ivr.drain()
+        assert ivr.active is None
+        await ivr.close()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize(
+    "kind,changes",
+    [
+        ("call.initiated", {"call_control_id": ""}),
+        ("call.initiated", {"call_leg_id": 1}),
+        ("call.initiated", {"connection_id": "x" * 257}),
+        ("call.gather.ended", {"status": "valid", "digits": 742}),
+        ("call.gather.ended", {"status": "valid", "digits": "1" * 129}),
+        ("call.gather.ended", {"status": "valid"}),
+    ],
+)
+def test_runtime_malformed_payload(kind, changes):
+    async def exercise():
+        async def send(command):
+            pytest.fail("Malformed event sent a command")
+
+        ivr = runtime(send)
+        with pytest.raises(ValueError, match="^Invalid call event$"):
+            await ivr.accept(event(kind, **changes))
+        await ivr.close()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("finish", ["answer", "hangup"])
+@pytest.mark.parametrize("late_error", [True, False])
+def test_completion_wins_over_late_http_response(finish, late_error):
+    async def exercise():
+        entered, release = asyncio.Event(), asyncio.Event()
+        sent = []
+
+        async def send(command):
+            sent.append(command)
+            if command.action == "answer":
+                entered.set()
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    await release.wait()  # model a response already on the wire
+                if late_error:
+                    raise CommandError("uncertain")
+
+        ivr = runtime(send)
+        await ivr.accept(event())
+        await entered.wait()
+        if finish == "answer":
+            await ivr.accept(
+                event("call.answered", client_state=ivr.active.pending.client_state)
+            )
+        else:
+            await ivr.accept(event("call.hangup"))
+        release.set()
+        await ivr.drain()
+        assert not any(c.action == "speak" for c in sent)
+        assert (ivr.active.stage if ivr.active else None) == (
+            "welcome" if finish == "answer" else None
+        )
+        await ivr.accept(event("call.hangup"))
+        await ivr.close()
+
+    asyncio.run(exercise())
+
+
+def test_busy_deadlines_and_next_call():
+    async def exercise():
+        now, sent = [0], []
+
+        async def send(command):
+            sent.append(command)
+
+        ivr = runtime(send, lambda: now[0])
+        await ivr.accept(event())
+        await ivr.drain()
+        await runtime_complete(ivr, "call.answered")
+        first = ivr.active
+        busy = event(call="busy", leg="busy-leg")
+        await asyncio.gather(ivr.accept(busy), ivr.accept(busy))
+        await ivr.drain()
+        assert ivr.active is first
+        assert [(c.call_control_id, c.action) for c in sent][-1] == ("busy", "hangup")
+        now[0] = 50
+        await ivr.tick()
+        await ivr.drain()
+        assert ivr.active.stage == "failure"
+        now[0] = 80
+        await ivr.tick()
+        await ivr.drain()
+        assert ivr.active.stage == "hanging_up"
+        now[0] = 95
+        await ivr.tick()
+        assert ivr.active is None
+        assert first.outcome == "hangup_unconfirmed"
+        await ivr.accept(event(call="fresh", leg="fresh-leg"))
+        await ivr.drain()
+        assert ivr.active.call_control_id == "fresh"
+        await ivr.accept(event("call.hangup", call="fresh", leg="fresh-leg"))
+        await ivr.close()
+        assert not ivr.tasks
+
+    asyncio.run(exercise())
+
+
+def test_runtime_caps_and_wrong_leg():
+    async def exercise():
+        sent = []
+
+        async def send(command):
+            sent.append(command)
+
+        ivr = runtime(send)
+        await ivr.accept(event())
+        await ivr.drain()
+        await runtime_complete(ivr, "call.answered")
+        await ivr.accept(event("call.hangup", leg="wrong"))
+        assert ivr.active.stage == "welcome"
+        ivr.seen = {str(n) for n in range(4096)}
+        await ivr.accept(
+            event(
+                "call.gather.ended",
+                client_state=ivr.active.pending.client_state,
+                status="valid",
+                digits="1",
+            )
+        )
+        await ivr.drain()
+        assert ivr.active.stage == "failure"
+        await runtime_complete(ivr, "call.speak.ended", status="completed")
+        await ivr.accept(event("call.hangup"))
+        ivr.tombstones.update(str(n) for n in range(1000))
+        count = len(sent)
+        await ivr.accept(event(call="capacity"))
+        await ivr.drain()
+        assert len(sent) == count and ivr.active is None
+        await ivr.close()
+
+    asyncio.run(exercise())
+
+
+def test_shutdown_cancels_blocked_send_and_attempts_hangup():
+    async def exercise():
+        entered = asyncio.Event()
+        sent = []
+
+        async def send(command):
+            sent.append(command)
+            if command.action == "answer":
+                entered.set()
+                await asyncio.Event().wait()
+
+        ivr = runtime(send)
+        await ivr.accept(event())
+        await entered.wait()
+        await asyncio.wait_for(ivr.close(), 1)
+        assert [c.action for c in sent] == ["answer", "hangup"]
+        assert not ivr.tasks and ivr.active is None
+        await ivr.accept(event(call="after-close"))
+        assert len(sent) == 2
+
+    asyncio.run(exercise())
