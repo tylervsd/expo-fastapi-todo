@@ -245,12 +245,12 @@ source = { virtual = "." }
 dependencies = [
     { name = "cryptography" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
 [package.dev-dependencies]
 dev = [
-    { name = "httpx" },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -259,12 +259,12 @@ dev = [
 requires-dist = [
     { name = "cryptography" },
     { name = "fastapi", specifier = "==0.141.1" },
+    { name = "httpx" },
     { name = "uvicorn", extras = ["standard"] },
 ]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "httpx" },
     { name = "pytest" },
     { name = "ruff" },
 ]

@@ -6,11 +6,30 @@ import secrets
 from dataclasses import dataclass, fields
 from decimal import Decimal
 
-DIGIT_WORDS = "zero one two three four five six seven eight nine".split()
-SMALL = (
-    DIGIT_WORDS
-    + "ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen".split()
-)
+DIGIT_WORDS = [
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+]
+SMALL = DIGIT_WORDS + [
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+]
 TENS = [
     "",
     "",
@@ -45,7 +64,7 @@ class Settings:
                 raise ValueError()
             if not (
                 self.api_key.isascii()
-                and all((33 <= ord(c) <= 126 for c in self.api_key))
+                and all(33 <= ord(c) <= 126 for c in self.api_key)
             ):
                 raise ValueError()
             if not (isinstance(self.connection_id, str) and self.connection_id.strip()):
@@ -98,7 +117,7 @@ def new_challenge() -> str:
 
 
 def digit_words(value: str) -> str:
-    return " ".join((DIGIT_WORDS[ord(char) - ord("0")] for char in value))
+    return " ".join(DIGIT_WORDS[ord(char) - ord("0")] for char in value)
 
 
 def integer_words(value: int) -> str:

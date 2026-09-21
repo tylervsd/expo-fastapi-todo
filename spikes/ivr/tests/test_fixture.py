@@ -122,6 +122,7 @@ def test_validation_survives_optimized_python():
             "from fixture import Settings; Settings(api_key='', connection_id='app')",
         ],
         cwd=Path(__file__).resolve().parents[1],
+        check=False,
         capture_output=True,
         text=True,
     )
