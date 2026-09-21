@@ -1,23 +1,28 @@
 # IVR spike
 
-Lesson 1 receives authenticated Telnyx events. It does not answer or place calls.
-Python 3.14 and uv are required; dependencies and the lockfile are independent
-of the main application.
+Lesson 2 implements an inbound test IVR: answer, spoken menus, a random
+four-digit challenge, synthetic-ID validation, confirmation, and a configurable
+spoken amount. Local implementation is verified; Lesson 2 was signed off by the learner on
+2026-09-21. Intermittent webhook delivery failures remain under investigation. The client still receives events only; outbound calling waits for Lesson 3.
 
-From this worktree's `spikes/ivr` directory:
+Python 3.14 and uv are required. From this worktree's `spikes/ivr` directory:
 
 ```sh
 uv sync --locked
+# Only if .env does not already exist:
 cp .env.example .env
-# Edit .env locally: TELNYX_PUBLIC_KEY is the account's base64 verification key.
+# Edit .env locally; do not paste or commit credentials.
 uv run pytest -q
 uv run ruff check .
 uv run ruff format --check .
-uv run uvicorn webhooks:client_app --host 127.0.0.1 --port 8011 --env-file .env --no-access-log
+uv run uvicorn webhooks:public_app --host 127.0.0.1 --port 8010 --env-file .env --no-access-log
 ```
 
-In another terminal: `curl -i http://127.0.0.1:8011/health`.
-Expected: HTTP 200 and `{"status":"ok","role":"client"}`.
+The combined ingress and independent fixture require `TELNYX_PUBLIC_KEY`,
+`TELNYX_API_KEY`, and `IVR_CONNECTION_ID`. The independent client requires only
+`TELNYX_PUBLIC_KEY`. All fixture defaults and optional tuning are documented in
+[.env.example](.env.example). The public key verifies callbacks; the API key
+sends commands. Use only synthetic identifiers.
 
 | Entry point | Port | Routes |
 | --- | --- | --- |
@@ -25,10 +30,20 @@ Expected: HTTP 200 and `{"status":"ok","role":"client"}`.
 | `webhooks:test_ivr_app` | 8012 | `/health`, `/webhooks/test-ivr` |
 | `webhooks:public_app` | 8010 | Both webhook routes only |
 
-Use [Lesson 1: connectivity](lessons/01-connectivity.md) for the test-IVR command,
-public ingress, Telnyx setup, security probes, and cleanup. The learner reported completion and signed off on 2026-09-21. Offline signatures do not prove delivery from Telnyx.
+Use one process/worker, no reload, and only the combined ingress for the live
+exercise. Separate entry points do not share in-memory state. No public control,
+scenario, health, documentation, or call-start endpoints are exposed.
 
-The receiver limits bodies to 64 KiB, verifies exact bytes and a ±300-second
-window, validates the envelope, and logs only role, event ID, and event type.
-Repeated events are acknowledged again without call-control effects. There is
-no replay deduplication or session state in this lesson.
+- [Lesson 1: connectivity](lessons/01-connectivity.md) — accepted 2026-09-21.
+- [Lesson 2: navigate the IVR by hand](lessons/02-test-ivr.md) — walkthrough and acceptance record.
+
+Accepted webhooks return empty **200**, after original-byte signature/freshness,
+64 KiB body, and envelope checks. Fixture events additionally validate call
+identity and current operation. No raw payloads, input, credentials, prompts,
+or call-control tokens appear in default logs. Offline tests block real outbound
+HTTP; they never place calls or open a tunnel.
+
+Retries, operation correlation, replay guards, and a watchdog bound each call.
+Final speech completion precedes normal hangup. Memory-only state cannot recover
+calls after restart; end any active call on your handset before restarting.
+See the walkthrough for limits, failure reasons, and learner-operated live checks.

@@ -2,10 +2,10 @@
 name = "ivr-spike"
 version = "0.1.0"
 requires-python = "==3.14.*"
-dependencies = ["fastapi==0.141.1", "uvicorn[standard]", "cryptography"]
+dependencies = ["fastapi==0.141.1", "uvicorn[standard]", "cryptography", "httpx"]
 
 [dependency-groups]
-dev = ["pytest", "httpx", "ruff"]
+dev = ["pytest", "ruff"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
