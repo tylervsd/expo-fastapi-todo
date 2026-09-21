@@ -1,16 +1,23 @@
-"""Lesson 1: authenticate and acknowledge events without controlling calls."""
+"""Verified webhook boundary and independently runnable IVR entry points."""
 
+import asyncio
 import base64
 import binascii
 import json
 import logging
 import os
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
+from datetime import UTC, datetime
+from functools import partial
 
+import httpx
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
+
+from fixture import Fixture, load_settings
+from telnyx_commands import send_command
 
 
 def verify_signature(
@@ -41,7 +48,36 @@ async def lifespan(app: FastAPI):
         app.state.telnyx_key = Ed25519PublicKey.from_public_bytes(key)
     except KeyError, ValueError, binascii.Error:
         raise RuntimeError("Invalid TELNYX_PUBLIC_KEY configuration") from None
-    yield
+    if not getattr(app.state, "fixture_enabled", False):
+        yield
+        return
+    settings = load_settings()
+    # HTTP request URLs contain call-control tokens; keep them out of default logs.
+    for name in ("httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
+    async with httpx.AsyncClient(
+        headers={"Authorization": f"Bearer {settings.api_key}"},
+        timeout=5,
+        follow_redirects=False,
+    ) as client:
+        ivr = Fixture(
+            settings, partial(send_command, client), started_at=datetime.now(UTC)
+        )
+        app.state.ivr = ivr
+
+        async def watchdog():
+            while True:
+                await asyncio.sleep(1)
+                await ivr.tick()
+
+        watcher = asyncio.create_task(watchdog())
+        try:
+            yield
+        finally:
+            watcher.cancel()
+            with suppress(asyncio.CancelledError):
+                await watcher
+            await ivr.close()
 
 
 # Use Uvicorn's configured stderr handler so accepted events are visible by default.
@@ -92,7 +128,12 @@ async def receive_event(request: Request, role: str) -> Response:
     logger.info(
         json.dumps({"role": role, "event_id": event_id, "event_type": event_type})
     )
-    return Response(status_code=204)
+    if role == "test-ivr":
+        try:
+            await request.app.state.ivr.accept(data)
+        except ValueError:
+            raise HTTPException(400, "Invalid call event") from None
+    return Response(status_code=200)
 
 
 client_router = APIRouter()
@@ -114,6 +155,8 @@ test_ivr_app = FastAPI(
     lifespan=lifespan, openapi_url=None, docs_url=None, redoc_url=None
 )
 public_app = FastAPI(lifespan=lifespan, openapi_url=None, docs_url=None, redoc_url=None)
+test_ivr_app.state.fixture_enabled = True
+public_app.state.fixture_enabled = True
 client_app.include_router(client_router)
 test_ivr_app.include_router(test_ivr_router)
 public_app.include_router(client_router)

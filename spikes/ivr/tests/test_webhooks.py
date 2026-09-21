@@ -62,7 +62,7 @@ def envelope(**changes):
         {
             "data": {
                 "id": "evt-1",
-                "event_type": "call.initiated",
+                "event_type": "unknown.event",
                 "payload": {},
                 **changes,
             }
@@ -94,7 +94,7 @@ def test_independent_apps(private, app, role, other):
             client.post(
                 f"/webhooks/{role}", content=body, headers=headers(private, body)
             ).status_code
-            == 204
+            == 200
         )
         assert client.post(f"/webhooks/{other}").status_code == 404
         for path in ("/docs", "/redoc", "/openapi.json"):
@@ -114,7 +114,7 @@ def test_public_routes_and_private_logs(private, caplog):
                 response = client.post(
                     f"/webhooks/{role}", content=body, headers=headers(private, body)
                 )
-                assert response.status_code == 204
+                assert response.status_code == 200
                 assert response.content == b""
         for path in (
             "/health",
@@ -203,7 +203,7 @@ def test_body_boundary(private):
             client.post(
                 "/webhooks/client", content=body, headers=headers(private, body)
             ).status_code
-            == 204
+            == 200
         )
         request = client.build_request(
             "POST", "/webhooks/client", content=iter([b"x" * 32768, b"x" * 32769])
@@ -247,3 +247,161 @@ def test_stream_stops_at_limit(private, length_headers):
         assert sent[0]["status"] == 413
 
     asyncio.run(exercise())
+
+
+@pytest.fixture(autouse=True)
+def fixture_settings(monkeypatch, offline_environment):
+    monkeypatch.setenv("TELNYX_API_KEY", "test-only")
+    monkeypatch.setenv("IVR_CONNECTION_ID", "app")
+
+
+def test_client_needs_no_fixture_settings(private, monkeypatch):
+    monkeypatch.delenv("TELNYX_API_KEY")
+    monkeypatch.delenv("IVR_CONNECTION_ID")
+    with TestClient(client_app) as client:
+        assert client.get("/health").status_code == 200
+    for app in (ivr_app, public_app):
+        with (
+            pytest.raises(RuntimeError, match="^Invalid fixture configuration$"),
+            TestClient(app),
+        ):
+            pass
+
+
+@pytest.mark.parametrize("app", [ivr_app, public_app])
+def test_signed_dispatch_acknowledges_before_network(private, monkeypatch, app):
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    import webhooks
+
+    sent = []
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def send(client, command):
+        sent.append(command)
+        if command.action == "answer":
+            entered.set()
+            await release.wait()
+
+    monkeypatch.setattr(webhooks, "send_command", send)
+
+    def body(kind, **payload):
+        return envelope(
+            id=str(uuid4()),
+            event_type=kind,
+            occurred_at=datetime.now(UTC).isoformat(),
+            payload={
+                "connection_id": "app",
+                "call_control_id": "SECRET_CALL_TOKEN",
+                "call_leg_id": "leg",
+                "direction": "incoming",
+                **payload,
+            },
+        )
+
+    def post(client, data, path="/webhooks/test-ivr", signed=True):
+        return client.post(
+            path, content=data, headers=headers(private, data) if signed else {}
+        )
+
+    with TestClient(app) as client:
+        initiated = body("call.initiated")
+        assert post(client, initiated, signed=False).status_code == 401
+        assert sent == []
+        wrong_app = body("call.initiated", connection_id="other")
+        assert post(client, wrong_app).status_code == 200
+        assert sent == []
+        malformed = body("call.initiated", call_control_id="")
+        assert post(client, malformed).status_code == 400
+        assert sent == []
+        if app is public_app:
+            assert post(client, initiated, path="/webhooks/client").status_code == 200
+            assert sent == []
+        response = post(client, initiated)
+        assert response.status_code == 200 and response.content == b""
+        client.portal.call(asyncio.wait_for, entered.wait(), 1)
+        assert len(sent) == 1 and not release.is_set()
+        assert post(client, initiated).status_code == 200
+        answered = body("call.answered", client_state=sent[0].client_state)
+        assert post(client, answered).status_code == 200
+        client.portal.call(release.set)
+        client.portal.call(app.state.ivr.drain)
+        assert [cmd.action for cmd in sent] == ["answer", "gather_using_speak"]
+        assert post(client, body("call.hangup")).status_code == 200
+    assert app.state.ivr.active is None
+    assert not app.state.ivr.tasks
+
+
+def test_full_flow_logs_are_private(private, monkeypatch, caplog):
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    import webhooks
+    from telnyx_commands import CommandError
+
+    sent = []
+    monkeypatch.setenv("IVR_CHALLENGE_OVERRIDE", "0742")
+
+    async def send(client, command):
+        sent.append(command)
+        if command.action == "hangup":
+            raise CommandError("uncertain")
+
+    monkeypatch.setattr(webhooks, "send_command", send)
+    caplog.set_level(logging.INFO)
+    with TestClient(public_app) as client:
+
+        def post(kind, **payload):
+            body = envelope(
+                id=str(uuid4()),
+                event_type=kind,
+                occurred_at=datetime.now(UTC).isoformat(),
+                payload={
+                    "connection_id": "app",
+                    "call_control_id": "SECRET_CALL_TOKEN",
+                    "call_leg_id": "leg",
+                    "direction": "incoming",
+                    "from": "+15555550123",
+                    **payload,
+                },
+            )
+            assert (
+                client.post(
+                    "/webhooks/test-ivr", content=body, headers=headers(private, body)
+                ).status_code
+                == 200
+            )
+            client.portal.call(public_app.state.ivr.drain)
+
+        post("call.initiated")
+        post("call.answered", client_state=sent[-1].client_state)
+        for digits in ("1", "0742#", "1", "000123456#", "1"):
+            post(
+                "call.gather.ended",
+                client_state=sent[-1].client_state,
+                status="valid",
+                digits=digits,
+            )
+        post("call.speak.ended", client_state=sent[-1].client_state, status="completed")
+        post("call.hangup")
+        for path in (
+            "/health",
+            "/docs",
+            "/redoc",
+            "/openapi.json",
+            "/calls",
+            "/scenario",
+        ):
+            assert client.get(path).status_code == 404
+    for secret in (
+        "test-only",
+        "0742",
+        "000123456",
+        "1425.30",
+        "+15555550123",
+        "SECRET_CALL_TOKEN",
+    ):
+        assert secret not in caplog.text
+    assert "result_spoken" in caplog.text
+    assert "uncertain" in caplog.text
