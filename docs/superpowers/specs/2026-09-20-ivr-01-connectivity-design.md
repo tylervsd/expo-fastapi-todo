@@ -1,7 +1,7 @@
 # IVR Lesson 1: local applications and verified webhooks
 
 **Status:** Local foundation implemented and verified on `codex/ivr-01-connectivity`.
-Live acceptance remains pending; see the [walkthrough](../../../spikes/ivr/lessons/01-connectivity.md).
+Learner reported completion and signed off on 2026-09-21; see the [walkthrough](../../../spikes/ivr/lessons/01-connectivity.md).
 No subagents were used. The table below preserves the pre-execution baseline.
 
 **Related:** [Curriculum](../../ivr-learning-plan.md),

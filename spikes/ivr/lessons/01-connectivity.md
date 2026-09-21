@@ -1,6 +1,6 @@
 # Lesson 1 — Local apps and verified webhooks
 
-**Status:** Local implementation verified; live exercise and learner sign-off pending.
+**Status:** Complete. Learner reported completion and signed off on 2026-09-21.
 
 An event tells you what happened. A command asks Telnyx to do something.
 Returning HTTP 204 acknowledges an event; it does not answer a ringing call.
@@ -235,22 +235,17 @@ in-memory key. No real account key, tunnel, number purchase, or paid call was us
 | Signed HTTP checks | Both routes accept authentic synthetic envelopes | Passed offline |
 | Rejection checks | Tampering, wrong key, missing headers, stale/future timestamps rejected | Passed offline |
 | Envelope and size | Signed malformed input returns 400; oversized stream returns 413 | Passed offline |
-| Public surface | No health, docs, or control endpoints exposed | Passed locally; public probes Not run |
+| Public surface | No health, docs, or control endpoints exposed | Passed locally; live completion reported by learner |
 | Privacy | Accepted logs contain no payload or secrets | Passed offline |
-| Live incoming call | Initiated and hangup events observed on fixture route | Not run |
-| Routing recovery | Wrong callback fails; restored callback succeeds | Not run |
-| Cleanup | Lesson tunnel removed; unrelated mappings preserved | Not run |
-| Learner acceptance | Learner confirms walkthrough completion | Pending |
+| Live incoming call | Initiated and hangup events observed on fixture route | Completion reported by learner |
+| Routing recovery | Wrong callback fails; restored callback succeeds | Completion reported by learner |
+| Cleanup | Lesson tunnel removed; unrelated mappings preserved | Completion reported by learner |
+| Learner acceptance | Learner confirms walkthrough completion | Signed off 2026-09-21 |
 
-Fill in during the live exercise:
+Learner sign-off recorded 2026-09-21 (America/Los_Angeles): “I completed lesson 1
+and signed off.” Live completion is learner-reported, not independently observed
+by the implementation agent. Per-checkpoint timestamps, Tailscale version/origin,
+probe output, sanitized event IDs, delivery diagnostics, and cleanup output were
+not supplied in this conversation and are not fabricated here.
 
-- Observed date/time and timezone: Not run
-- Tailscale version, pre-existing mappings, chosen origin/port: Not run
-- Public probe commands and statuses: Not run
-- Sanitized initiated/hangup event IDs and acknowledgment outcome: Not run
-- Wrong-path failure and restored-path evidence: Not run
-- Post-stop status and unchanged unrelated mappings: Not run
-- Learner sign-off: Pending
-
-Do not mark Lesson 1 complete until live evidence and learner acceptance exist.
-Keep this branch/worktree for that checkpoint; review and merge afterward.
+Lesson 1 is accepted. Continue with Lesson 2 on a new branch from updated `main`.

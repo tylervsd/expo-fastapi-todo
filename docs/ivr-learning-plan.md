@@ -92,7 +92,8 @@ do not create empty guides in advance.
 
 **Planning:** [Spec](superpowers/specs/2026-09-20-ivr-01-connectivity-design.md) and
 [implementation plan](superpowers/plans/2026-09-20-ivr-01-connectivity.md).
-Local implementation is verified; live acceptance is pending.
+Local implementation is verified; the learner reported completion and signed off
+on 2026-09-21. Detailed live artifacts were not supplied; see the acceptance record.
 
 **Walkthrough:** [Lesson 1 connectivity](../spikes/ivr/lessons/01-connectivity.md).
 
@@ -105,13 +106,13 @@ webhook-only ingress with two role routers to share one Funnel hostname, while
 retaining independent application entry points. Follow the walkthrough to inspect
 existing routing before enabling the tunnel.
 
-- [ ] Configure the two Telnyx applications, one destination number, public
+- [x] Configure the two Telnyx applications, one destination number, public
   verification key, and callback URLs. Add the outbound caller ID, API credential,
   and outbound profile in Lesson 3; Lesson 1 only receives events.
-- [ ] Validate incoming signatures against the original request body and reject
+- [x] Validate incoming signatures against the original request body and reject
   invalid or stale requests. Confirm that local controls are not public.
-- [ ] Call the destination manually and observe a verified incoming-call event.
-- [ ] End the test call and confirm both event handling and cleanup.
+- [x] Call the destination manually and observe a verified incoming-call event.
+- [x] End the test call and confirm both event handling and cleanup.
 
 **Checkpoint:** both apps run locally; a real Telnyx event reaches the intended
 handler; a forged request is rejected. No full IVR flow is required yet.
@@ -234,7 +235,7 @@ it is not a production reliability estimate.
 
 | Lesson | Offline checks | Live evidence | Learner acceptance |
 | --- | --- | --- | --- |
-| 1. Connectivity | 41 tests, Ruff, loopback smoke checks passed | Not run | Pending |
+| 1. Connectivity | 41 tests, Ruff, loopback smoke checks passed | Completion reported by learner | Signed off 2026-09-21 |
 | 2. Test IVR | Not run | Not run | Pending |
 | 3. Automated caller | Not run | Not run | Pending |
 | 4. Value or error | Not run | Not run | Pending |

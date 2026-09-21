@@ -26,8 +26,7 @@ Expected: HTTP 200 and `{"status":"ok","role":"client"}`.
 | `webhooks:public_app` | 8010 | Both webhook routes only |
 
 Use [Lesson 1: connectivity](lessons/01-connectivity.md) for the test-IVR command,
-public ingress, Telnyx setup, security probes, and cleanup. Live acceptance is
-pending. Offline signatures do not prove delivery from Telnyx.
+public ingress, Telnyx setup, security probes, and cleanup. The learner reported completion and signed off on 2026-09-21. Offline signatures do not prove delivery from Telnyx.
 
 The receiver limits bodies to 64 KiB, verifies exact bytes and a ±300-second
 window, validates the envelope, and logs only role, event ID, and event type.

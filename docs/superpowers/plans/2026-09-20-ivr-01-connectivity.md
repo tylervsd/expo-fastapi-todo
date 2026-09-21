@@ -14,8 +14,8 @@ Lesson 1 acknowledges events only and issues no telephony commands.
 
 **Spec:** [Lesson 1 design](../specs/2026-09-20-ivr-01-connectivity-design.md).
 
-**Status:** Local implementation and inline review complete. Live checkpoints and
-learner acceptance remain pending. See the [walkthrough](../../../spikes/ivr/lessons/01-connectivity.md)
+**Status:** Local implementation and inline review complete. Learner reported
+Lesson 1 completion and signed off on 2026-09-21. See the [walkthrough](../../../spikes/ivr/lessons/01-connectivity.md)
 for observed results. No subagents were used. These snippets describe the contracts.
 
 ## Global constraints
@@ -263,7 +263,7 @@ Expected statuses are 401, 401, and 404. A 2xx here is a failed security checkpo
   ensure only lesson files and its documents are included, with no `.env`.
 - [x] Commit the completed local foundation on `codex/ivr-01-connectivity` with
   a message such as `feat: add IVR lesson 1 verified webhook foundation`.
-- [ ] Present the walkthrough and local verification results. Work through its
+- [x] Present the walkthrough and local verification results. Work through its
   live checkpoints with the learner and record observations as they occur.
 - [ ] After the learner's live acceptance, review/merge the lesson PR through the
   agreed repository workflow. Lesson 2 starts on a new branch from updated main
@@ -274,5 +274,5 @@ Expected statuses are 401, 401, and 404. A 2xx here is a failed security checkpo
 The scope deliberately stops at authenticated event receipt. The tests exercise
 both applications and the combined public surface; live evidence covers only the
 fixture because the client does not dial yet. Deferred lessons are not implemented
-as scaffolding. Worktree creation and offline implementation are complete. Paid setup, public
-exposure, real calls, and learner acceptance remain learner-operated checkpoints.
+as scaffolding. Worktree creation and offline implementation are complete. The learner reported live completion and signed off on 2026-09-21; detailed live
+artifacts were not supplied. See the walkthrough acceptance record.
