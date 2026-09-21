@@ -69,7 +69,7 @@ async def send_command(client: httpx.AsyncClient, command: Command) -> None:
                         raise TypeError
                     if data["data"].get("result") != "ok":
                         raise ValueError
-                except ValueError, UnicodeError:
+                except ValueError, TypeError, UnicodeError:
                     raise CommandError("invalid_response") from None
                 return
             if response.status_code != 429 and response.status_code < 500:
