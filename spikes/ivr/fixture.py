@@ -250,6 +250,9 @@ class Flow:
         ):
             self.end(self.outcome or "remote_hangup")
             return None
+        expired = self.expire(now=now)
+        if expired is not None or self.stage == "ended":
+            return expired
         if self.stage == "answering" and event_type == "call.answered":
             self.answered = True
             return self._gather("welcome", now)

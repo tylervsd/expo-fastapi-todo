@@ -608,3 +608,56 @@ def test_shutdown_cancels_blocked_send_and_attempts_hangup():
         assert len(sent) == 2
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize(
+    "stage,kind,now,payload",
+    [
+        ("result", "call.speak.ended", 300, {"status": "completed"}),
+        ("challenge", "call.gather.ended", 51, {"status": "valid", "digits": "0742#"}),
+    ],
+)
+def test_completion_cannot_beat_an_expired_deadline(stage, kind, now, payload):
+    flow = flow_at(stage)
+    flow.handle(kind, {"client_state": flow.pending.client_state, **payload}, now=now)
+    assert flow.outcome in ("call_timeout", "completion_timeout")
+    assert flow.stage in ("hanging_up", "failure")
+
+
+def test_flow_speaks_configured_amount():
+    flow = flow_at("result", result_amount="27.05")
+    assert json.loads(flow.pending.body)["payload"] == (
+        "Your requested value is twenty-seven dollars and five cents."
+    )
+
+
+@pytest.mark.parametrize("answered", [False, True])
+def test_runtime_sender_failure_is_bounded_and_private(answered, caplog):
+    async def exercise():
+        sent = []
+        now = [0]
+
+        async def send(command):
+            sent.append(command)
+            if not answered or command.action != "answer":
+                raise RuntimeError("SECRET_PROVIDER_BODY")
+
+        ivr = runtime(send, lambda: now[0])
+        await ivr.accept(event())
+        await ivr.drain()
+        if answered:
+            await runtime_complete(ivr, "call.answered")
+        assert [c.action for c in sent] == (
+            ["answer", "gather_using_speak", "speak", "hangup"]
+            if answered
+            else ["answer", "hangup"]
+        )
+        assert ivr.active.stage == "hanging_up"
+        now[0] = 15
+        await ivr.tick()
+        assert ivr.active is None
+        await ivr.close()
+        assert not ivr.tasks
+        assert "SECRET_PROVIDER_BODY" not in caplog.text
+
+    asyncio.run(exercise())
