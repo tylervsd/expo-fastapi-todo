@@ -1,9 +1,10 @@
 # IVR Lesson 3 Automated Caller Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans
-> to implement sequentially. Steps use checkbox syntax for tracking.
-> No subagents, including reviewers. Execution requires a subsequent learner
-> request; this document is a proposed plan, not permission to place live calls.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development
+> (fresh worker per task plus per-task review) or superpowers:executing-plans
+> for inline execution. Steps use checkbox syntax for tracking.
+> Planning used no subagents. The learner authorized implementation with
+> subagents on 2026-09-21; this document is not permission to place live calls.
 
 **Goal:** Call the configured fixture, navigate using final speech transcripts,
 verify the synthetic-ID readback, and reach the result announcement safely.
@@ -18,8 +19,12 @@ Ruff; stdlib argparse, asyncio, dataclasses, re, time, datetime, uuid and base64
 
 **Spec:** [Lesson 3 design](../specs/2026-09-21-ivr-03-automated-caller-design.md).
 
-**Status:** Proposed, 2026-09-21. Planning only; no product code or lesson guide
-created. Author self-review only, no independent review or subagents.
+**Status:** Implemented and verified offline 2026-09-21 (358 tests, Ruff check
+and format clean); live verification and learner acceptance remain pending.
+[Lesson guide](../../../spikes/ivr/lessons/03-automated-caller.md) created.
+Planning used no subagents; implementation used authorized subagents (bounded
+scout, workers per task, per-task reviewers, final whole-branch review).
+Author self-review plus per-task and final reviews; no live calls placed.
 
 ## Global Constraints
 
@@ -30,7 +35,7 @@ created. Author self-review only, no independent review or subagents.
 - Dial only the configured test number; no destination argument or webhook-driven dialing.
 - Client code must not read fixture state, challenge override, result amount, or fixture settings.
 - No database, queue, cloud deployment, UI, LLM, recording, or custom audio streaming.
-- No subagents during planning, implementation, or review.
+- No subagents during planning; implementation used learner-authorized subagents.
 - Automated verification is offline; live acceptance is learner-operated and separately recorded.
 - Do not purchase numbers, change account settings, or expose a tunnel during this work.
 - Preserve unrelated local changes and existing Tailscale mappings.
@@ -506,8 +511,9 @@ echo $?
   Do not check Lesson 3 live boxes merely because offline replay passes.
 - [ ] Perform author self-review against all spec sections: settings, no fixture
   imports/data leaks, six prompt stages, identity races, bounded tasks/buffers,
-  provider payloads, local-only initiation and Lesson 4/5 boundaries. No reviewers
-  or subagents. Fix concrete findings and rerun affected checks.
+  provider payloads, local-only initiation and Lesson 4/5 boundaries. Per-task
+  and final reviewers check each task; Task 6 keeps an author self-review of
+  the full spec. Fix concrete findings and rerun affected checks.
 - [ ] Run final verification from the IVR directory and worktree root:
 
 ```sh
@@ -540,7 +546,10 @@ transport can be reused for actions, but not for the different dial response.
 Transcription is admitted by leg identity, not the fixture's per-operation token.
 The missing post-hangup finalization window is intentional Lesson 4 scope, not
 an undocumented success fallback. Live track selection and initial prompt capture
-remain explicit acceptance checks. No independent review was performed.
+remain explicit acceptance checks. No independent review was performed during
+planning; implementation used per-task and final independent reviews.
 
-Implementation remains unstarted. Execute sequentially without subagents only
-after the learner requests implementation of the reviewed documents.
+Implementation used the learner-authorized subagent flow (bounded scout, workers
+per task in dependency order, reviewer gate per task, final whole-branch review).
+Stop at the Lesson 3 live acceptance checkpoint; do not begin Lesson 4 without
+a new request.

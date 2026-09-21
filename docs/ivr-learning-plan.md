@@ -156,8 +156,10 @@ call; an incorrect code cannot reach the result.
 
 **Planning:** [Spec](superpowers/specs/2026-09-21-ivr-03-automated-caller-design.md) and
 [implementation plan](superpowers/plans/2026-09-21-ivr-03-automated-caller.md).
-Proposed 2026-09-21; implementation, live verification, and learner acceptance
-remain pending. Reuse the existing IVR worktree on `codex/ivr-03-automated-caller`.
+**Walkthrough:** [Lesson 3 automated caller](../spikes/ivr/lessons/03-automated-caller.md).
+Local implementation is verified (358 tests, Ruff check and format clean,
+2026-09-21); live verification and learner acceptance remain pending.
+Reuse the existing IVR worktree on `codex/ivr-03-automated-caller`.
 
 **Learn:** outbound dialing, call-leg identification, transcription lifecycle,
 partial versus final transcripts, and synchronizing input to recognizable prompts.
@@ -167,15 +169,15 @@ starts transcription of the remote side, and navigates through confirmation.
 Track client and fixture legs separately; never treat their webhook IDs as
 interchangeable.
 
-- [ ] Check numeric parsing offline with digit words, formatted digits, leading
+- [x] Check numeric parsing offline with digit words, formatted digits, leading
   zeros, and incomplete or ambiguous challenges.
-- [ ] Buffer relevant final transcription segments by stage; do not assume an
+- [x] Buffer relevant final transcription segments by stage; do not assume an
   entire prompt arrives in one event or act on unstable partial text.
-- [ ] Send the exact challenge plus `#` only once the complete challenge and
+- [x] Send the exact challenge plus `#` only once the complete challenge and
   entry prompt are recognized. Navigate by prompts, not fixed sleeps.
-- [ ] Enter the configured synthetic ID and verify its spoken readback before
+- [x] Enter the configured synthetic ID and verify its spoken readback before
   confirming. Reject mismatches.
-- [ ] Add a stage deadline and an overall call deadline, initially 30 seconds
+- [x] Add a stage deadline and an overall call deadline, initially 30 seconds
   and 180 seconds. Keep tone duration and timing configurable for real-call tuning.
 - [ ] Run against the fixture and inspect its received digits as test evidence.
 
@@ -252,7 +254,7 @@ it is not a production reliability estimate.
 | --- | --- | --- | --- |
 | 1. Connectivity | 41 tests, Ruff, loopback smoke checks passed | Completion reported by learner | Signed off 2026-09-21 |
 | 2. Test IVR | 168 tests and Ruff passed | Successful calls reported; intermittent delivery failures observed | Signed off 2026-09-21 |
-| 3. Automated caller | Not run | Not run | Pending |
+| 3. Automated caller | 358 tests and Ruff passed | Not run | Pending |
 | 4. Value or error | Not run | Not run | Pending |
 | 5. Reliability drills | Not run | Not run | Pending |
 

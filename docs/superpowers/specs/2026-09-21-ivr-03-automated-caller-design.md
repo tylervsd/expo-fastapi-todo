@@ -1,8 +1,11 @@
 # IVR Lesson 3: an automated caller that hears and responds
 
-**Date:** 2026-09-21. **Status:** Proposed; planning only. Spec and plan drafted
-together at the learner's request. No implementation or live acceptance claimed.
-No subagents during planning, implementation, or review.
+**Date:** 2026-09-21. **Status:** Implemented and verified offline; live
+verification and learner acceptance remain pending. Spec and plan drafted
+together at the learner's request. Planning used no subagents. The learner
+authorized implementation with subagents on 2026-09-21; implementation used a
+bounded scout pass, fresh workers per task, and per-task reviewers plus a
+final whole-branch review.
 
 **Related:** [Curriculum](../../ivr-learning-plan.md),
 [implementation plan](../plans/2026-09-21-ivr-03-automated-caller.md),
@@ -43,8 +46,9 @@ Do not create another worktree, reset branches, push, or merge during planning.
 - Dial only the configured test number; no destination argument or webhook-driven dialing.
 - Client code must not read fixture state, challenge override, result amount, or fixture settings.
 - No database, queue, cloud deployment, UI, LLM, recording, or custom audio streaming.
-- No subagents during planning, implementation, or review.
-- Automated verification is offline; live acceptance is learner-operated and separately recorded.
+- No subagents during planning. Implementation used authorized subagents (see
+  status record above); automated verification stayed offline and live
+  acceptance remains learner-operated and separately recorded.
 - Do not purchase numbers, change account settings, or expose a tunnel during this work.
 - Preserve unrelated local changes and existing Tailscale mappings.
 
@@ -308,6 +312,7 @@ create an empty guide during planning. At the learner-operated checkpoint:
 6. If delivery drops recur, record timing/event types/provider delivery status
    and rerun the affected exercise. Do not label it reliable from offline checks.
 
-Planning delivers only this spec, its implementation plan, and curriculum links.
-Implementation, live evidence and learner acceptance remain pending. Stop after
+Planning delivered only this spec, its implementation plan, and curriculum links.
+Offline implementation is complete (358 tests, Ruff clean); live evidence and
+learner acceptance remain pending. Stop after
 the Lesson 3 checkpoint; do not continue into Lesson 4 without a new request.
