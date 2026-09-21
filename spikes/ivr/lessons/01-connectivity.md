@@ -2,6 +2,12 @@
 
 **Status:** Complete. Learner reported completion and signed off on 2026-09-21.
 
+**Compatibility note, 2026-09-21:** This guide preserves Lesson 1's historical
+commands and evidence. On the Lesson 2 branch, fixture/public startup additionally
+requires the local API credential and fixture application ID; accepted callbacks
+return 200. Use the [Lesson 2 settings and walkthrough](02-test-ivr.md) for current
+commands. The client remains receipt-only. Lesson 1 acceptance below is unchanged.
+
 An event tells you what happened. A command asks Telnyx to do something.
 Returning HTTP 204 acknowledges an event; it does not answer a ringing call.
 This lesson receives events only. Speech and menus belong to Lesson 2; outbound

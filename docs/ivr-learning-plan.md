@@ -2,8 +2,8 @@
 
 ## Status and outcome
 
-Planned curriculum, September 20, 2026. No applications have been implemented
-or live calls verified by this plan. This is a separate learning track from
+Curriculum started September 20, 2026. Lesson 1 is accepted; Lesson 2 is
+implemented and verified offline, with live acceptance pending. This is a separate learning track from
 the numbered fullstack curriculum. Each lesson will get a concrete implementation
 plan and walkthrough when we work through it.
 
@@ -107,8 +107,8 @@ retaining independent application entry points. Follow the walkthrough to inspec
 existing routing before enabling the tunnel.
 
 - [x] Configure the two Telnyx applications, one destination number, public
-  verification key, and callback URLs. Add the outbound caller ID, API credential,
-  and outbound profile in Lesson 3; Lesson 1 only receives events.
+  verification key, and callback URLs. Add the fixture API credential in Lesson 2 and the outbound caller ID/profile
+  in Lesson 3; Lesson 1 only receives events.
 - [x] Validate incoming signatures against the original request body and reject
   invalid or stale requests. Confirm that local controls are not public.
 - [x] Call the destination manually and observe a verified incoming-call event.
@@ -121,6 +121,14 @@ handler; a forged request is rejected. No full IVR flow is required yet.
 
 ## Lesson 2 — A test IVR you can navigate by hand
 
+**Planning:** [Spec](superpowers/specs/2026-09-21-ivr-02-test-ivr-design.md) and
+[implementation plan](superpowers/plans/2026-09-21-ivr-02-test-ivr.md).
+**Walkthrough:** [Lesson 2 test IVR](../spikes/ivr/lessons/02-test-ivr.md).
+Local implementation is verified; live acceptance and learner sign-off are pending.
+The fixture API credential is required now for answer/speech/hangup. Minimum
+command idempotency, replay guards, and cleanup deadlines are included before
+live control; Lesson 5 still owns the broader reliability campaign.
+
 **Learn:** answering, speaking, gathering DTMF, explicit state transitions, and
 distinguishing individual digit events from a completed gather.
 
@@ -129,12 +137,12 @@ collection. Generate a four-digit challenge per call, validate each answer, and
 speak the configured amount. Advance once per completed gather, rather than once
 for every digit event. Wait for final speech completion before normal hangup.
 
-- [ ] Add a focused offline check for valid progression, wrong challenge, and
+- [x] Add a focused offline check for valid progression, wrong challenge, and
   leading-zero preservation.
-- [ ] Implement the welcome, challenge, personal menu, ID, confirmation, and result.
-- [ ] Bound input waits and retries: initially 20 seconds per gather and at most
+- [x] Implement the welcome, challenge, personal menu, ID, confirmation, and result.
+- [x] Bound input waits and retries: initially 20 seconds per gather and at most
   two attempts per input step; make these fixture settings easy to tune.
-- [ ] Provide explicit spoken rejection and cleanup on failure.
+- [x] Provide explicit spoken rejection and cleanup on failure.
 - [ ] Complete the flow from a personal phone, then try an incorrect challenge.
 
 **Checkpoint:** a person can obtain the configured spoken result through a real
@@ -236,7 +244,7 @@ it is not a production reliability estimate.
 | Lesson | Offline checks | Live evidence | Learner acceptance |
 | --- | --- | --- | --- |
 | 1. Connectivity | 41 tests, Ruff, loopback smoke checks passed | Completion reported by learner | Signed off 2026-09-21 |
-| 2. Test IVR | Not run | Not run | Pending |
+| 2. Test IVR | 168 tests and Ruff passed | Not run | Pending |
 | 3. Automated caller | Not run | Not run | Pending |
 | 4. Value or error | Not run | Not run | Pending |
 | 5. Reliability drills | Not run | Not run | Pending |

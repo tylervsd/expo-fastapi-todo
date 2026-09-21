@@ -1,8 +1,8 @@
 # IVR Lesson 2: a test IVR you can navigate by hand
 
-**Date:** 2026-09-21. **Status:** Proposed design, ready for learner review.
-This is documentation only; implementation, live verification, and Lesson 2
-acceptance have not occurred. No subagents.
+**Date:** 2026-09-21. **Status:** Approved and implemented; offline verification
+and author review complete. 168 tests and both Ruff checks pass. Live Lesson 2
+verification and learner acceptance remain pending. No subagents.
 
 **Related:** [Curriculum](../../ivr-learning-plan.md),
 [implementation plan](../plans/2026-09-21-ivr-02-test-ivr.md),
@@ -45,9 +45,9 @@ untracked `.pi/` remains untouched.
 - Preserve unrelated local changes and existing Tailscale mappings.
 
 The user supplied the scope and learning goal. Proposed defaults below (synthetic
-ID, amount range, deadlines, voice, and retry behavior) are design choices for
-review, not previously accepted requirements. Both documents are drafted together
-for review as requested; neither constitutes approval to execute the plan.
+ID, amount range, deadlines, voice, and retry behavior) were proposed design choices, subsequently approved when the learner requested
+implementation. Both documents were drafted together and the plan was executed
+sequentially without subagents.
 
 ## Approaches and decision
 
@@ -331,7 +331,7 @@ duplicate/out-of-order callbacks, uncertain sends, token mismatches, busy calls,
 watchdog deadlines, shutdown, route isolation, and privacy. Preserve Lesson 1's
 security tests, updating only intentional startup/status/payload changes.
 
-The implementation will create `lessons/02-test-ivr.md`, not an empty guide now.
+The implementation includes [the Lesson 2 guide](../../../spikes/ivr/lessons/02-test-ivr.md).
 Walkthrough checkpoints, in order:
 
 1. Explain command acceptance versus completion and individual digits versus
@@ -358,7 +358,7 @@ Walkthrough checkpoints, in order:
 | Evidence category | Required evidence | Status now |
 | --- | --- | --- |
 | Existing baseline | 41 Lesson 1 tests and Ruff | Passed 2026-09-21 |
-| Lesson 2 offline | Tests and checks named in implementation plan | Not run |
+| Lesson 2 offline | 168 tests, Ruff check/format, diff checks | Passed 2026-09-21 |
 | Live protocol | Commands accepted; expected gather status/digits shape and token echo; HTTP 200 deliveries | Not run |
 | Live success | Full amount heard, final speech completes before hangup | Not run |
 | Live rejection | Wrong challenge twice, no input, business, wrong ID, confirmation rejection | Not run |
