@@ -154,6 +154,11 @@ call; an incorrect code cannot reach the result.
 
 ## Lesson 3 — An automated caller that hears and responds
 
+**Planning:** [Spec](superpowers/specs/2026-09-21-ivr-03-automated-caller-design.md) and
+[implementation plan](superpowers/plans/2026-09-21-ivr-03-automated-caller.md).
+Proposed 2026-09-21; implementation, live verification, and learner acceptance
+remain pending. Reuse the existing IVR worktree on `codex/ivr-03-automated-caller`.
+
 **Learn:** outbound dialing, call-leg identification, transcription lifecycle,
 partial versus final transcripts, and synchronizing input to recognizable prompts.
 
