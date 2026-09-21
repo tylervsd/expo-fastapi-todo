@@ -1,7 +1,7 @@
 # Lesson 2 — A test IVR you can navigate by hand
 
-**Status:** Implemented and verified offline on 2026-09-21. Live acceptance and
-learner sign-off are pending. No live calls, tunnel exposure, purchases, or account
+**Status:** Implemented and verified offline; learner signed off on 2026-09-21
+after reporting successful live calls. No live calls, tunnel exposure, purchases, or account
 changes were performed by the implementation agent.
 
 **Prerequisite:** Lesson 1 is accepted and merged through PR #33. Use its existing
@@ -209,11 +209,21 @@ existing upstream Starlette/AnyIO deprecation warnings remain.
 | Early hangup, fresh call, busy rejection | Passed | Not run | Pending |
 | Missing callbacks and shutdown cleanup | Passed | Not run | Pending |
 | Scoped tunnel cleanup | Not applicable | Not run | Pending |
-| Lesson completion | Local implementation verified | Not run | Pending |
+| Lesson completion | Local implementation verified | Successful live calls reported 2026-09-21 | Signed off 2026-09-21 |
 
 For each attempt record date/time, scenario, expected versus heard speech,
 attempt count, sanitized event/command correlation, actual disconnect, and any
 failure/recovery. Record failed attempts as well as successful reruns. Do not
 store credentials, phone numbers, full webhook payloads, or real personal IDs.
-Learner sign-off remains **pending** until you complete the live checkpoints.
+Learner sign-off: **accepted on 2026-09-21**. Individual scenarios above were
+not separately attested; their live results remain unverified.
+
+Open observation: intermittent silence after the personal menu and ID entry.
+Supplied app logs and Telnyx delivery records showed missing gather-completion
+callbacks; a failed digit callback and gather callback each had three attempts
+with no HTTP response and provider error code `75000`. Later calls succeeded.
+Root cause remains unresolved; do not treat successful reruns as a reliability
+fix. On recurrence, retain call time, last prompt and keys entered, app/access
+logs, failed gather delivery attempts, and any ingress errors. No credentials
+or raw call payloads belong in this record.
 Stop after this lesson; Lesson 3 has not been implemented.

@@ -2,8 +2,8 @@
 
 Lesson 2 implements an inbound test IVR: answer, spoken menus, a random
 four-digit challenge, synthetic-ID validation, confirmation, and a configurable
-spoken amount. Local implementation is verified; live Lesson 2 acceptance is
-pending. The client still receives events only; outbound calling waits for Lesson 3.
+spoken amount. Local implementation is verified; Lesson 2 was signed off by the learner on
+2026-09-21. Intermittent webhook delivery failures remain under investigation. The client still receives events only; outbound calling waits for Lesson 3.
 
 Python 3.14 and uv are required. From this worktree's `spikes/ivr` directory:
 

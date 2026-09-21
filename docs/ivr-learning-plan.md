@@ -2,8 +2,8 @@
 
 ## Status and outcome
 
-Curriculum started September 20, 2026. Lesson 1 is accepted; Lesson 2 is
-implemented and verified offline, with live acceptance pending. This is a separate learning track from
+Curriculum started September 20, 2026. Lessons 1 and 2 are accepted. Lesson 2 was signed off by the learner on
+2026-09-21 after successful live calls. This is a separate learning track from
 the numbered fullstack curriculum. Each lesson will get a concrete implementation
 plan and walkthrough when we work through it.
 
@@ -124,7 +124,9 @@ handler; a forged request is rejected. No full IVR flow is required yet.
 **Planning:** [Spec](superpowers/specs/2026-09-21-ivr-02-test-ivr-design.md) and
 [implementation plan](superpowers/plans/2026-09-21-ivr-02-test-ivr.md).
 **Walkthrough:** [Lesson 2 test IVR](../spikes/ivr/lessons/02-test-ivr.md).
-Local implementation is verified; live acceptance and learner sign-off are pending.
+Local implementation is verified; the learner signed off on 2026-09-21.
+Intermittent webhook delivery failures remain an open observation for subsequent
+lessons; see the walkthrough acceptance record.
 The fixture API credential is required now for answer/speech/hangup. Minimum
 command idempotency, replay guards, and cleanup deadlines are included before
 live control; Lesson 5 still owns the broader reliability campaign.
@@ -244,7 +246,7 @@ it is not a production reliability estimate.
 | Lesson | Offline checks | Live evidence | Learner acceptance |
 | --- | --- | --- | --- |
 | 1. Connectivity | 41 tests, Ruff, loopback smoke checks passed | Completion reported by learner | Signed off 2026-09-21 |
-| 2. Test IVR | 168 tests and Ruff passed | Not run | Pending |
+| 2. Test IVR | 168 tests and Ruff passed | Successful calls reported; intermittent delivery failures observed | Signed off 2026-09-21 |
 | 3. Automated caller | Not run | Not run | Pending |
 | 4. Value or error | Not run | Not run | Pending |
 | 5. Reliability drills | Not run | Not run | Pending |
