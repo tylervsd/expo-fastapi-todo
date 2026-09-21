@@ -181,7 +181,10 @@ def test_dial_success_fixed_origin_single_submission():
     def transport(request):
         seen.append(request)
         return httpx.Response(
-            200, json={"data": {"call_control_id": "client-call", "call_leg_id": "client-leg"}}
+            200,
+            json={
+                "data": {"call_control_id": "client-call", "call_leg_id": "client-leg"}
+            },
         )
 
     async def exercise():
@@ -229,10 +232,30 @@ def test_dial_success_fixed_origin_single_submission():
         (200, {}, {}, "invalid_response"),
         (200, [], {}, "invalid_response"),
         (200, {"data": {}}, {}, "invalid_response"),
-        (200, {"data": {"call_control_id": 1, "call_leg_id": "leg"}}, {}, "invalid_response"),
-        (200, {"data": {"call_control_id": "", "call_leg_id": "leg"}}, {}, "invalid_response"),
-        (200, {"data": {"call_control_id": "x" * 1025, "call_leg_id": "leg"}}, {}, "invalid_response"),
-        (200, {"data": {"call_control_id": "call", "call_leg_id": "y" * 257}}, {}, "invalid_response"),
+        (
+            200,
+            {"data": {"call_control_id": 1, "call_leg_id": "leg"}},
+            {},
+            "invalid_response",
+        ),
+        (
+            200,
+            {"data": {"call_control_id": "", "call_leg_id": "leg"}},
+            {},
+            "invalid_response",
+        ),
+        (
+            200,
+            {"data": {"call_control_id": "x" * 1025, "call_leg_id": "leg"}},
+            {},
+            "invalid_response",
+        ),
+        (
+            200,
+            {"data": {"call_control_id": "call", "call_leg_id": "y" * 257}},
+            {},
+            "invalid_response",
+        ),
     ],
 )
 def test_dial_failures_submit_once_sanitized(status, body, headers, reason, caplog):
@@ -271,7 +294,9 @@ def test_dial_failures_submit_once_sanitized(status, body, headers, reason, capl
     asyncio.run(exercise())
 
 
-@pytest.mark.parametrize("mode", ["read_timeout", "network", "invalid_json", "total_timeout"])
+@pytest.mark.parametrize(
+    "mode", ["read_timeout", "network", "invalid_json", "total_timeout"]
+)
 def test_dial_transport_errors_submit_once(mode, monkeypatch, caplog):
     calls = []
 
@@ -293,7 +318,9 @@ def test_dial_transport_errors_submit_once(mode, monkeypatch, caplog):
             async def __aexit__(self, *args):
                 return False
 
-        monkeypatch.setattr("telnyx_commands.asyncio.timeout", lambda seconds: Timeout())
+        monkeypatch.setattr(
+            "telnyx_commands.asyncio.timeout", lambda seconds: Timeout()
+        )
 
     async def exercise():
         request = make_dial(_dial_fields())
@@ -327,7 +354,9 @@ def test_send_dtmf_retry_reuses_body():
         )
 
     async def exercise():
-        command = make_command("call-id", "send_dtmf", {"digits": "0742#", "duration_millis": 250})
+        command = make_command(
+            "call-id", "send_dtmf", {"digits": "0742#", "duration_millis": 250}
+        )
         async with httpx.AsyncClient(
             transport=httpx.MockTransport(transport)
         ) as client:
@@ -346,7 +375,9 @@ def test_dtmf_digits_never_in_errors(caplog):
         return httpx.Response(401, json={})
 
     async def exercise():
-        command = make_command("call-id", "send_dtmf", {"digits": "0742#", "duration_millis": 250})
+        command = make_command(
+            "call-id", "send_dtmf", {"digits": "0742#", "duration_millis": 250}
+        )
         async with httpx.AsyncClient(
             transport=httpx.MockTransport(transport)
         ) as client:

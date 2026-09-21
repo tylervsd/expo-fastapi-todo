@@ -16,8 +16,9 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
 
+from client import Caller, load_client_settings
 from fixture import Fixture, load_settings
-from telnyx_commands import send_command
+from telnyx_commands import send_command, send_dial
 
 
 def verify_signature(
@@ -48,36 +49,115 @@ async def lifespan(app: FastAPI):
         app.state.telnyx_key = Ed25519PublicKey.from_public_bytes(key)
     except KeyError, ValueError, binascii.Error:
         raise RuntimeError("Invalid TELNYX_PUBLIC_KEY configuration") from None
-    if not getattr(app.state, "fixture_enabled", False):
+    fixture_on = getattr(app.state, "fixture_enabled", False)
+    caller_on = getattr(app.state, "caller_enabled", False)
+    if not fixture_on and not caller_on:
         yield
         return
-    settings = load_settings()
+    fixture_settings = load_settings() if fixture_on else None
+    client_settings = load_client_settings() if caller_on else None
+    if (
+        fixture_on
+        and caller_on
+        and fixture_settings.connection_id == client_settings.connection_id
+    ):
+        raise RuntimeError("Client and fixture application IDs must be distinct")
     # HTTP request URLs contain call-control tokens; keep them out of default logs.
     for name in ("httpx", "httpcore"):
         logging.getLogger(name).setLevel(logging.WARNING)
-    async with httpx.AsyncClient(
-        headers={"Authorization": f"Bearer {settings.api_key}"},
-        timeout=5,
-        follow_redirects=False,
-    ) as client:
-        ivr = Fixture(
-            settings, partial(send_command, client), started_at=datetime.now(UTC)
+    http_clients: list[httpx.AsyncClient] = []
+
+    async def _http_client(api_key: str) -> httpx.AsyncClient:
+        client = httpx.AsyncClient(
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=5,
+            follow_redirects=False,
         )
-        app.state.ivr = ivr
+        http_clients.append(client)
+        return client
 
-        async def watchdog():
-            while True:
-                await asyncio.sleep(1)
-                await ivr.tick()
+    try:
+        if (
+            fixture_on
+            and caller_on
+            and fixture_settings.api_key == client_settings.api_key
+        ):
+            shared = await _http_client(fixture_settings.api_key)
+            fixture_http = caller_http = shared
+        else:
+            fixture_http = (
+                await _http_client(fixture_settings.api_key) if fixture_on else None
+            )
+            caller_http = (
+                await _http_client(client_settings.api_key) if caller_on else None
+            )
+        watchers = []
+        if fixture_on:
+            ivr = Fixture(
+                fixture_settings,
+                partial(send_command, fixture_http),
+                started_at=datetime.now(UTC),
+            )
+            app.state.ivr = ivr
 
-        watcher = asyncio.create_task(watchdog())
+            async def fixture_watchdog():
+                while True:
+                    await asyncio.sleep(1)
+                    await ivr.tick()
+
+            watchers.append(asyncio.create_task(fixture_watchdog()))
+        if caller_on:
+
+            async def _dial(request):
+                return await send_dial(caller_http, request)
+
+            async def _send(command):
+                await send_command(caller_http, command)
+
+            # The caller never receives a fixture reference, even combined.
+            app.state.caller = Caller(client_settings, _dial, _send)
+
+            async def caller_watchdog():
+                while True:
+                    await asyncio.sleep(1)
+                    await app.state.caller.tick()
+
+            watchers.append(asyncio.create_task(caller_watchdog()))
         try:
             yield
         finally:
-            watcher.cancel()
-            with suppress(asyncio.CancelledError):
-                await watcher
-            await ivr.close()
+            first_error: BaseException | None = None
+            for watcher in watchers:
+                watcher.cancel()
+            try:
+                with suppress(asyncio.CancelledError):
+                    await asyncio.gather(*watchers, return_exceptions=False)
+            except BaseException as error:  # noqa: BLE001 — keep closing; re-raised below
+                first_error = error
+            if fixture_on:
+                try:
+                    await app.state.ivr.close()
+                except BaseException as error:  # noqa: BLE001 — caller close must still run
+                    if first_error is None:
+                        first_error = error
+            if caller_on and getattr(app.state.caller, "_started", False):
+                try:
+                    await app.state.caller.close()
+                except BaseException as error:  # noqa: BLE001 — HTTP client must still close
+                    if first_error is None:
+                        first_error = error
+            if first_error is not None:
+                raise first_error
+    finally:
+        for client in http_clients:
+            with suppress(Exception):
+                await client.aclose()
+        # Never retain the prior run's controller or CLI flag. Fixture
+        # configuration flags set at import stay; app.state.ivr stays for
+        # existing diagnostics.
+        for _name in ("caller", "caller_enabled"):
+            with suppress(AttributeError, KeyError):
+                delattr(app.state, _name)
 
 
 # Use Uvicorn's configured stderr handler so accepted events are visible by default.
@@ -133,6 +213,14 @@ async def receive_event(request: Request, role: str) -> Response:
             await request.app.state.ivr.accept(data)
         except ValueError:
             raise HTTPException(400, "Invalid call event") from None
+    elif role == "client":
+        # Receipt-only when the CLI has not enabled a caller; never touch ivr.
+        caller = getattr(request.app.state, "caller", None)
+        if caller is not None:
+            try:
+                await caller.accept(data)
+            except ValueError:
+                raise HTTPException(400, "Invalid call event") from None
     return Response(status_code=200)
 
 
