@@ -26,7 +26,7 @@ uv run python caller.py --env-file .env --app public
 
 One CLI invocation places exactly one call, then exits. Exit 0 requires the
 result announcement plus a matching fixture hangup; stdout stays empty and one
-concise line goes to stderr. `--app public` binds `127.0.0.1:8010` and runs
+final diagnostic line goes to stderr. `--app public` binds `127.0.0.1:8010` and runs
 both role controllers (replacing the Lesson 2 Uvicorn process on that port);
 `--app client` binds `127.0.0.1:8011` and hosts only the caller. The amount is
 not extracted in this lesson.

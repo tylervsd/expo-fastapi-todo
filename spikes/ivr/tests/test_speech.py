@@ -221,6 +221,20 @@ def test_result_completes_without_digits():
     assert recognize("result", "Please hold.", "000123456") == ("pending", None)
 
 
+def test_result_requires_your_prefix():
+    assert recognize(
+        "result",
+        "YOUR requested value is one thousand dollars and zero cents.",
+        "000123456",
+    ) == ("complete", None)
+    status, _ = recognize(
+        "result",
+        "The requested value is one thousand dollars.",
+        "000123456",
+    )
+    assert status != "complete"
+
+
 @pytest.mark.parametrize(
     "text",
     [

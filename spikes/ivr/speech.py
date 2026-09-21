@@ -88,7 +88,7 @@ _STAGE_SIGNS = {
     "menu": _compiled(("for", "personal"), ("for", "business")),
     "identifier": _compiled(("personal", "id")),
     "confirmation": _compiled(("you", "entered")),
-    "result": _compiled(("requested", "value", "is")),
+    "result": _compiled(("your", "requested", "value", "is")),
 }
 
 _WELCOME_OK = re.compile(
@@ -186,7 +186,7 @@ _CONFIRM_END_ANY = re.compile(
     + _SEP
     + r"correct(?![a-z0-9])"
 )
-_RESULT = re.compile(_phrase("requested", "value", "is"))
+_RESULT = re.compile(_phrase("your", "requested", "value", "is"))
 
 
 def _clean_span(span: str) -> str:

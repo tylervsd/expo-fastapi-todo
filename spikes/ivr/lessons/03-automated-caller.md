@@ -154,10 +154,10 @@ echo $?
 
 One invocation places exactly one call, then exits. Exit 0 only when the
 result announcement **and** a matching fixture hangup were both observed.
-Stdout stays empty; one concise line goes to stderr:
+Stdout stays empty; one final diagnostic line goes to stderr:
 
 ```sh
-ivr caller public: checkpoint_reached (exit 0)
+ivr caller public: completed (exit 0)
 ```
 
 Anything else exits nonzero with a sanitized reason (`challenge_unrecognized`,
