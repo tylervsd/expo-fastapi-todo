@@ -288,3 +288,14 @@ def test_telnyx_plural_pounds_prompt_ending():
         "Enter your 9 digit personal ID followed by poundsworth.",
         "000123456",
     ) == ("pending", None)
+
+
+def test_telnyx_article_before_pound_key():
+    assert recognize(
+        "challenge",
+        "Your verification code is 0742, enter the code followed by a pound.",
+        "000123456",
+    ) == ("complete", "0742#")
+    assert recognize(
+        "identifier", "Enter your 9 digit personal ID followed by a pound.", "000123456"
+    ) == ("complete", "000123456#")

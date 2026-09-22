@@ -1715,5 +1715,30 @@ def test_result_final_can_follow_hangup_with_bounded_wait():
     assert (f.stage, f.outcome, f.exit_code) == ("ended", "completed", 0)
     f = flow()
     f.handle({"id": "hang", "event_type": "call.hangup"}, now=1)
+    f.handle({"id": "duplicate-hang", "event_type": "call.hangup"}, now=4)
     assert f.expire(now=6) is None
     assert (f.stage, f.outcome, f.exit_code) == ("ended", "early_hangup", 1)
+
+
+def test_caller_late_result_preserves_ownership_until_final():
+    async def main():
+        harness = _CallerHarness()
+        await harness.start_and_bind()
+        await harness.caller.accept(_canswered(harness))
+        for text in HAPPY_TEXTS[:-1]:
+            await harness.caller.accept(_ctranscript(harness, text))
+        await harness.drain()
+        await harness.caller.accept(_changup(harness))
+        assert not harness.caller.done.is_set()
+        await harness.caller.accept(
+            _ctranscript(harness, HAPPY_TEXTS[-1], call="other-call")
+        )
+        assert not harness.caller.done.is_set()
+        await harness.caller.accept(_ctranscript(harness, HAPPY_TEXTS[-1]))
+        await harness.drain()
+        assert harness.caller.outcome == "completed"
+        assert harness.caller.exit_code == 0
+        assert harness.caller.identity is None
+        await harness.close()
+
+    _run(main)

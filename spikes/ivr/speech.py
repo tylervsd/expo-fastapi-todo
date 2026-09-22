@@ -207,8 +207,12 @@ def recognize(stage: str, text: str, synthetic_id: str) -> tuple[str, str | None
         return ("invalid", "unknown_stage")
     if not isinstance(text, str):
         return ("invalid", "unrecognized")
-    # Telnyx may pluralize the spoken pound-key instruction. Never alter digits.
-    low = re.sub(_phrase("followed", "by", "pounds"), "followed by pound", text.lower())
+    # Normalize observed pound-key wording only; never alter the digit span.
+    low = re.sub(
+        _phrase("followed", "by") + _SEP + r"(?:a" + _SEP + r")?pounds?(?![a-z0-9])",
+        "followed by pound",
+        text.lower(),
+    )
     for pattern, reason in _REJECTION:
         if pattern.search(low):
             return ("invalid", reason)
