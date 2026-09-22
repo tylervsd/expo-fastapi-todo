@@ -163,6 +163,59 @@ _NEXT = {
 }
 
 
+_PUBLIC_ERRORS = frozenset(
+    {
+        "challenge_unrecognized",
+        "unexpected_menu",
+        "id_mismatch",
+        "confirmation_unrecognized",
+        "fixture_rejection",
+        "result_unrecognized",
+        "stage_timeout",
+        "overall_timeout",
+        "early_hangup",
+        "provider_failure",
+        "protocol_error",
+        "startup_failed",
+        "internal_error",
+        "interrupted",
+    }
+)
+_ERROR_ALIASES = {
+    "dial_rejected": "provider_failure",
+    "dial_uncertain": "provider_failure",
+    "transcript_order": "protocol_error",
+    "identity_conflict": "protocol_error",
+    "buffer_overflow": "protocol_error",
+    "event_overflow": "protocol_error",
+    "unknown_stage": "protocol_error",
+    "ambiguous": "protocol_error",
+    "server_startup_failed": "startup_failed",
+    "caller_unavailable": "startup_failed",
+    "dial_reservation_failed": "internal_error",
+    "server_stopped": "internal_error",
+    "shutdown": "interrupted",
+    "hangup_unconfirmed": "provider_failure",
+}
+
+
+def error_result(reason: str, stage: str) -> dict[str, str]:
+    if stage not in {"startup", "dialing", "result", *_NEXT}:
+        stage = "startup"
+    if reason == "unrecognized":
+        reason = {
+            "challenge": "challenge_unrecognized",
+            "confirmation": "confirmation_unrecognized",
+            "result": "result_unrecognized",
+        }.get(stage, "protocol_error")
+    code = _ERROR_ALIASES.get(reason, reason)
+    return {
+        "status": "error",
+        "code": code if code in _PUBLIC_ERRORS else "internal_error",
+        "stage": stage,
+    }
+
+
 class ClientFlow:
     """Synchronous stage machine; no I/O, no stdout, no fixture imports."""
 
@@ -174,6 +227,9 @@ class ClientFlow:
         self.stage_started_at = now
         self.pending = None
         self.checkpoint_reached = False
+        self.result = None
+        self.failure_stage = None
+        self.cleanup_reason = None
         self.outcome = None
         self.exit_code = None
         self.answered = False
@@ -185,8 +241,26 @@ class ClientFlow:
         self._hangup_started_at = None
         self._result_hangup_at = None
 
+    def _decide(self, reason, value=None):
+        if self.result is not None:
+            return
+        self.outcome = reason
+        if value is not None:
+            self.result = {"status": "success", "value": value, "currency": "USD"}
+            self.exit_code = 0
+        else:
+            self.failure_stage = self.stage
+            self.result = error_result(reason, self.failure_stage)
+            self.exit_code = 1
+
+    def _end(self):
+        self.stage = "ended"
+        self.pending = None
+        self._segments = []
+        self._chars = 0
+
     def _hangup(self, reason, *, now):
-        self.outcome = self.outcome or reason
+        self._decide(reason)
         command = make_command(self.identity.call_control_id, "hangup", {})
         self.pending = command
         self.stage = "hanging_up"
@@ -198,21 +272,37 @@ class ClientFlow:
     def _fail(self, reason, *, now):
         if self.stage == "ended":
             return None
+        self._decide(reason)
         if self._result_hangup_at is not None:
-            self.stage, self.outcome, self.exit_code = "ended", reason, 1
-            self.pending = None
-            self._segments = []
+            self._end()
             return None
         return self._hangup(reason, now=now)
 
     def _expired(self, now):
         if self._result_hangup_at is not None:
-            return "early_hangup" if now - self._result_hangup_at >= 5 else None
+            boundary = min(
+                self._result_hangup_at + 5,
+                self.started_at + self.settings.call_timeout_seconds,
+            )
+            return "result_unrecognized" if now >= boundary else None
         if now - self.started_at >= self.settings.call_timeout_seconds:
             return "overall_timeout"
         if now - self.stage_started_at >= self.settings.stage_timeout_seconds:
             return "stage_timeout"
         return None
+
+    def _on_deadline(self, reason, *, now):
+        if self.stage == "result":
+            status, value = recognize(
+                "result", " ".join(self._segments), self.settings.synthetic_id
+            )
+            if status == "complete":
+                self._decide("completed", value)
+                if self._result_hangup_at is not None:
+                    self._end()
+                    return None
+                return self._hangup("completed", now=now)
+        return self._fail(reason, now=now)
 
     @staticmethod
     def _occurred(data):
@@ -253,18 +343,10 @@ class ClientFlow:
             return self._fail(value, now=now)
         if self.stage == "result":
             self.checkpoint_reached = True
-            if self._result_hangup_at is not None:
-                self.stage, self.outcome, self.exit_code = "ended", "completed", 0
-            self._segments = []
-            self._chars = 0
-            self._last_time = None
-            self._consumed_at = occurred
             return None
         return self._reserve_dtmf(value, now=now, occurred=occurred)
 
     def _on_transcript(self, data, *, now):
-        if self.stage == "result" and self.checkpoint_reached:
-            return None
         try:
             payload = data["payload"]
             speech = payload["transcription_data"]
@@ -310,7 +392,7 @@ class ClientFlow:
         else:
             expired = self._expired(now)
             if expired is not None:
-                return self._fail(expired, now=now)
+                return self._on_deadline(expired, now=now)
         event_id = data.get("id")
         if not isinstance(event_id, str) or not 1 <= len(event_id) <= 256:
             return None
@@ -334,22 +416,14 @@ class ClientFlow:
         if event_type == "call.transcription":
             return self._on_transcript(data, now=now)
         if event_type == "call.hangup":
-            if self.stage == "result" and not self.checkpoint_reached:
+            if self.stage == "result":
                 # Final STT webhooks can arrive after the matching hangup.
                 if self._result_hangup_at is None:
                     self._result_hangup_at = now
                 self.pending = None
                 return None
-            self._segments = []
-            self._chars = 0
-            self.pending = None
-            self.stage = "ended"
-            if self.checkpoint_reached and self.outcome is None:
-                self.outcome = "completed"
-                self.exit_code = 0
-            else:
-                self.outcome = self.outcome or "early_hangup"
-                self.exit_code = 1
+            self._decide("early_hangup")
+            self._end()
             return None
         return None
 
@@ -361,14 +435,12 @@ class ClientFlow:
                 self._hangup_started_at is not None
                 and now - self._hangup_started_at >= _CLEANUP_SECONDS
             ):
-                self.outcome = "hangup_unconfirmed"
-                self.exit_code = 1
-                self.stage = "ended"
-                self.pending = None
+                self.cleanup_reason = "hangup_unconfirmed"
+                self._end()
             return None
         expired = self._expired(now)
         if expired is not None:
-            return self._fail(expired, now=now)
+            return self._on_deadline(expired, now=now)
         return None
 
     def command_failed(self, command_id, *, now):
@@ -378,17 +450,15 @@ class ClientFlow:
         if pending is None or pending.command_id != command_id:
             return None
         if pending.action == "hangup":
-            self.outcome = "hangup_unconfirmed"
-            self.exit_code = 1
-            self.stage = "ended"
-            self.pending = None
+            self.cleanup_reason = "hangup_unconfirmed"
+            self._end()
             return None
         return self._fail("provider_failure", now=now)
 
     def stop(self, reason, *, now):
         if self.stage == "ended" or self.stage == "hanging_up":
             return None
-        return self._hangup(reason, now=now)
+        return self._fail(reason, now=now)
 
 
 """Runtime ownership: one outbound call, early callbacks, bounded cleanup."""
@@ -435,6 +505,7 @@ class Caller:
         self.done = asyncio.Event()
         self.exit_code = None
         self.outcome = None
+        self.result = None
         self.request = None
         self.identity = None
         self.flow = None
@@ -844,7 +915,8 @@ class Caller:
             return
         self._finishing = True
         self.outcome = outcome
-        self.exit_code = exit_code
+        self.result = error_result(outcome, "dialing")
+        self.exit_code = 1
         self._log(outcome)
         current = asyncio.current_task()
         dial = self._dial_task
@@ -869,7 +941,12 @@ class Caller:
             return
         self._finishing = True
         self.outcome = flow.outcome or "unknown"
-        self.exit_code = flow.exit_code if flow.exit_code is not None else 1
+        self.result = dict(
+            flow.result or error_result(self.outcome, flow.failure_stage or "dialing")
+        )
+        self.exit_code = 0 if self.result["status"] == "success" else 1
+        if flow.cleanup_reason:
+            self._log(flow.cleanup_reason)
         self._log(self.outcome)
         current = asyncio.current_task()
         dial = self._dial_task
@@ -940,10 +1017,9 @@ class Caller:
         async with self.lock:
             if self._started and not self.done.is_set() and not self._finishing:
                 if self.flow is not None and self.flow.stage != "ended":
-                    self.flow.outcome = "hangup_unconfirmed"
-                    self.flow.exit_code = 1
-                    self.flow.stage = "ended"
-                    self.flow.pending = None
+                    self.flow._decide("shutdown")
+                    self.flow.cleanup_reason = "hangup_unconfirmed"
+                    self.flow._end()
                     self._finalize()
                 elif self.flow is not None:
                     self._finalize()
