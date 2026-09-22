@@ -186,6 +186,14 @@ it learned only from speech. Repeat with a different challenge.
 
 **Exercise:** force a leading-zero challenge in the fixture and verify exact replay.
 
+### Cloud diagnostic extension
+
+To investigate intermittent webhook delivery independently of the Mac/Funnel
+path, a [VM deployment spec](superpowers/specs/2026-09-21-ivr-cloud-vm-design.md)
+and [implementation plan](superpowers/plans/2026-09-21-ivr-cloud-vm.md) were drafted
+on 2026-09-21. Target: existing fullstack sandbox, $20/month incremental cloud
+budget. Deployment and Lesson 3 live acceptance remain pending.
+
 ## Lesson 4 — A value-or-error contract
 
 **Learn:** separate recognizing a result from successfully completing transport;
