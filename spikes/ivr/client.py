@@ -402,7 +402,7 @@ def _dial_fields(settings):
             "transcription_engine_config": {
                 "transcription_engine": "Google",
                 "language": "en",
-                "interim_results": True,
+                "interim_results": False,
             },
             "transcription_tracks": settings.transcription_track,
         },
