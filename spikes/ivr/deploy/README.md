@@ -38,10 +38,9 @@ systemd-owned directory. Runtime user `ivr` cannot modify release files.
 Root-owned `/etc/ivr/ivr.env` is mode 0600 and loaded by systemd. Populate through
 encrypted SSH; never commit it, put it in instance metadata, or print it. Only
 required TELNYX/IVR settings should be copied from the local configuration.
-Set `IVR_CLIENT_TRANSCRIPTION_TRACK=inbound` for the cloud diagnostic. The local
-runner retains its outbound default. Cloud uses dial-time transcription; the
-prior inbound live experiment used explicit startup. Neither implies final
-transcription or full navigation has passed.
+The permanent configuration uses Telnyx dial-time transcription with
+`IVR_CLIENT_TRANSCRIPTION_TRACK=inbound` (also the local default). Only final
+results drive navigation. See the acceptance record for live validation.
 
 Deploy only committed files in `spikes/ivr`, without `.env`, `.venv`, caches or
 unrelated repo files. Extract under `/opt/ivr/releases/<commit>`; install Python

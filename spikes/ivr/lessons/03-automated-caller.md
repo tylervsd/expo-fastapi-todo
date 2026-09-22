@@ -9,7 +9,7 @@ by the implementation agent.
 Voice API applications, destination number, public verification key, callback
 routes, and fixture API credential. You additionally need a learner-owned
 outbound caller ID (number and outbound voice profile) and a Telnyx Voice API
-application for the client role, plus Google transcription support on the
+application for the client role, plus Telnyx transcription support on the
 account. Amount extraction and the value-or-error JSON contract are Lesson 4;
 do not expect a spoken amount or any stdout JSON from this lesson.
 
@@ -126,9 +126,9 @@ Before any call, verify as learner operations — none of this is automated:
    the client webhook.
 2. The outbound caller ID is assigned to your profile, the destination is
    permitted, and the account has balance.
-3. The account supports Google transcription; the dial enables the Google
-   engine with interim results on the `outbound` track (the remote side
-   relative to the requesting leg).
+3. The dial enables the Telnyx transcription engine on the `inbound` track.
+   This track was verified to hear fixture speech on the client leg.
+   Only final transcripts drive navigation; Google-only interim options are omitted.
 
 Stop the old Lesson 2 ingress before the CLI owns its port: the CLI's
 `--app public` mode binds `127.0.0.1:8010` itself and replaces that process —

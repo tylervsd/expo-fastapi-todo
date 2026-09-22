@@ -1676,3 +1676,44 @@ def test_dial_uses_telnyx_inbound_without_google_options():
         },
         "transcription_tracks": "inbound",
     }
+
+
+def test_result_final_can_follow_hangup_with_bounded_wait():
+    from client import ClientFlow, ClientSettings
+    from telnyx_commands import DialIdentity
+
+    def flow():
+        f = ClientFlow(
+            ClientSettings("key", "app", "+12025550101", "+12025550102"),
+            DialIdentity("call", "leg"),
+            started_at=0,
+            now=0,
+        )
+        f.stage = "result"
+        return f
+
+    f = flow()
+    assert f.handle({"id": "hang", "event_type": "call.hangup"}, now=1) is None
+    assert f.stage == "result"
+    assert (
+        f.handle(
+            {
+                "id": "final",
+                "event_type": "call.transcription",
+                "occurred_at": "2026-09-22T02:00:00+00:00",
+                "payload": {
+                    "transcription_data": {
+                        "is_final": True,
+                        "transcript": "Your requested value is available.",
+                    }
+                },
+            },
+            now=2,
+        )
+        is None
+    )
+    assert (f.stage, f.outcome, f.exit_code) == ("ended", "completed", 0)
+    f = flow()
+    f.handle({"id": "hang", "event_type": "call.hangup"}, now=1)
+    assert f.expire(now=6) is None
+    assert (f.stage, f.outcome, f.exit_code) == ("ended", "early_hangup", 1)

@@ -183,6 +183,7 @@ class ClientFlow:
         self._last_time = None
         self._consumed_at = None
         self._hangup_started_at = None
+        self._result_hangup_at = None
 
     def _hangup(self, reason, *, now):
         self.outcome = self.outcome or reason
@@ -197,9 +198,16 @@ class ClientFlow:
     def _fail(self, reason, *, now):
         if self.stage == "ended":
             return None
+        if self._result_hangup_at is not None:
+            self.stage, self.outcome, self.exit_code = "ended", reason, 1
+            self.pending = None
+            self._segments = []
+            return None
         return self._hangup(reason, now=now)
 
     def _expired(self, now):
+        if self._result_hangup_at is not None:
+            return "early_hangup" if now - self._result_hangup_at >= 5 else None
         if now - self.started_at >= self.settings.call_timeout_seconds:
             return "overall_timeout"
         if now - self.stage_started_at >= self.settings.stage_timeout_seconds:
@@ -245,6 +253,8 @@ class ClientFlow:
             return self._fail(value, now=now)
         if self.stage == "result":
             self.checkpoint_reached = True
+            if self._result_hangup_at is not None:
+                self.stage, self.outcome, self.exit_code = "ended", "completed", 0
             self._segments = []
             self._chars = 0
             self._last_time = None
@@ -324,6 +334,12 @@ class ClientFlow:
         if event_type == "call.transcription":
             return self._on_transcript(data, now=now)
         if event_type == "call.hangup":
+            if self.stage == "result" and not self.checkpoint_reached:
+                # Final STT webhooks can arrive after the matching hangup.
+                if self._result_hangup_at is None:
+                    self._result_hangup_at = now
+                self.pending = None
+                return None
             self._segments = []
             self._chars = 0
             self.pending = None
