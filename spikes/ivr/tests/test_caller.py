@@ -1,6 +1,7 @@
 """CLI-owned server tests: fake Uvicorn, mock dial, no real I/O."""
 
 import asyncio
+import json
 
 import pytest
 
@@ -48,6 +49,11 @@ class FakeCaller:
         self.done = asyncio.Event()
         self.exit_code = exit_code
         self.outcome = outcome
+        self.result = (
+            {"status": "success", "value": "1425.30", "currency": "USD"}
+            if exit_code == 0
+            else {"status": "error", "code": outcome, "stage": "challenge"}
+        )
         self.saw_started = None
 
     async def start(self):
@@ -91,7 +97,8 @@ def test_run_call_dials_once_after_readiness(fake_uvicorn, monkeypatch, capsys):
     assert configs[0]["env_file"] == ".env"
     assert getattr(app.state, "caller_enabled", False) is False
     out, err = capsys.readouterr()
-    assert out == ""
+    assert len(out.splitlines()) == 1
+    assert isinstance(json.loads(out), dict)
     assert err.strip() != ""
 
 
@@ -103,7 +110,8 @@ def test_public_port_and_failure_exit(fake_uvicorn, monkeypatch, capsys):
     assert code == 1
     assert configs[0]["port"] == 8010
     out, err = capsys.readouterr()
-    assert out == ""
+    assert len(out.splitlines()) == 1
+    assert isinstance(json.loads(out), dict)
     assert "stage_timeout" in err
 
 
@@ -135,7 +143,8 @@ def test_startup_failure_dials_zero_times(fake_uvicorn, monkeypatch, capsys):
     assert code != 0
     assert calls == []
     out, _ = capsys.readouterr()
-    assert out == ""
+    assert len(out.splitlines()) == 1
+    assert isinstance(json.loads(out), dict)
 
 
 def test_constructor_failure_clears_flag_without_dial(
@@ -157,18 +166,20 @@ def test_constructor_failure_clears_flag_without_dial(
     assert servers == []
     assert getattr(webhooks.client_app.state, "caller_enabled", False) is False
     out, err = capsys.readouterr()
-    assert out == ""
+    assert len(out.splitlines()) == 1
+    assert isinstance(json.loads(out), dict)
     lines = err.strip().splitlines()
     assert len(lines) == 1
     assert "server_startup_failed" in lines[0]
 
 
-def test_cancellation_runs_cleanup(fake_uvicorn, monkeypatch):
+def test_cancellation_runs_cleanup(fake_uvicorn, monkeypatch, capsys):
     servers, _ = fake_uvicorn
 
     class HangingCaller(FakeCaller):
         async def start(self):
             self.starts += 1
+            self.result = None
             # never sets done; cancellation must still clean up
 
     fake = HangingCaller()
@@ -188,6 +199,9 @@ def test_cancellation_runs_cleanup(fake_uvicorn, monkeypatch):
         assert servers[0].should_exit is True
 
     asyncio.run(exercise())
+    out, _ = capsys.readouterr()
+    assert len(out.splitlines()) == 1
+    assert json.loads(out)["code"] == "interrupted"
 
 
 def test_cli_args():
@@ -206,3 +220,32 @@ def test_cli_args():
 
 def test_imports_never_dial():
     assert caller.__name__ == "caller"
+
+
+@pytest.mark.parametrize("mode", ["start", "cleanup", "server"])
+def test_failure_paths_emit_one_record(fake_uvicorn, monkeypatch, capsys, mode):
+    fake = FakeCaller()
+    _install_caller(monkeypatch, "client", fake)
+
+    async def broken():
+        raise RuntimeError("secret-exception-token")
+
+    if mode == "start":
+        fake.start = broken
+        fake.result = None
+    elif mode == "cleanup":
+        fake.close = broken
+    else:
+        fake.result = None
+
+        async def stopped():
+            fake_uvicorn[0][0].should_exit = True
+
+        fake.start = stopped
+    code = asyncio.run(caller.run_call("client", ".env"))
+    out, err = capsys.readouterr()
+    assert len(out.splitlines()) == 1
+    result = json.loads(out)
+    assert code == (0 if mode == "cleanup" else 1)
+    assert result["status"] == ("success" if mode == "cleanup" else "error")
+    assert "secret-exception-token" not in out + err
