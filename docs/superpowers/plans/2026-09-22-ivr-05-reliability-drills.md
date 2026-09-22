@@ -10,7 +10,7 @@
 
 **Spec:** [Lesson 5 design](../specs/2026-09-22-ivr-05-reliability-drills-design.md).
 
-**Status:** Planning only. Baseline: 422 tests, Ruff lint and formatting passed on 2026-09-22; two existing upstream warnings. No implementation or live evidence claimed.
+**Status:** Implemented offline 2026-09-22: 452 tests, Ruff lint/format, and Markdown lint passed. Two existing upstream warnings remain. [Walkthrough](../../../spikes/ivr/lessons/05-reliability-drills.md). No subagents, deployment, or paid calls. Live exercises and learner acceptance pending. Baseline was 422 tests.
 
 ## Global constraints
 
@@ -43,8 +43,8 @@ All task paths are relative to `spikes/ivr/` unless prefixed with repository `do
 | `lessons/05-reliability-drills.md`, `README.md`, `deploy/README.md`, `docs/client-call-flow.md` | Teaching guide, operations, source-guide updates if behavior changes |
 | Repository `docs/ivr-learning-plan.md` and both planning documents | Progress and evidence links |
 
-- [ ] Inspect `git status --short --branch`; preserve unrelated changes. Read the spec and `fixture.Flow.handle/expire`, `Fixture.accept/_sync/close`, `Caller.accept/_run_command/_finalize/close`, `ClientFlow.handle`, `Control.handle`, and transport functions before edits.
-- [ ] Run baseline checks from `spikes/ivr/`:
+- [x] Inspect `git status --short --branch`; preserve unrelated changes. Read the spec and `fixture.Flow.handle/expire`, `Fixture.accept/_sync/close`, `Caller.accept/_run_command/_finalize/close`, `ClientFlow.handle`, `Control.handle`, and transport functions before edits.
+- [x] Run baseline checks from `spikes/ivr/`:
 
 ```sh
 .venv/bin/python -m pytest -q
@@ -58,7 +58,7 @@ All task paths are relative to `spikes/ivr/` unless prefixed with repository `do
 
 **Interfaces:** Add `Settings.scenario: str = "normal"`, loaded as `IVR_SCENARIO`. Preserve `Flow(settings, call_control_id, call_leg_id, *, now, challenge=None)` and all existing public controller signatures. No client setting is added.
 
-- [ ] Add settings tests using existing `settings(**changes)` and `load_settings`. Accept exactly `normal`, `leading_zero`, `rejected_id`, `silent_stage`, `unsupported_result`, `early_hangup`. Reject blank, unknown, uppercase, and non-string values with `RuntimeError("Invalid fixture configuration")`. Test conflicting leading-zero override and fixture-env isolation.
+- [x] Add settings tests using existing `settings(**changes)` and `load_settings`. Accept exactly `normal`, `leading_zero`, `rejected_id`, `silent_stage`, `unsupported_result`, `early_hangup`. Reject blank, unknown, uppercase, and non-string values with `RuntimeError("Invalid fixture configuration")`. Test conflicting leading-zero override and fixture-env isolation.
 
 ```python
 @pytest.mark.parametrize("scenario", ["", "NORMAL", "unknown", None])
@@ -72,18 +72,18 @@ def test_leading_zero_scenario():
     assert flow.challenge == "0742"
 ```
 
-- [ ] Run `tests/test_fixture.py` and observe the new setting tests fail before implementation.
-- [ ] Add the dataclass field and exact allowlist validation; use existing `load_settings` mapping. Validate leading-zero override compatibility. Select `0742` only for the leading-zero scenario when no explicit test challenge is supplied; otherwise preserve existing challenge generation.
-- [ ] Add transition tests with existing `complete` and `flow_at` helpers. Verify default normal behavior remains unchanged. For rejected-ID, navigate with correct digits and assert failure speech at identifier completion, with no confirmation/result. For unsupported-result, assert the exact payload below.
+- [x] Run `tests/test_fixture.py` and observe the new setting tests fail before implementation.
+- [x] Add the dataclass field and exact allowlist validation; use existing `load_settings` mapping. Validate leading-zero override compatibility. Select `0742` only for the leading-zero scenario when no explicit test challenge is supplied; otherwise preserve existing challenge generation.
+- [x] Add transition tests with existing `complete` and `flow_at` helpers. Verify default normal behavior remains unchanged. For rejected-ID, navigate with correct digits and assert failure speech at identifier completion, with no confirmation/result. For unsupported-result, assert the exact payload below.
 
 ```python
 unsupported_prompt = "Your requested value is unavailable."
 ```
 
-- [ ] Add early-hangup and silent-stage tests after valid welcome input. The former returns one hangup and no challenge command; the latter returns no command, ignores stray gather/speak completions, accepts matching hangup, and attempts hangup at the fixture overall deadline. Exercise `Fixture.tick` and `Fixture.close`, not just `Flow`, for pending-none safety.
-- [ ] Implement small branches at the existing `next_stage` transition. Reuse `fail("input_rejected", ..., prompt="We could not verify your entry. Goodbye.")`, `hangup`, and `_reserve`. For silent stage set `stage="silent"`, `pending=None`, `deadline=call_deadline`. Move/check expiry before dereferencing pending in `handle`, then return on `pending is None`; leave matching `call.hangup` first. Make `expire` preserve silence until overall deadline. Do not call `_gather` for silence.
-- [ ] Extend the client environment-isolation test with `IVR_SCENARIO=unsupported_result`; assert client settings are unchanged. Add `.env.example` allowlist comments and default `IVR_SCENARIO=normal`.
-- [ ] Run focused tests and Ruff, then commit explicit changed files as `feat: add controlled IVR reliability scenarios`.
+- [x] Add early-hangup and silent-stage tests after valid welcome input. The former returns one hangup and no challenge command; the latter returns no command, ignores stray gather/speak completions, accepts matching hangup, and attempts hangup at the fixture overall deadline. Exercise `Fixture.tick` and `Fixture.close`, not just `Flow`, for pending-none safety.
+- [x] Implement small branches at the existing `next_stage` transition. Reuse `fail("input_rejected", ..., prompt="We could not verify your entry. Goodbye.")`, `hangup`, and `_reserve`. For silent stage set `stage="silent"`, `pending=None`, `deadline=call_deadline`. Move/check expiry before dereferencing pending in `handle`, then return on `pending is None`; leave matching `call.hangup` first. Make `expire` preserve silence until overall deadline. Do not call `_gather` for silence.
+- [x] Extend the client environment-isolation test with `IVR_SCENARIO=unsupported_result`; assert client settings are unchanged. Add `.env.example` allowlist comments and default `IVR_SCENARIO=normal`.
+- [x] Run focused tests and Ruff, then commit explicit changed files as `feat: add controlled IVR reliability scenarios`.
 
 ## Task 2 — Prove retry identity and ambiguous-response handling
 
@@ -91,8 +91,8 @@ unsupported_prompt = "Your requested value is unavailable."
 
 **Interfaces:** Preserve `send_command(client, command) -> None`, `send_dial(client, request) -> DialIdentity`, and `CommandError.reason`. No new retry service or provider lookup API.
 
-- [ ] Read the official sources linked in the spec and follow the Voice API command-retry documentation. Record the verification date and action-specific semantics in the walkthrough. Check answer, gather, speak, hangup, and DTMF; do not transfer action deduplication guarantees to outbound dial or assume permanent ID retention.
-- [ ] Extend `test_retry_keeps_identity_and_fixed_origin` to include `send_dtmf` with valid digits. Add a mock transport case where the first request is recorded as accepted by the fake remote then raises `httpx.ReadTimeout`, and the second succeeds. Use the existing no-sleep fixture.
+- [x] Read the official sources linked in the spec and follow the Voice API command-retry documentation. Record the verification date and action-specific semantics in the walkthrough. Check answer, gather, speak, hangup, and DTMF; do not transfer action deduplication guarantees to outbound dial or assume permanent ID retention.
+- [x] Extend `test_retry_keeps_identity_and_fixed_origin` to include `send_dtmf` with valid digits. Add a mock transport case where the first request is recorded as accepted by the fake remote then raises `httpx.ReadTimeout`, and the second succeeds. Use the existing no-sleep fixture.
 
 ```python
 seen = []
@@ -105,10 +105,10 @@ def transport(request):
     return httpx.Response(200, json={"data": {"result": "ok"}})
 ```
 
-- [ ] Assert two requests at most and `seen[0] == seen[1] == command.body`. Retain tests for rejected/malformed responses, retry-after bounds, timeout exhaustion, and dial-once behavior. Add a fixture gather-retry assertion that an intentional new attempt gets a different ID.
-- [ ] Use the existing caller harness to force a current DTMF send to raise `CommandError("uncertain")`: assert provider error and bounded cleanup, with no replacement DTMF. Retain the test where the next prompt wins the race against an obsolete failure. Retain uncertain-dial/late-identity cleanup tests and assert one dial.
-- [ ] Run the focused transport/client tests. If all new checks pass initially, record existing behavior verified and leave runtime code unchanged. If a check fails, fix the shared owner/transport path minimally and rerun it; do not change expected results to accommodate unsafe behavior.
-- [ ] Commit explicit changed paths as `test: verify IVR command retry and uncertainty guarantees` (use `fix:` if runtime behavior changed).
+- [x] Assert two requests at most and `seen[0] == seen[1] == command.body`. Retain tests for rejected/malformed responses, retry-after bounds, timeout exhaustion, and dial-once behavior. Add a fixture gather-retry assertion that an intentional new attempt gets a different ID.
+- [x] Use the existing caller harness to force a current DTMF send to raise `CommandError("uncertain")`: assert provider error and bounded cleanup, with no replacement DTMF. Retain the test where the next prompt wins the race against an obsolete failure. Retain uncertain-dial/late-identity cleanup tests and assert one dial.
+- [x] Run the focused transport/client tests. If all new checks pass initially, record existing behavior verified and leave runtime code unchanged. If a check fails, fix the shared owner/transport path minimally and rerun it; do not change expected results to accommodate unsafe behavior.
+- [x] Commit explicit changed paths as `test: verify IVR command retry and uncertainty guarantees` (use `fix:` if runtime behavior changed).
 
 ## Task 3 — Replay duplicate, late, and concurrent events
 
@@ -116,7 +116,7 @@ def transport(request):
 
 **Interfaces:** Reuse `Caller.accept(data)`, `Caller.tick()`, `Fixture.accept(data)`, `Fixture.tick()`, and injected clocks. Keep helpers in their existing test module; do not import one test module from another or add a production replay endpoint.
 
-- [ ] Build an ordered replay check using the client module's existing harness and event constructors. A tiny local helper is sufficient if used repeatedly:
+- [x] Build an ordered replay check using the client module's existing harness and event constructors. A tiny local helper is sufficient if used repeatedly:
 
 ```python
 async def replay(accept, events):
@@ -124,7 +124,7 @@ async def replay(accept, events):
         await accept(event)
 ```
 
-- [ ] Exercise each meaningful schedule in the table. Use fake clocks and `asyncio.Event` barriers for response races, never real timing sleeps. Record the emitted logical command bodies and terminal result to make failures legible.
+- [x] Exercise each meaningful schedule in the table. Use fake clocks and `asyncio.Event` barriers for response races, never real timing sleeps. Record the emitted logical command bodies and terminal result to make failures legible.
 
 | Schedule | Required assertion |
 | --- | --- |
@@ -138,10 +138,10 @@ async def replay(accept, events):
 | Event capacity reached | Bounded fail-closed cleanup, no ID eviction replay |
 | Cleanup command fails or hangup acknowledgement is absent | Original decision retained, tasks drained within bounds |
 
-- [ ] Reuse existing tests covering these schedules; add only missing combinations and explicit command-count assertions. Run the focused schedule check before each necessary runtime fix. Preserve guards and terminal semantics already proven in Lesson 4.
-- [ ] Extend scenario tests to assert expected client JSON from representative final transcripts/events: rejected-ID → `fixture_rejection/confirmation`; silence → `stage_timeout/challenge`; unsupported result → `result_unrecognized/result`; early hangup → `early_hangup/challenge`. Include normal amounts `1425.30`, `17.42`, and leading-zero challenge. Test scaffolding may know expectations; client code may not.
-- [ ] Retain the existing cloud concurrent-start check, repeated status/result read checks, and post-completion `restart_required`. Extend only if a path is missing. Verify local stdout is one JSON line and exit codes agree with cloud terminal results.
-- [ ] Run fixture/client/transport/cloud/CLI/webhook tests, then commit as `test: replay IVR duplicate and late-event failure drills`, or a precise `fix:` message if needed.
+- [x] Reuse existing tests covering these schedules; add only missing combinations and explicit command-count assertions. Run the focused schedule check before each necessary runtime fix. Preserve guards and terminal semantics already proven in Lesson 4.
+- [x] Extend scenario tests to assert expected client JSON from representative final transcripts/events: rejected-ID → `fixture_rejection/confirmation`; silence → `stage_timeout/challenge`; unsupported result → `result_unrecognized/result`; early hangup → `early_hangup/challenge`. Include normal amounts `1425.30`, `17.42`, and leading-zero challenge. Test scaffolding may know expectations; client code may not.
+- [x] Retain the existing cloud concurrent-start check, repeated status/result read checks, and post-completion `restart_required`. Extend only if a path is missing. Verify local stdout is one JSON line and exit codes agree with cloud terminal results.
+- [x] Run fixture/client/transport/cloud/CLI/webhook tests, then commit as `test: replay IVR duplicate and late-event failure drills`, or a precise `fix:` message if needed.
 
 ## Task 4 — Teach the drill and record acceptance separately
 
@@ -149,12 +149,12 @@ async def replay(accept, events):
 
 **Interfaces:** Document existing local CLI and SSH control commands. No new call-start or scenario API, no batch runner.
 
-- [ ] Write prerequisites, event-vs-command identity explanation, commands for the focused offline replay tests, and fixture-only scenario selection. Use the existing Lesson 4 local/cloud invocation patterns; explain `.env` loading and restart requirements rather than suggesting environment changes affect a running process.
-- [ ] Provide a table for the ten planned live calls: normal amounts `1425.30`, `17.42`, `1425.30`, `17.42`, `1425.30`; then leading zero, rejected ID, silent stage, unsupported result, early hangup. Initialize every live result to `Not run` and learner acceptance to `Pending`.
-- [ ] Give exact expected JSON from the spec; explain that failure before reaching the selected drill is an unsuccessful attempt, not evidence that the intended scenario passed. Require all attempts and diagnosis/reruns in the record. Do not broaden speech grammar merely to reach a green row.
-- [ ] Document graceful stop, bounded cleanup, result retrieval before restart, and manual verification/termination of remaining provider call legs after a crash. State that restarting loses deduplication and results. Reference existing deployment authentication instructions; keep credentials/control tokens out of committed examples and shell history.
-- [ ] Document restoration to normal scenario/amount/empty challenge override and idle service verification. Keep deployment/calls pending until explicitly authorized; when later authorized, deploy committed files using existing release/rollback conventions before cloud drills.
-- [ ] Run final offline checks and Markdown lint. From repository root, reuse the already-installed main-checkout linter if this worktree lacks Node dependencies; do not install the whole frontend just to lint these documents.
+- [x] Write prerequisites, event-vs-command identity explanation, commands for the focused offline replay tests, and fixture-only scenario selection. Use the existing Lesson 4 local/cloud invocation patterns; explain `.env` loading and restart requirements rather than suggesting environment changes affect a running process.
+- [x] Provide a table for the ten planned live calls: normal amounts `1425.30`, `17.42`, `1425.30`, `17.42`, `1425.30`; then leading zero, rejected ID, silent stage, unsupported result, early hangup. Initialize every live result to `Not run` and learner acceptance to `Pending`.
+- [x] Give exact expected JSON from the spec; explain that failure before reaching the selected drill is an unsuccessful attempt, not evidence that the intended scenario passed. Require all attempts and diagnosis/reruns in the record. Do not broaden speech grammar merely to reach a green row.
+- [x] Document graceful stop, bounded cleanup, result retrieval before restart, and manual verification/termination of remaining provider call legs after a crash. State that restarting loses deduplication and results. Reference existing deployment authentication instructions; keep credentials/control tokens out of committed examples and shell history.
+- [x] Document restoration to normal scenario/amount/empty challenge override and idle service verification. Keep deployment/calls pending until explicitly authorized; when later authorized, deploy committed files using existing release/rollback conventions before cloud drills.
+- [x] Run final offline checks and Markdown lint. From repository root, reuse the already-installed main-checkout linter if this worktree lacks Node dependencies; do not install the whole frontend just to lint these documents.
 
 ```sh
 cd spikes/ivr
@@ -167,11 +167,21 @@ git diff --check
 git status --short --branch
 ```
 
-- [ ] Verify relative documentation links and source references. Record actual test totals and warnings, direct author review, and any remaining findings. Commit explicit paths as `docs: teach IVR reliability drills and recovery limits`.
-- [ ] Stop at the learner checkpoint. Keep the branch/worktree; do not merge, start Lesson 6, or build concurrency infrastructure. Live matrix execution and learner sign-off remain separate from offline implementation completion.
+- [x] Verify relative documentation links and source references. Record actual test totals and warnings, direct author review, and any remaining findings. Commit explicit paths as `docs: teach IVR reliability drills and recovery limits`.
+- [x] Stop at the learner checkpoint. Keep the branch/worktree; do not merge, start Lesson 6, or build concurrency infrastructure. Live matrix execution and learner sign-off remain separate from offline implementation completion.
 
 ## Coverage and self-review
 
 Scenario configuration, all six flows, and client isolation map to Task 1. Provider retry identity, deliberate new attempts, and uncertain dial/action outcomes map to Task 2. Serialization, lifetime deduplication, stale events, admission, deadline boundaries, cleanup, and unchanged output map to Task 3. Repeatable live exercises, recovery/restoration instructions, privacy, evidence separation, and learner acceptance map to Task 4.
 
 The plan deliberately reuses existing passing tests and implementation. Every new failure scenario has a specified transition and expected outcome; silence explicitly accounts for `pending=None`. No new dependencies, infrastructure, external actions, or independent reviewer are implied.
+
+## Implementation review record — 2026-09-22
+
+- Task 1: 19 new scenario cases failed before implementation; fixture/client checks passed after the minimal fixture changes. Silent stage reuses existing overall expiry; no redundant expiry branch was needed.
+- Task 2: Added DTMF lost-response/identity assertions and strengthened exhausted-uncertainty cleanup checks. Existing transport/client behavior already passed; runtime changes were unnecessary. Reviewed official action-specific command-ID semantics and retry guidance.
+- Task 3: Test-only bridge replays actual fixture prompts through the client for every scenario, changed amounts, concurrent duplicate delivery, duplicate hangup deadlines, and post-terminal replay. Existing overflow, exact-boundary, admission, cleanup, signed-webhook, and stdout checks remain green.
+- Ruling: Preserve the existing public code `fixture_rejection`; the draft spec's `fixture_rejected` was a naming error. Corrected both documents rather than changing the Lesson 4 API. Consumers using the draft spelling must use the established name.
+- Ruling: Direct author review replaces reviewer dispatch because the user prohibited subagents. No independent-review claim.
+- Task 4: Walkthrough includes the ten-call matrix, exact commands/results, restart limitations, and restoration steps. All live rows remain `Not run`; learner acceptance is `Pending`.
+- Final author review checked all changed runtime branches, pending-none cleanup, command identity, source links, fixture/client separation, and scope. No deferred code findings. No new dependencies, client runtime changes, deployment, or paid calls.

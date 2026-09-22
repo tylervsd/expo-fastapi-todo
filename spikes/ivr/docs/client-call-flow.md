@@ -42,7 +42,7 @@ fixture's challenge, amount, or expected answer from memory.
 | `ClientFlow` | Current prompt stage, final transcript buffer, DTMF decisions, deadlines, result/error | [client.py · ClientFlow](/Users/tylerv/projects/learning/expo-fastapi-todo/.worktrees/ivr-01-connectivity/spikes/ivr/client.py:230) |
 | Speech grammar | Understand supported words/digits; distinguish pending, complete, and invalid prompts | [speech.py · recognize](/Users/tylerv/projects/learning/expo-fastapi-todo/.worktrees/ivr-01-connectivity/spikes/ivr/speech.py:205) |
 | Provider transport | Construct immutable command bodies and perform HTTP requests | [telnyx_commands.py · send_command](/Users/tylerv/projects/learning/expo-fastapi-todo/.worktrees/ivr-01-connectivity/spikes/ivr/telnyx_commands.py:100) |
-| Answering fixture | Speak prompts, gather digits, validate answers, speak amount, hang up | [fixture.py · Flow.handle](/Users/tylerv/projects/learning/expo-fastapi-todo/.worktrees/ivr-01-connectivity/spikes/ivr/fixture.py:238) |
+| Answering fixture | Speak prompts, gather digits, validate answers, speak amount, hang up | [fixture.py · Flow.handle](/Users/tylerv/projects/learning/expo-fastapi-todo/.worktrees/ivr-01-connectivity/spikes/ivr/fixture.py:257) |
 
 A useful reading order is `caller.py` → `webhooks.py` → `Caller` → `ClientFlow`
 → `speech.py`. `Caller` and `ClientFlow` are different classes in the same file:
@@ -425,7 +425,7 @@ keypress. Verify partial/final fragmentation, timeout, and wrong-leg rejection.
 ### Step 4: Make the fixture speak the same protocol
 
 If this repository's answering fixture is the target, update
-[fixture.py · Flow._gather](/Users/tylerv/projects/learning/expo-fastapi-todo/.worktrees/ivr-01-connectivity/spikes/ivr/fixture.py:185) with a `language` prompt, and change the local
+[fixture.py · Flow._gather](/Users/tylerv/projects/learning/expo-fastapi-todo/.worktrees/ivr-01-connectivity/spikes/ivr/fixture.py:204) with a `language` prompt, and change the local
 `next_stage` map inside `Flow.handle()` to welcome → language → challenge.
 Its current one-digit gather default and expected-answer default `1` already
 cover this example; no new digit-length setting is needed.
@@ -509,3 +509,8 @@ phone numbers, or raw provider bodies to debug grammar.
 For operational commands and live evidence, use the [Lesson 4 walkthrough](../lessons/04-value-or-error.md)
 and [deployment guide](../deploy/README.md). This guide documents source behavior;
 it does not claim a new release has been deployed or live calls verified.
+
+Lesson 5 adds fixture-only `IVR_SCENARIO` branches at the challenge, confirmation,
+and result transitions. The client protocol and source excerpts above are unchanged.
+See [reliability drills](../lessons/05-reliability-drills.md) for scenario selection
+and offline prompt replay.

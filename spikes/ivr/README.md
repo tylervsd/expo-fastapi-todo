@@ -5,6 +5,10 @@ value-or-error JSON record, bounded finalization, and correlated safe diagnostic
 Implementation is verified offline; the learner reported Lesson 4 walkthrough
 completion and signed off on 2026-09-22. Prior transcription reliability limitations remain.
 
+Lesson 5 adds fixture-only failure scenarios and offline event-replay checks;
+live drills and learner acceptance are pending. See the
+[Lesson 5 walkthrough](lessons/05-reliability-drills.md).
+
 **Developer guide:** [Client call flow and how to change it](docs/client-call-flow.md) — source walkthrough, stage map, and a worked menu-step example.
 
 Python 3.14 and uv are required. From this worktree's `spikes/ivr` directory:

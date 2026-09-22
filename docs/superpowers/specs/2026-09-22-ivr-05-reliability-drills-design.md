@@ -1,6 +1,6 @@
 # IVR Lesson 5: repeatable calls and failure drills
 
-**Date:** 2026-09-22. **Status:** Planning only; implementation and live acceptance pending. The user requested both planning artifacts together. No subagents, product changes, deployment, or paid calls are part of this planning task.
+**Date:** 2026-09-22. **Status:** Implemented and verified offline: 452 tests and Ruff lint/format passed; Markdown lint passed. Two existing upstream warnings remain. [Walkthrough](../../../spikes/ivr/lessons/05-reliability-drills.md). Live exercises and learner acceptance pending. No subagents, deployment, or paid calls.
 
 **Plan:** [Implementation plan](../plans/2026-09-22-ivr-05-reliability-drills.md).
 
