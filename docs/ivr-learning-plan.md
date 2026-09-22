@@ -236,6 +236,12 @@ and terminates. Changing the fixture's amount changes the client's output.
 
 ## Lesson 5 — Repeatable end-to-end tests and failure drills
 
+**Planning:** [Spec](superpowers/specs/2026-09-22-ivr-05-reliability-drills-design.md) and
+[implementation plan](superpowers/plans/2026-09-22-ivr-05-reliability-drills.md).
+Drafted 2026-09-22 on `codex/ivr-05-reliability-drills`, reusing the existing IVR
+worktree from merged Lesson 4. Baseline: 422 tests and Ruff passed. Implementation,
+live exercises, and learner acceptance are pending; no subagents used.
+
 **Learn:** webhook retries, duplicate commands, late events, and the limits of a
 local process with in-memory state.
 
