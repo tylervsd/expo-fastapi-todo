@@ -69,6 +69,10 @@ class ClientSettings:
         default=0, metadata={"env": "IVR_CLIENT_DTMF_PAUSE_UNITS"}
     )
 
+    transcription_track: str = field(
+        default="outbound", metadata={"env": "IVR_CLIENT_TRANSCRIPTION_TRACK"}
+    )
+
     def __post_init__(self):
         try:
             object.__setattr__(self, "api_key", _api_key(self.api_key))
@@ -77,6 +81,8 @@ class ClientSettings:
             )
             object.__setattr__(self, "from_number", _number(self.from_number))
             object.__setattr__(self, "to_number", _number(self.to_number))
+            if self.transcription_track not in ("inbound", "outbound"):
+                raise ValueError
             if self.from_number == self.to_number:
                 raise ValueError
             object.__setattr__(self, "synthetic_id", _synthetic_id(self.synthetic_id))
@@ -232,6 +238,7 @@ class ClientFlow:
     def _evaluate(self, *, now, occurred):
         joined = " ".join(self._segments)
         status, value = recognize(self.stage, joined, self.settings.synthetic_id)
+        logger.info(json.dumps({"stage": self.stage, "parser": status}))
         if status == "pending":
             return None
         if status == "invalid":
@@ -397,7 +404,7 @@ def _dial_fields(settings):
                 "language": "en",
                 "interim_results": True,
             },
-            "transcription_tracks": "outbound",
+            "transcription_tracks": settings.transcription_track,
         },
     }
 
@@ -628,6 +635,27 @@ class Caller:
         occurred = self._validate(data)
         if occurred is None:
             return
+        if data["event_type"] == "call.transcription":
+            payload = data["payload"]
+            logger.info(
+                json.dumps(
+                    {
+                        "stage": self.flow.stage if self.flow else "idle",
+                        "final": payload["transcription_data"]["is_final"],
+                        "connection_match": payload["connection_id"]
+                        == self.settings.connection_id,
+                        "call_match": bool(
+                            self.identity
+                            and payload["call_control_id"]
+                            == self.identity.call_control_id
+                        ),
+                        "leg_match": bool(
+                            self.identity
+                            and payload["call_leg_id"] == self.identity.call_leg_id
+                        ),
+                    }
+                )
+            )
         if data["payload"]["connection_id"] != self.settings.connection_id:
             return
         async with self.lock:

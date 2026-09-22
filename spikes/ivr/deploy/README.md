@@ -1,0 +1,102 @@
+# IVR Google Cloud diagnostic deployment
+
+Project `fullstack-sandbox-tylervsd`; VM `ivr-webhook`, zone `us-west1-a`.
+Static address `ivr-webhook-ip`: `136.66.151.98`.
+Hostname: `ivr.tylervallillee.info` (DNS stays with the existing provider).
+Dedicated VPC/subnet `ivr-diagnostic`, range `10.42.0.0/24`.
+Firewall `ivr-web-allow` permits TCP 80/443; `ivr-iap-ssh` permits TCP 22 only
+from IAP's `35.235.240.0/20`. Both target the `ivr-webhook` tag. No Google runtime
+service account. OS Login enabled; project SSH keys blocked.
+
+## Operate over IAP
+
+```sh
+gcloud compute ssh ivr-webhook --project=fullstack-sandbox-tylervsd --zone=us-west1-a --tunnel-through-iap
+sudo systemctl status ivr caddy --no-pager
+sudo -u ivr /opt/ivr/current/.venv/bin/python /opt/ivr/current/cloud_runner.py status
+sudo journalctl -u ivr -n 80 --no-pager
+```
+
+The server starts idle; boot/restart never dials. When ready to place one paid call:
+
+```sh
+sudo -u ivr /opt/ivr/current/.venv/bin/python /opt/ivr/current/cloud_runner.py start
+```
+
+Query status afterward. Losing the SSH acknowledgment does not cancel the call;
+query status rather than starting again. A second start is rejected. After both
+legs have ended and at least 60 seconds have elapsed, explicitly restart for a
+new call: `sudo systemctl restart ivr`. If termination is unconfirmed, inspect
+and end the remote call in Telnyx first. Restart loses all process-local state.
+
+## Runtime and credentials
+
+Caddy proxies only POSTs to the two webhook paths. Uvicorn listens on loopback
+8010. The control socket is `/run/ivr/control.sock`, mode 0600, in a 0700
+systemd-owned directory. Runtime user `ivr` cannot modify release files.
+
+Root-owned `/etc/ivr/ivr.env` is mode 0600 and loaded by systemd. Populate through
+encrypted SSH; never commit it, put it in instance metadata, or print it. Only
+required TELNYX/IVR settings should be copied from the local configuration.
+Set `IVR_CLIENT_TRANSCRIPTION_TRACK=inbound` for the cloud diagnostic. The local
+runner retains its outbound default. Cloud uses dial-time transcription; the
+prior inbound live experiment used explicit startup. Neither implies final
+transcription or full navigation has passed.
+
+Deploy only committed files in `spikes/ivr`, without `.env`, `.venv`, caches or
+unrelated repo files. Extract under `/opt/ivr/releases/<commit>`; install Python
+3.14 using uv with `UV_PYTHON_INSTALL_DIR=/opt/ivr/python`, then run
+`uv sync --locked` in that release. Point `/opt/ivr/current` at the selected
+release. Install `ivr.service` in `/etc/systemd/system/` and `Caddyfile` in
+`/etc/caddy/`. Validate using `systemd-analyze verify` and `caddy validate` before
+`systemctl daemon-reload` and enabling services. Keep the previous release for rollback.
+
+No container registry, load balancer, NAT gateway, SQL or Terraform state change
+is required. Debian's packaged Caddy and the official uv installer are used;
+record the resolved versions in the deployment evidence.
+
+## Verification before callback cutover
+
+```sh
+curl -i -X POST https://ivr.tylervallillee.info/webhooks/client -H 'Content-Type: application/json' -d '{}'
+curl -i -X POST https://ivr.tylervallillee.info/webhooks/test-ivr -H 'Content-Type: application/json' -d '{}'
+curl -i https://ivr.tylervallillee.info/status
+```
+
+Expect 401, 401, 404 with valid TLS. Unsigned checks cannot place calls. Repeat
+a small concurrent batch and record all results. Request logs show only path,
+status and duration. Speech logs show final/ownership booleans and parser outcome;
+raw transcripts, credentials and numeric input remain private.
+
+After verification, record existing primary/failover URLs privately and update
+the two Telnyx Voice API applications to:
+
+- `https://ivr.tylervallillee.info/webhooks/client`
+- `https://ivr.tylervallillee.info/webhooks/test-ivr`
+
+Do not leave failover pointed to an inactive local process. Preserve number
+assignments. Cutover and paid tests are separate from infrastructure deployment.
+A working public 401 does not establish Telnyx delivery or Lesson 3 acceptance.
+
+## Cost and cleanup
+
+Target: under $20/month incremental cloud cost. Planning allowance for 730 hours:
+about $6.12 compute, $3.65 attached public IPv4, and $0.80 for 20 GB standard disk,
+roughly $10.60 before egress/tax and without free-tier credits. Regional SKUs and
+actual usage govern billing; this is an estimate, not an enforced spending cap.
+Existing sandbox services, domain renewal and Telnyx calls are separate.
+
+Sources: [VM pricing](https://cloud.google.com/products/compute/pricing/general-purpose),
+[network/IP pricing](https://cloud.google.com/vpc/network-pricing),
+[disk pricing](https://cloud.google.com/compute/disks-image-pricing).
+Stop the VM between extended periods of inactivity if desired; disk and reserved
+IP charges persist. An unassigned static IP is billable too.
+
+Rollback: end calls, restore saved Telnyx URLs, verify the local Funnel and run
+`caller.py` locally. To roll back code on the VM, stop ivr, point `current` at the
+previous verified release and start ivr; it remains idle.
+
+Explicit teardown, only after rollback/no active calls: delete VM `ivr-webhook`
+and its auto-delete boot disk; release address `ivr-webhook-ip`; delete the two
+named IVR firewall rules, IVR subnet and VPC; remove only the `ivr` DNS A record.
+Do not delete the default network, other sandbox services, or shared IAM roles.

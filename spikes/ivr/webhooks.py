@@ -170,7 +170,7 @@ def reject_json_constant(value: str):
     raise ValueError("Invalid JSON constant")
 
 
-async def receive_event(request: Request, role: str) -> Response:
+async def _receive_event(request: Request, role: str) -> Response:
     body = bytearray()
     async for chunk in request.stream():
         if len(body) + len(chunk) > 65536:
@@ -222,6 +222,33 @@ async def receive_event(request: Request, role: str) -> Response:
             except ValueError:
                 raise HTTPException(400, "Invalid call event") from None
     return Response(status_code=200)
+
+
+http_logger = logging.getLogger("ivr.http")
+http_logger.setLevel(logging.INFO)
+http_logger.parent = logging.getLogger("uvicorn.error")
+
+
+async def receive_event(request: Request, role: str) -> Response:
+    started = time.monotonic()
+    status = 500
+    try:
+        response = await _receive_event(request, role)
+        status = response.status_code
+        return response
+    except HTTPException as error:
+        status = error.status_code
+        raise
+    finally:
+        http_logger.info(
+            json.dumps(
+                {
+                    "path": "/webhooks/" + role,
+                    "status": status,
+                    "duration_ms": round((time.monotonic() - started) * 1000, 2),
+                }
+            )
+        )
 
 
 client_router = APIRouter()

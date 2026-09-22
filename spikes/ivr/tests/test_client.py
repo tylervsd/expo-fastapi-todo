@@ -1624,3 +1624,39 @@ def test_caller_finish_drains_canceled_dial_before_done():
         assert harness.caller.done.is_set()
 
     _run(main)
+
+
+def test_transcription_track_setting(monkeypatch):
+    from dataclasses import replace
+
+    from client import _dial_fields
+
+    settings = _settings()
+    assert (
+        _dial_fields(settings)["transcription_config"]["transcription_tracks"]
+        == "outbound"
+    )
+    assert (
+        _dial_fields(replace(settings, transcription_track="inbound"))[
+            "transcription_config"
+        ]["transcription_tracks"]
+        == "inbound"
+    )
+    with pytest.raises(RuntimeError):
+        replace(settings, transcription_track="both")
+
+
+def test_parser_diagnostics_do_not_log_speech(caplog):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="ivr.client")
+    flow, builder = _flow(), _Builder()
+    _answer(flow, builder)
+    flow.handle(
+        builder.event(
+            "call.transcription", offset=2, transcript="SECRET_SENTINEL", is_final=True
+        ),
+        now=1002,
+    )
+    assert any('"parser": "pending"' in r.getMessage() for r in caplog.records)
+    assert "SECRET_SENTINEL" not in caplog.text

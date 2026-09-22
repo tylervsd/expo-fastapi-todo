@@ -618,3 +618,18 @@ def test_combined_mode_requires_distinct_app_ids(private, monkeypatch):
         for name in ("caller", "caller_enabled"):
             if hasattr(webhooks.public_app.state, name):
                 delattr(webhooks.public_app.state, name)
+
+
+def test_rejected_request_diagnostics_are_private(private, caplog):
+    caplog.set_level(logging.INFO, logger="ivr.http")
+    with TestClient(client_app) as client:
+        response = client.post(
+            "/webhooks/client?secret=SECRET_QUERY", content=b"SECRET_BODY"
+        )
+    assert response.status_code == 401
+    records = [
+        json.loads(r.getMessage()) for r in caplog.records if r.name == "ivr.http"
+    ]
+    assert records[-1]["status"] == 401
+    assert records[-1]["path"] == "/webhooks/client"
+    assert "SECRET_" not in caplog.text
