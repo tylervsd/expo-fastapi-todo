@@ -2,7 +2,7 @@
 
 ## Status and outcome
 
-Curriculum started September 20, 2026. Lessons 1–4 are accepted. Lessons 3 and 4 were signed off on 2026-09-22. Lesson 2 was signed off by the learner on
+Curriculum started September 20, 2026. Lessons 1–5 are accepted. Lesson 5 was signed off on 2026-09-22. Lessons 3 and 4 were signed off on 2026-09-22. Lesson 2 was signed off by the learner on
 2026-09-21 after successful live calls. This is a separate learning track from
 the numbered fullstack curriculum. Each lesson will get a concrete implementation
 plan and walkthrough when we work through it.
@@ -240,8 +240,8 @@ and terminates. Changing the fixture's amount changes the client's output.
 [implementation plan](superpowers/plans/2026-09-22-ivr-05-reliability-drills.md).
 Implemented offline 2026-09-22 on `codex/ivr-05-reliability-drills`, reusing the
 existing IVR worktree from merged Lesson 4. 452 tests and Ruff passed.
-[Walkthrough](../spikes/ivr/lessons/05-reliability-drills.md). Live exercises and
-learner acceptance remain pending; no subagents used.
+[Walkthrough](../spikes/ivr/lessons/05-reliability-drills.md). Learner sign-off received 2026-09-22; detailed live-call evidence was not supplied.
+No subagents used.
 
 **Learn:** webhook retries, duplicate commands, late events, and the limits of a
 local process with in-memory state.
@@ -284,7 +284,7 @@ it is not a production reliability estimate.
 | 2. Test IVR | 168 tests and Ruff passed | Successful calls reported; intermittent delivery failures observed | Signed off 2026-09-21 |
 | 3. Automated caller | 369 tests and Ruff passed | Normal and leading-zero calls completed; wrong-ID rejected; intermittent STT failures recorded | Signed off 2026-09-22 |
 | 4. Value or error | 422 tests and Ruff passed | Walkthrough completion reported by learner; detailed artifacts not supplied | Signed off 2026-09-22 |
-| 5. Reliability drills | 452 tests and Ruff passed | Not run | Pending |
+| 5. Reliability drills | 452 tests and Ruff passed | Detailed live-call evidence not supplied | Signed off 2026-09-22 |
 
 The two final deliverables are the independently runnable flow client and test
 IVR, with reproducible setup, lesson guides, offline checks, and recorded live

@@ -10,7 +10,7 @@
 
 **Spec:** [Lesson 5 design](../specs/2026-09-22-ivr-05-reliability-drills-design.md).
 
-**Status:** Implemented offline 2026-09-22: 452 tests, Ruff lint/format, and Markdown lint passed. Two existing upstream warnings remain. [Walkthrough](../../../spikes/ivr/lessons/05-reliability-drills.md). No subagents, deployment, or paid calls. Live exercises and learner acceptance pending. Baseline was 422 tests.
+**Status:** Implemented offline 2026-09-22: 452 tests, Ruff lint/format, and Markdown lint passed. Two existing upstream warnings remain. [Walkthrough](../../../spikes/ivr/lessons/05-reliability-drills.md). No subagents, deployment, or paid calls. Learner sign-off received 2026-09-22, with push/merge authorized; detailed live-call evidence not supplied. Baseline was 422 tests.
 
 ## Global constraints
 
@@ -183,5 +183,5 @@ The plan deliberately reuses existing passing tests and implementation. Every ne
 - Task 3: Test-only bridge replays actual fixture prompts through the client for every scenario, changed amounts, concurrent duplicate delivery, duplicate hangup deadlines, and post-terminal replay. Existing overflow, exact-boundary, admission, cleanup, signed-webhook, and stdout checks remain green.
 - Ruling: Preserve the existing public code `fixture_rejection`; the draft spec's `fixture_rejected` was a naming error. Corrected both documents rather than changing the Lesson 4 API. Consumers using the draft spelling must use the established name.
 - Ruling: Direct author review replaces reviewer dispatch because the user prohibited subagents. No independent-review claim.
-- Task 4: Walkthrough includes the ten-call matrix, exact commands/results, restart limitations, and restoration steps. All live rows remain `Not run`; learner acceptance is `Pending`.
+- Task 4: Walkthrough includes the ten-call matrix, exact commands/results, restart limitations, and restoration steps. At implementation completion, live rows were `Not run` and acceptance was `Pending`. Learner sign-off was subsequently received on 2026-09-22; detailed live-call evidence was not supplied.
 - Final author review checked all changed runtime branches, pending-none cleanup, command identity, source links, fixture/client separation, and scope. No deferred code findings. No new dependencies, client runtime changes, deployment, or paid calls.

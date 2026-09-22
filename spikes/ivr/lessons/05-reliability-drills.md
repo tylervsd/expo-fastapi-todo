@@ -1,8 +1,8 @@
 # Lesson 5 — Repeatable calls and failure drills
 
 Implemented offline on `codex/ivr-05-reliability-drills` in the existing
-`.worktrees/ivr-01-connectivity` worktree. Live exercises and learner acceptance
-remain pending. No Lesson 5 deployment or paid calls were performed.
+`.worktrees/ivr-01-connectivity` worktree. Learner sign-off received 2026-09-22. Detailed live-call evidence was not
+supplied. No Lesson 5 deployment or paid calls were performed by the author.
 
 Read [Lesson 4](04-value-or-error.md) first. Keep its credentials, callback routes,
 Telnyx/inbound transcription, synthetic IDs, and DTMF timing. The caller still
@@ -200,18 +200,18 @@ publishing their digits. A small successful sample is not a capacity estimate.
 
 | Attempt | Scenario | Amount | Expected | Actual evidence |
 | --- | --- | --- | --- | --- |
-| 1 | normal | 1425.30 | Success | Not run |
-| 2 | normal | 17.42 | Success | Not run |
-| 3 | normal | 1425.30 | Success | Not run |
-| 4 | normal | 17.42 | Success | Not run |
-| 5 | normal | 1425.30 | Success | Not run |
-| 6 | leading_zero | 1425.30 | Success; leading zero preserved | Not run |
-| 7 | rejected_id | 1425.30 | fixture_rejection / confirmation | Not run |
-| 8 | silent_stage | 1425.30 | stage_timeout / challenge | Not run |
-| 9 | unsupported_result | 1425.30 | result_unrecognized / result | Not run |
-| 10 | early_hangup | 1425.30 | early_hangup / challenge | Not run |
+| 1 | normal | 1425.30 | Success | Evidence not supplied |
+| 2 | normal | 17.42 | Success | Evidence not supplied |
+| 3 | normal | 1425.30 | Success | Evidence not supplied |
+| 4 | normal | 17.42 | Success | Evidence not supplied |
+| 5 | normal | 1425.30 | Success | Evidence not supplied |
+| 6 | leading_zero | 1425.30 | Success; leading zero preserved | Evidence not supplied |
+| 7 | rejected_id | 1425.30 | fixture_rejection / confirmation | Evidence not supplied |
+| 8 | silent_stage | 1425.30 | stage_timeout / challenge | Evidence not supplied |
+| 9 | unsupported_result | 1425.30 | result_unrecognized / result | Evidence not supplied |
+| 10 | early_hangup | 1425.30 | early_hangup / challenge | Evidence not supplied |
 
-**Learner acceptance:** Pending. All five normal calls must return the correct
+**Learner acceptance:** Signed off 2026-09-22. All five normal calls must return the correct
 amount, leading zero must succeed, and every deliberate failure must reach its
 intended stage and produce the expected error. Diagnose and rerun affected
 exercises when this target is missed; retain all evidence.
@@ -254,4 +254,12 @@ FastAPI/Starlette deprecation warnings remain. New scenario tests failed before
 implementation, then passed. Additional retry/replay checks verified existing
 client behavior; client runtime and dependencies were unchanged. Review was
 performed directly by the author; no subagents or independent-review claim.
-Deployment, live results, and learner acceptance remain pending.
+No deployment or live results were recorded during implementation. Learner
+sign-off was subsequently received on 2026-09-22.
+
+## Learner sign-off — 2026-09-22
+
+The learner stated “i have signed off on phase 5” and authorized pushing and
+merging to main and updating the local checkout. This records acceptance
+separately from observed live evidence. Per-call results, timestamps, and run IDs
+were not supplied; the live-call checklist remains unverified by the author.

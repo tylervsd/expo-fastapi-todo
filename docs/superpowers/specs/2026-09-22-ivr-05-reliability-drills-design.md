@@ -1,6 +1,6 @@
 # IVR Lesson 5: repeatable calls and failure drills
 
-**Date:** 2026-09-22. **Status:** Implemented and verified offline: 452 tests and Ruff lint/format passed; Markdown lint passed. Two existing upstream warnings remain. [Walkthrough](../../../spikes/ivr/lessons/05-reliability-drills.md). Live exercises and learner acceptance pending. No subagents, deployment, or paid calls.
+**Date:** 2026-09-22. **Status:** Implemented and verified offline: 452 tests and Ruff lint/format passed; Markdown lint passed. Two existing upstream warnings remain. [Walkthrough](../../../spikes/ivr/lessons/05-reliability-drills.md). Learner sign-off received 2026-09-22, with push/merge authorized; detailed live-call evidence not supplied. No subagents, deployment, or paid calls.
 
 **Plan:** [Implementation plan](../plans/2026-09-22-ivr-05-reliability-drills.md).
 

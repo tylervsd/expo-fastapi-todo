@@ -1,12 +1,12 @@
 # IVR spike
 
-Lessons 1–4 are accepted. Lesson 4 adds strict amount extraction, one terminal
+Lessons 1–5 are accepted. Lesson 4 adds strict amount extraction, one terminal
 value-or-error JSON record, bounded finalization, and correlated safe diagnostics.
 Implementation is verified offline; the learner reported Lesson 4 walkthrough
 completion and signed off on 2026-09-22. Prior transcription reliability limitations remain.
 
 Lesson 5 adds fixture-only failure scenarios and offline event-replay checks;
-live drills and learner acceptance are pending. See the
+learner sign-off received 2026-09-22; detailed live-call evidence not supplied. See the
 [Lesson 5 walkthrough](lessons/05-reliability-drills.md).
 
 **Developer guide:** [Client call flow and how to change it](docs/client-call-flow.md) — source walkthrough, stage map, and a worked menu-step example.
