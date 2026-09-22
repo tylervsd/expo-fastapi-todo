@@ -2,7 +2,7 @@
 
 ## Status and outcome
 
-Curriculum started September 20, 2026. Lessons 1 and 2 are accepted. Lesson 2 was signed off by the learner on
+Curriculum started September 20, 2026. Lessons 1–3 are accepted. Lesson 3 was signed off on 2026-09-22. Lesson 2 was signed off by the learner on
 2026-09-21 after successful live calls. This is a separate learning track from
 the numbered fullstack curriculum. Each lesson will get a concrete implementation
 plan and walkthrough when we work through it.
@@ -157,9 +157,9 @@ call; an incorrect code cannot reach the result.
 **Planning:** [Spec](superpowers/specs/2026-09-21-ivr-03-automated-caller-design.md) and
 [implementation plan](superpowers/plans/2026-09-21-ivr-03-automated-caller.md).
 **Walkthrough:** [Lesson 3 automated caller](../spikes/ivr/lessons/03-automated-caller.md).
-Local implementation is verified (358 tests, Ruff check and format clean,
-2026-09-21); live verification and learner acceptance remain pending.
-Reuse the existing IVR worktree on `codex/ivr-03-automated-caller`.
+Verified with 369 passing tests, Ruff checks, successful normal and leading-zero
+live calls, and wrong-ID rejection. Learner sign-off received 2026-09-22;
+merged to main from `codex/ivr-03-automated-caller`.
 
 **Learn:** outbound dialing, call-leg identification, transcription lifecycle,
 partial versus final transcripts, and synchronizing input to recognizable prompts.
@@ -192,7 +192,9 @@ To investigate intermittent webhook delivery independently of the Mac/Funnel
 path, a [VM deployment spec](superpowers/specs/2026-09-21-ivr-cloud-vm-design.md)
 and [implementation plan](superpowers/plans/2026-09-21-ivr-cloud-vm.md) were drafted
 on 2026-09-21. Target: existing fullstack sandbox, $20/month incremental cloud
-budget. Deployment and Lesson 3 live acceptance remain pending.
+budget. Deployed with permanent Telnyx/inbound transcription. Lesson 3 live
+acceptance and learner sign-off are recorded in the walkthrough; intermittent
+transcription failures remain documented as a reliability limitation.
 
 ## Lesson 4 — A value-or-error contract
 
@@ -262,7 +264,7 @@ it is not a production reliability estimate.
 | --- | --- | --- | --- |
 | 1. Connectivity | 41 tests, Ruff, loopback smoke checks passed | Completion reported by learner | Signed off 2026-09-21 |
 | 2. Test IVR | 168 tests and Ruff passed | Successful calls reported; intermittent delivery failures observed | Signed off 2026-09-21 |
-| 3. Automated caller | 358 tests and Ruff passed | Not run | Pending |
+| 3. Automated caller | 369 tests and Ruff passed | Normal and leading-zero calls completed; wrong-ID rejected; intermittent STT failures recorded | Signed off 2026-09-22 |
 | 4. Value or error | Not run | Not run | Pending |
 | 5. Reliability drills | Not run | Not run | Pending |
 
