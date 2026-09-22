@@ -195,7 +195,6 @@ checks do not establish live transcription reliability. Sign off only after
 reviewing the observed live results. Lesson 5's repeated-call reliability drills
 remain separate.
 
-
 ## Implementation verification — 2026-09-22
 
 422 tests passed; Ruff check and format passed. Both CLI help commands passed;
@@ -206,7 +205,6 @@ The three final-review regressions cover segmented dollar/cents punctuation,
 interruption after a terminal decision, and internal-vs-provider dial failure.
 This implementation verification record does not claim deployment or live-call evidence.
 
-
 ## Deployment verification — 2026-09-22
 
 Release `bde9fdf` is running on `ivr-webhook` in `us-west1-a`, project
@@ -215,7 +213,6 @@ are active; caller is idle; result retrieval returns `result_not_ready`/exit 1;
 public unsigned webhooks return 401 and `/status` returns 404. No paid calls were
 placed during deployment verification. Previous release
 `11f2e01` is retained for rollback.
-
 
 ## Learner acceptance — 2026-09-22
 

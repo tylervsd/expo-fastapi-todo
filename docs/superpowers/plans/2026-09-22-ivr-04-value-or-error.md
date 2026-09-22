@@ -102,6 +102,7 @@ return format(value, ".2f")
 ```
 
   For decimal input, validate the full numeric regex and comma grouping before removing commas, enforce 0–9999.99, and format Decimal directly. Never call float or import `fixture`.
+
 - [x] Update result recognition: split complete anchored announcements, parse each full body, require one distinct normalized value; return pending for an unfinished suffix and invalid for a completed unsupported body. Retain the full bounded stage buffer so a later segment can finish it. One complete announcement followed by another incomplete announcement is pending, not success.
 - [x] Add recognizer assertions for prefix-only, split cents, same-value repeated announcements, different-value announcements, trailing unexplained numeric text, case/hyphen normalization, and fixture rejection priority. Representative checks:
 
@@ -150,6 +151,7 @@ finalize_at = min(
 ```
 
   Only calculate this once hangup exists. At/after the boundary, finalize before consuming another event. Before hangup use existing stage and overall deadlines. Once hangup exists, ignore stage deadline and cap by overall deadline. Re-evaluate the retained complete buffer at finalization; pending/invalid becomes `result_unrecognized`. Without hangup at a recognition deadline, preserve a complete candidate and initiate bounded cleanup, or preserve the timeout failure when incomplete.
+
 - [x] Capture `failure_stage` before `_hangup` changes stage. Implement the spec's public error mapping in `error_result`, with a fixed allowlist for stages and an `internal_error` fallback. Map each existing outcome explicitly; keep internal reasons separate. Validate representative mappings:
 
 ```python
@@ -182,6 +184,7 @@ assert err.strip()
 ```
 
   For the existing stage-timeout case use `{"status":"error","code":"stage_timeout","stage":"challenge"}` and assert exit 1. Constructor/lifespan failure expects `startup_failed`/`startup`, one line, and zero dials. Add start exception, unexpected server stop, cleanup exception, and cancellation cases. Interruption emits `interrupted`, cleans up, then propagates cancellation; the CLI maps user interrupt to exit 130 without a traceback or second record.
+
 - [x] Run `.venv/bin/python -m pytest tests/test_caller.py -q` to observe failures.
 - [x] Give `run_call` one terminal payload variable, initialized to `error_result("server_startup_failed", "startup")`. Update it on each existing failure path or from the completed caller. Keep one `print(json.dumps(payload))` at the outer finalization boundary after bounded cleanup. Nest cleanup in `try/finally` so shutdown exceptions cannot suppress output or override the payload. Return the corresponding code; avoid stale `exit_code` in early-return diagnostics. Keep cancellation cleanup shielded and bounded.
 - [x] Test the cloud protocol with existing `Writer`/`Control` fake helpers: `result` before start and during a call returns `result_not_ready` without starting anything; after done returns the exact snapshot repeatedly; status includes `result`; start after completion remains restart-required. Existing invalid/oversized input, permissions, and no-auto-dial tests remain.
@@ -196,6 +199,7 @@ response = (
 ```
 
   Add `result` to argparse choices. `request("result")` exits 0 only for a success payload and 1 otherwise; status retains its query exit-0 semantics. Keep the existing five-second socket request bound; result retrieval does not block on call completion.
+
 - [x] Add fake-socket request tests that assert one JSON line, matching exit status for success/error/not-ready, unchanged start/status behavior, and no socket request on `--help`. Update `SimpleNamespace` test callers with `result=None` so mocks preserve the new interface.
 - [x] Run `.venv/bin/python -m pytest tests/test_caller.py tests/test_cloud_runner.py -q`, then all tests and Ruff. Commit `feat: expose IVR terminal JSON locally and over cloud control`.
 
@@ -214,6 +218,7 @@ leg_ref = hashlib.sha256(identity.call_leg_id.encode()).hexdigest()[:12]
 ```
 
   Cache only hashes through final log emission. Wrap existing flow event/watchdog/replay transitions with before/after-stage observations; do not create a new event bus or logging framework. Move unconditional per-transcript metadata behind the debug setting, with run ID and elapsed time. Emit only character/segment counts, ownership booleans, final flag, and parser status/reason. Never log tokenized or raw text. Preserve concise lifecycle/terminal default logs.
+
 - [x] Add `.env.example` documentation:
 
 ```dotenv
@@ -246,6 +251,7 @@ printf 'exit=%s\n' "$call_exit"
 ```
 
   Wait for status `done=true` before retrieving the terminal result. Explain `result_not_ready` and that querying never redials. Service logs contain the stderr trace; the result command prints the value/error and its exit status. Preserve existing restart/manual termination guidance.
+
 - [x] Provide acceptance rows for normal `1425.30`, changed `17.42`, wrong-ID rejection, and every unsuccessful live attempt. Initialize live evidence “Not run” and learner acceptance “Pending”. Zero and unsupported wording are offline exercises. Show how to change only `IVR_RESULT_AMOUNT` for the fixture between calls, leaving client configuration untouched, and restore it afterward. Do not introduce a scenario switch solely for this lesson.
 - [x] Update README/curriculum planning links and explain that local stdout-empty/checkpoint semantics are superseded once implementation passes. Preserve historical Lesson 3 evidence and observed STT limitations. Add a deployment-doc `result` command example without claiming it has been deployed.
 - [x] Final verification from `spikes/ivr/`, then repository root:
@@ -276,7 +282,6 @@ git status --short --branch
 | Walkthrough, truthful offline/live/learner records | 4 |
 
 Author self-review checked task interfaces, existing caller sites, grammar bounds, all curriculum Lesson 4 checkboxes, and boundary/failure checks. No provider schema changes are proposed; reverify official provider documentation only if implementation discovers a need to alter provider commands. No implementation, deployment, paid call, or independent review occurred during planning. Subsequent implementation followed the learner's direct-execution instruction; the final review was an author self-review, not an independent review.
-
 
 ## Implementation review record — 2026-09-22
 

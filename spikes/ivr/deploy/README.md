@@ -185,7 +185,6 @@ At 02:18 UTC all test drop-ins and temporary settings were removed; systemd
 reported no DropInPaths, normal cloud_runner.py serve, and idle/not-started.
 Both original blockers (permanent engine and full live success) are closed.
 
-
 ## Lesson 4 deployment — 2026-09-22
 
 Deployed committed release `bde9fdf` to `/opt/ivr/releases/bde9fdf`; service
