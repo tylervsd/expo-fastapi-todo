@@ -1099,9 +1099,15 @@ def test_caller_current_action_failure_hangs_up():
         harness.send_hold.set()
         await harness.drain()
         actions = [command.action for command in harness.sent]
-        assert actions[-1] == "hangup"
+        assert actions == ["send_dtmf", "hangup"]
         assert harness.caller.flow.stage == "hanging_up"
         await harness.close()
+        assert harness.caller.result == {
+            "status": "error",
+            "code": "provider_failure",
+            "stage": "challenge",
+        }
+        assert len(harness.dial_requests) == 1
 
     _run(main)
 

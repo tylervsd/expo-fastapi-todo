@@ -24,7 +24,9 @@ def no_retry_sleep(monkeypatch):
     monkeypatch.setattr("telnyx_commands.asyncio.sleep", no_delay)
 
 
-@pytest.mark.parametrize("action", ["answer", "gather_using_speak", "speak", "hangup"])
+@pytest.mark.parametrize(
+    "action", ["answer", "gather_using_speak", "speak", "hangup", "send_dtmf"]
+)
 def test_retry_keeps_identity_and_fixed_origin(action):
     seen = []
 
@@ -35,7 +37,11 @@ def test_retry_keeps_identity_and_fixed_origin(action):
         )
 
     async def exercise():
-        command = make_command("call/token", action, {"payload": "test"})
+        command = make_command(
+            "call/token",
+            action,
+            {"digits": "1"} if action == "send_dtmf" else {"payload": "test"},
+        )
         async with httpx.AsyncClient(
             headers={"Authorization": "Bearer test-only"},
             transport=httpx.MockTransport(transport),
@@ -394,5 +400,33 @@ def test_dtmf_digits_never_in_errors(caplog):
             assert command.client_state not in caplog.text
             assert command.command_id not in caplog.text
             assert "call-id" not in caplog.text
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("exhausted", [False, True])
+def test_lost_dtmf_response_reuses_accepted_command(exhausted):
+    seen = []
+    applied = set()
+
+    def transport(request):
+        seen.append(request.content)
+        applied.add(json.loads(request.content)["command_id"])
+        if len(seen) == 1 or exhausted:
+            raise httpx.ReadTimeout("response lost", request=request)
+        return httpx.Response(200, json={"data": {"result": "ok"}})
+
+    async def exercise():
+        command = make_command("call", "send_dtmf", {"digits": "0742#"})
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(transport)
+        ) as client:
+            if exhausted:
+                with pytest.raises(CommandError, match="^uncertain$"):
+                    await send_command(client, command)
+            else:
+                await send_command(client, command)
+        assert seen == [command.body, command.body]
+        assert applied == {command.command_id}
 
     asyncio.run(exercise())
