@@ -266,25 +266,26 @@ agent-run cloud diagnostics and acceptance are recorded below.
 
 | Evidence | Offline result | Live observation / time | Learner acceptance |
 | --- | --- | --- | --- |
-| Settings bounds, fixture-independence | Passed (358 tests) | Not run | Pending |
-| Digit grammar, leading zeros, no guessing | Passed (358 tests) | Not run | Pending |
-| Single-submission dial, DTMF transport | Passed (358 tests) | Not run | Pending |
-| Five-action prompt navigation replay | Passed (358 tests) | Not run | Pending |
-| Call/leg ownership, early callbacks, cleanup | Passed (358 tests) | Not run | Pending |
-| CLI lifecycle, role isolation, stdout privacy | Passed (358 tests) | Not run | Pending |
-| Normal live call to result announcement | Passed (offline replay) | Passed 2026-09-22 02:15:06 UTC; release 11f2e01, completed / exit 0 | Pending learner review |
-| Different-challenge live repeat | Passed (offline replay) | Normal random-challenge call and separate fixed 0742 call completed on 11f2e01 | Pending learner review |
-| `0742` override live replay | Passed (offline replay) | Passed 2026-09-22 02:17:58 UTC; completed / exit 0; fixture accepted exact challenge | Pending learner review |
-| Mismatched-ID live rejection | Passed (offline replay) | Passed 2026-09-22 02:08:27 UTC; fixture_rejection / exit 1, no confirmation DTMF | Pending learner review |
-| Transcription track hears fixture speech | Not applicable offline | Telnyx/inbound finals observed across all stages | Pending learner review |
-| Scoped tunnel cleanup | Not applicable | Not run | Pending |
-| Lesson completion | 369 tests, Ruff and formatting pass | Normal and leading-zero success; wrong-ID rejected; cloud runtime restored idle | Pending learner review |
+| Settings bounds, fixture-independence | Passed (358 tests) | Not run | Accepted with recorded evidence limits, 2026-09-22 |
+| Digit grammar, leading zeros, no guessing | Passed (358 tests) | Not run | Accepted with recorded evidence limits, 2026-09-22 |
+| Single-submission dial, DTMF transport | Passed (358 tests) | Not run | Accepted with recorded evidence limits, 2026-09-22 |
+| Five-action prompt navigation replay | Passed (358 tests) | Not run | Accepted with recorded evidence limits, 2026-09-22 |
+| Call/leg ownership, early callbacks, cleanup | Passed (358 tests) | Not run | Accepted with recorded evidence limits, 2026-09-22 |
+| CLI lifecycle, role isolation, stdout privacy | Passed (358 tests) | Not run | Accepted with recorded evidence limits, 2026-09-22 |
+| Normal live call to result announcement | Passed (offline replay) | Passed 2026-09-22 02:15:06 UTC; release 11f2e01, completed / exit 0 | Accepted 2026-09-22 |
+| Different-challenge live repeat | Passed (offline replay) | Normal random-challenge call and separate fixed 0742 call completed on 11f2e01 | Accepted 2026-09-22 |
+| `0742` override live replay | Passed (offline replay) | Passed 2026-09-22 02:17:58 UTC; completed / exit 0; fixture accepted exact challenge | Accepted 2026-09-22 |
+| Mismatched-ID live rejection | Passed (offline replay) | Passed 2026-09-22 02:08:27 UTC; fixture_rejection / exit 1, no confirmation DTMF | Accepted 2026-09-22 |
+| Transcription track hears fixture speech | Not applicable offline | Telnyx/inbound finals observed across all stages | Accepted 2026-09-22 |
+| Scoped tunnel cleanup | Not applicable | Not run | Accepted with recorded evidence limits, 2026-09-22 |
+| Lesson completion | 369 tests, Ruff and formatting pass | Normal and leading-zero success; wrong-ID rejected; cloud runtime restored idle | Accepted 2026-09-22 |
 
 For each attempt record date/time, scenario, expected versus heard speech,
 stage progression, provider-side received DTMF (synthetic ID redacted),
 actual disconnect, and any failure/recovery. Record failed attempts as well
 as successful reruns. Do not store credentials, phone numbers, full webhook
-payloads, full transcripts, or real personal IDs. Learner sign-off: **Pending**.
+payloads, full transcripts, or real personal IDs. Learner sign-off: **Accepted on 2026-09-22**. The learner explicitly signed off
+on Phase 3 and authorized merging to main.
 
 Open observation (carried from Lesson 2, still unresolved): intermittent
 webhook delivery failures — missing gather-completion callbacks with provider
@@ -302,5 +303,5 @@ wording and add tests. Detailed timestamps and failed attempts are in
 [the deployment record](../deploy/README.md). Temporary environment overrides
 were removed and the service was verified idle with its normal ExecStart.
 These results close the engine-configuration and successful-live-call blockers.
-Learner sign-off and any unperformed manual troubleshooting exercises remain
-explicitly separate; intermittent STT failures above are not a reliability fix.
+Learner sign-off was received on 2026-09-22. Unperformed manual troubleshooting
+exercises remain unverified; intermittent STT failures above are not a reliability fix.
