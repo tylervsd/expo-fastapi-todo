@@ -5,6 +5,8 @@ value-or-error JSON record, bounded finalization, and correlated safe diagnostic
 Implementation is verified offline; Lesson 4 live verification and learner
 acceptance remain pending. Prior transcription reliability limitations remain.
 
+**Developer guide:** [Client call flow and how to change it](docs/client-call-flow.md) — source walkthrough, stage map, and a worked menu-step example.
+
 Python 3.14 and uv are required. From this worktree's `spikes/ivr` directory:
 
 ```sh
