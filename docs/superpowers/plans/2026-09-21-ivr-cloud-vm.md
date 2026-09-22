@@ -20,7 +20,8 @@ Debian 12, systemd, Caddy and gcloud.
 - No public controls, new Python dependencies, database, queue or autoscaling.
 - Do not mutate the existing todo infrastructure or its Terraform state.
 - Project is `fullstack-sandbox-tylervsd`; ceiling is $20/month for the proposed
-  incremental IVR cloud resources. Hostname/network remain inputs; propose
+  incremental IVR cloud resources. Hostname is `ivr.tylervallillee.info`, using
+  the learner's existing DNS provider. Network remains an input; propose
   us-west1/us-west1-a and e2-micro. Confirm regional pricing and memory fit.
 - Obtain a concrete resource/cost approval before provisioning; no guessed targets.
 - Cloud delivery, speech recognition, and learner acceptance are separate outcomes.

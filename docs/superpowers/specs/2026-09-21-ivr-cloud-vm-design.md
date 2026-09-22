@@ -54,7 +54,10 @@ Before provisioning resolve these explicit inputs with the learner:
 - Project: `fullstack-sandbox-tylervsd`, matching the active gcloud configuration
   and the learner's existing fullstack sandbox selection. Verify billing/IAM before provisioning.
 - Region/zone; propose us-west1/us-west1-a, subject to permissions and availability.
-- A learner-controlled DNS hostname and permission to point its A record at the VM.
+- Hostname: `ivr.tylervallillee.info`, selected by the learner, who owns
+  `tylervallillee.info` at Namecheap. Public DNS returned NXDOMAIN for the
+  subdomain on 2026-09-21; recheck before creating its A record. Keep DNS at
+  the existing provider; no domain transfer or Cloud DNS zone is needed.
 - Budget ceiling: $20/month, supplied by the learner. Treat this as incremental
   IVR cloud spend; existing sandbox services and Telnyx usage are not included
   in that assumption. Confirm scope before provisioning if a total-project cap
@@ -83,6 +86,13 @@ only for the tagged IVR VM; 80 serves certificate validation/HTTPS redirection.
 Proxy only POST `/webhooks/client` and `/webhooks/test-ivr`; reject other paths
 and methods. The Python listener remains `127.0.0.1:8010`; never expose 8010,
 control sockets, docs or health routes publicly.
+
+After reserving the VM address, create an A record with host `ivr`, value equal
+to that static IPv4 address, and automatic TTL at the existing DNS provider.
+Do not add an AAAA record without configured IPv6 ingress. Recheck for existing
+records before writing; do not overwrite unrelated domain records.
+The selected callback URLs are `https://ivr.tylervallillee.info/webhooks/client`
+and `https://ivr.tylervallillee.info/webhooks/test-ivr`.
 
 Admin access uses IAP SSH and OS Login, with the narrowly scoped SSH firewall
 source and IAM permissions required by Google. No public all-source SSH rule.
