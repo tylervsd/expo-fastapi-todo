@@ -344,11 +344,22 @@ Use the existing stage timeout; this example needs no new configuration.
 
 ```python
 def test_language_prompt():
-    assert recognize("language", "Press one for English.", "000123456") == ("complete", "1")
-    assert recognize("language", "Press 1 for English.", "000123456") == ("complete", "1")
+    assert recognize("language", "Press one for English.", "000123456") == (
+        "complete",
+        "1",
+    )
+    assert recognize("language", "Press 1 for English.", "000123456") == (
+        "complete",
+        "1",
+    )
     assert recognize("language", "Press one for", "000123456") == ("pending", None)
-    assert recognize("language", "Press 2 for English.", "000123456") == ("invalid", "unexpected_menu")
-    assert recognize("language", "Press 1 for English. Press 2 for English.", "000123456") == ("invalid", "unexpected_menu")
+    assert recognize("language", "Press 2 for English.", "000123456") == (
+        "invalid",
+        "unexpected_menu",
+    )
+    assert recognize(
+        "language", "Press 1 for English. Press 2 for English.", "000123456"
+    ) == ("invalid", "unexpected_menu")
 ```
 
 Run them first and observe the unknown-stage failure. Add the new signature
@@ -358,8 +369,13 @@ alongside the existing `_STAGE_SIGNS` entries and add a dedicated choice pattern
 # Proposed additions in speech.py, near the existing stage signs/patterns:
 _STAGE_SIGNS["language"] = _compiled(("for", "english"))
 _LANGUAGE_ANY = re.compile(
-    r"(?<![a-z0-9])press" + _SEP + r"([a-z0-9]+)" + _SEP
-    + r"for" + _SEP + r"english(?![a-z0-9])"
+    r"(?<![a-z0-9])press"
+    + _SEP
+    + r"([a-z0-9]+)"
+    + _SEP
+    + r"for"
+    + _SEP
+    + r"english(?![a-z0-9])"
 )
 ```
 
