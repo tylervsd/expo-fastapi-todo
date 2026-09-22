@@ -1,0 +1,12 @@
+ivr.tylervallillee.info {
+    @webhooks {
+        method POST
+        path /webhooks/client /webhooks/test-ivr
+    }
+    handle @webhooks {
+        reverse_proxy 127.0.0.1:8010
+    }
+    handle {
+        respond 404
+    }
+}

@@ -1,0 +1,28 @@
+[Unit]
+Description=IVR diagnostic webhook server
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+User=ivr
+Group=ivr
+WorkingDirectory=/opt/ivr/current
+EnvironmentFile=/etc/ivr/ivr.env
+ExecStart=/opt/ivr/current/.venv/bin/python cloud_runner.py serve
+RuntimeDirectory=ivr
+RuntimeDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=60
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/run/ivr
+Environment=PYTHONDONTWRITEBYTECODE=1
+
+[Install]
+WantedBy=multi-user.target
