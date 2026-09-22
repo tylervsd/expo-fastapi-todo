@@ -1,6 +1,8 @@
 # IVR Lesson 4: a value-or-error contract
 
-**Date:** 2026-09-22. **Status:** Drafted for learner review, with the implementation plan at the learner's request. Planning only; no implementation, deployment, live calls, or lesson acceptance. No subagents used.
+**Date:** 2026-09-22. **Status:** Implemented and verified offline: 422 tests passed; Ruff check and formatting passed, with two existing upstream deprecation warnings. Live verification and learner acceptance remain pending. Implementation and final author review used no subagents, as explicitly requested. No deployment or paid calls were performed.
+
+**Walkthrough:** [Lesson 4](../../../spikes/ivr/lessons/04-value-or-error.md).
 
 **Related:** [Curriculum](../../ivr-learning-plan.md), [implementation plan](../plans/2026-09-22-ivr-04-value-or-error.md), [Lesson 3 walkthrough](../../../spikes/ivr/lessons/03-automated-caller.md).
 
@@ -37,7 +39,7 @@ A general English-number library or LLM would accept more speech but adds depend
 
 ## Amount grammar
 
-`parse_amount(text: str) -> str` in `speech.py` accepts exactly one complete result announcement, anchored by “Your requested value is”. It returns a two-place decimal string, or raises `ValueError("result_unrecognized")`. Case, whitespace, terminal sentence punctuation, and hyphens between number words are normalized. Do not strip arbitrary words, signs, or decimal punctuation.
+`parse_amount(text: str) -> str` in `speech.py` accepts exactly one complete result announcement, anchored by “Your requested value is”. It returns a two-place decimal string, or raises `ValueError("result_unrecognized")`. Case, whitespace, terminal sentence punctuation, and hyphens between number words are normalized. A sentence boundary after “dollar(s)” before “and” may separate final transcript fragments; preserve the incomplete dollar fragment until cents arrive. Do not strip arbitrary words, signs, or decimal punctuation.
 
 Supported body forms:
 
@@ -120,4 +122,4 @@ Live acceptance: on the selected existing local or cloud path, capture one `1425
 
 ## Review record
 
-Author self-review checked existing call sites (`recognize`, `ClientFlow`, `Caller`, local CLI, cloud Control), fixture amount bounds, cleanup retention, curriculum coverage, and prior lesson conventions. The five-second window and cloud runner are existing code to extend, not new infrastructure. No independent review or live validation claimed. Implementation remains pending review of these artifacts.
+Author self-review checked existing call sites (`recognize`, `ClientFlow`, `Caller`, local CLI, cloud Control), fixture amount bounds, cleanup retention, curriculum coverage, and prior lesson conventions. The five-second window and cloud runner are existing code to extend, not new infrastructure. No independent review or live validation claimed. Final author review added regressions for punctuated dollar/cents fragmentation, preserving the exit code on interruption after a decision, and distinguishing internal dial errors. All three failed before their fixes and passed afterward. Implementation remains on the lesson branch for the live learner checkpoint.

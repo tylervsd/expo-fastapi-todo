@@ -1642,7 +1642,8 @@ def test_parser_diagnostics_do_not_log_speech(caplog):
         ),
         now=1002,
     )
-    assert any('"parser": "pending"' in r.getMessage() for r in caplog.records)
+    assert flow.parser_status == "pending"
+    assert not caplog.records
     assert "SECRET_SENTINEL" not in caplog.text
 
 
@@ -1808,3 +1809,100 @@ def test_public_error_mapping():
         "code": "internal_error",
         "stage": "startup",
     }
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"), [(None, False), ("0", False), ("1", True)]
+)
+def test_debug_setting(monkeypatch, raw, expected):
+    monkeypatch.setenv("TELNYX_API_KEY", "key")
+    monkeypatch.setenv("IVR_CLIENT_CONNECTION_ID", "app")
+    monkeypatch.setenv("IVR_CLIENT_FROM_NUMBER", "+12025550101")
+    monkeypatch.setenv("IVR_CLIENT_TO_NUMBER", "+12025550102")
+    monkeypatch.delenv("IVR_CLIENT_DEBUG_TRANSCRIPTS", raising=False)
+    if raw is not None:
+        monkeypatch.setenv("IVR_CLIENT_DEBUG_TRANSCRIPTS", raw)
+    assert load_client_settings().debug_transcripts is expected
+
+
+@pytest.mark.parametrize("raw", ["", "true", "2"])
+def test_invalid_debug_setting(monkeypatch, raw):
+    for key, value in VALID.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("IVR_CLIENT_DEBUG_TRANSCRIPTS", raw)
+    with pytest.raises(RuntimeError, match="Invalid client configuration"):
+        load_client_settings()
+
+
+@pytest.mark.parametrize("debug", [False, True])
+def test_correlated_trace_and_debug_privacy(caplog, debug):
+    async def exercise():
+        harness = _CallerHarness(debug_transcripts=debug)
+        await harness.start_and_bind()
+        await harness.caller.accept(_canswered(harness))
+        await harness.caller.accept(
+            _ctranscript(harness, "SECRET_SENTINEL zero seven four two 000123456")
+        )
+        await harness.caller.accept(_changup(harness))
+        await harness.drain()
+        records = [
+            json.loads(r.getMessage()) for r in caplog.records if r.name == "ivr.client"
+        ]
+        assert all("run_id" in r and "elapsed" in r for r in records)
+        transitions = [r for r in records if "previous_stage" in r]
+        assert any(r["stage"] == "welcome" for r in transitions)
+        bound = [r for r in records if r.get("call_ref")]
+        assert bound and all(
+            len(r["call_ref"]) == 12 and len(r["leg_ref"]) == 12 for r in bound
+        )
+        assert any("final" in r for r in records) is debug
+        assert any(r.get("parser") == "pending" for r in records) is debug
+        for secret in (
+            "SECRET_SENTINEL",
+            "zero seven four two",
+            "000123456",
+            "client-call",
+            "client-leg",
+            "test-api-key",
+        ):
+            assert secret not in caplog.text
+        await harness.close()
+
+    _run(exercise)
+
+
+def test_internal_dial_failure_remains_distinct_from_provider_failure():
+    async def exercise():
+        harness = _CallerHarness()
+
+        async def broken(request):
+            raise RuntimeError("private-message")
+
+        harness.caller.dial = broken
+        await harness.caller.start()
+        await harness.drain()
+        harness.clock.advance(15)
+        await harness.caller.tick()
+        await harness.drain()
+        assert harness.caller.result == {
+            "status": "error",
+            "code": "internal_error",
+            "stage": "dialing",
+        }
+
+    _run(exercise)
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_split_result_cents_after_hangup(partial):
+    flow, events = _flow(), _Builder()
+    flow.stage = "result"
+    _say(flow, events, "Your requested value is one dollar", now=1001, offset=1)
+    flow.handle(events.event("call.hangup", offset=2), now=1002)
+    _say(flow, events, "and five cents.", now=1003, offset=3, final=not partial)
+    flow.expire(now=1007)
+    assert flow.result == (
+        {"status": "error", "code": "result_unrecognized", "stage": "result"}
+        if partial
+        else {"status": "success", "value": "1.05", "currency": "USD"}
+    )

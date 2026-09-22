@@ -249,3 +249,32 @@ def test_failure_paths_emit_one_record(fake_uvicorn, monkeypatch, capsys, mode):
     assert code == (0 if mode == "cleanup" else 1)
     assert result["status"] == ("success" if mode == "cleanup" else "error")
     assert "secret-exception-token" not in out + err
+
+
+def test_interrupt_after_decision_preserves_result_exit(
+    fake_uvicorn, monkeypatch, capsys
+):
+    from types import SimpleNamespace
+
+    fake = FakeCaller()
+    decided = fake.result
+    fake.result = None
+    fake.flow = SimpleNamespace(result=decided, outcome="completed", stage="hanging_up")
+
+    async def start():
+        fake.starts += 1
+
+    fake.start = start
+    _install_caller(monkeypatch, "client", fake)
+
+    async def exercise():
+        task = asyncio.create_task(caller.run_call("client", ".env"))
+        while not fake.starts:
+            await asyncio.sleep(0)
+        task.cancel()
+        assert await task == 0
+
+    asyncio.run(exercise())
+    out, _ = capsys.readouterr()
+    assert len(out.splitlines()) == 1
+    assert json.loads(out) == decided

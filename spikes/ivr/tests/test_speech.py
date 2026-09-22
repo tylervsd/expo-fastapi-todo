@@ -387,3 +387,12 @@ def test_result_assembly():
         "invalid",
         "fixture_rejection",
     )
+
+
+def test_dollars_fragment_waits_for_cents_even_with_sentence_punctuation():
+    prefix = "Your requested value is one dollar."
+    assert recognize("result", prefix, "000123456") == ("pending", None)
+    assert recognize("result", prefix + " And five cents.", "000123456") == (
+        "complete",
+        "1.05",
+    )

@@ -116,6 +116,10 @@ async def run_call(app_name: str, env_file: str) -> int:
         exit_code = 130
         flow = getattr(caller, "flow", None)
         payload = getattr(caller, "result", None) or getattr(flow, "result", None)
+        if payload is not None:
+            outcome = getattr(flow, "outcome", None) or caller.outcome or "unknown"
+            exit_code = 0 if payload["status"] == "success" else 1
+            return exit_code
         raise
     finally:
         flow = getattr(caller, "flow", None)

@@ -200,9 +200,10 @@ transcription failures remain documented as a reliability limitation.
 
 **Planning:** [Spec](superpowers/specs/2026-09-22-ivr-04-value-or-error-design.md) and
 [implementation plan](superpowers/plans/2026-09-22-ivr-04-value-or-error.md).
-Drafted 2026-09-22 on `codex/ivr-04-value-or-error`; implementation, live
-verification, and learner acceptance remain pending. Reuses the existing IVR
-worktree and the merged Lesson 3 local/cloud caller.
+Implemented 2026-09-22 on `codex/ivr-04-value-or-error`: 422 tests and Ruff
+passed. [Walkthrough](../spikes/ivr/lessons/04-value-or-error.md). Live
+verification and learner acceptance remain pending. Reuses the existing IVR
+worktree and the merged Lesson 3 local/cloud caller; no subagents used.
 
 **Learn:** separate recognizing a result from successfully completing transport;
 distinguish failure to understand speech from a provider or call failure.
@@ -211,16 +212,16 @@ distinguish failure to understand speech from a provider or call failure.
 phrasing and numeric transcript equivalents, plus the terminal output contract.
 No general English-number framework or LLM is required for this narrow grammar.
 
-- [ ] Check `1425.30`, zero, and a changed amount offline; reject missing amounts,
+- [x] Check `1425.30`, zero, and a changed amount offline; reject missing amounts,
   unsupported wording, and conflicting amounts in the result prompt.
-- [ ] Print a success only after a complete, unambiguous result is recognized.
-- [ ] Return explicit errors for unrecognized challenge, unexpected menu,
+- [x] Print a success only after a complete, unambiguous result is recognized.
+- [x] Return explicit errors for unrecognized challenge, unexpected menu,
   ID mismatch, fixture rejection, unrecognized result, timeout, early hangup,
   and provider failure.
-- [ ] Account for a final transcript arriving after the hangup event: allow a
+- [x] Account for a final transcript arriving after the hangup event: allow a
   bounded finalization window, initially five seconds, within the overall deadline.
   Preserve an already completed result when late terminal events arrive.
-- [ ] Emit a concise trace with local run ID, call IDs, state transitions, and
+- [x] Emit a concise trace with local run ID, call IDs, state transitions, and
   elapsed times. Make sanitized transcription diagnostics an explicit debug option.
 - [ ] Verify stdout, stderr, and exit status for one live success and one failure.
 
@@ -271,7 +272,7 @@ it is not a production reliability estimate.
 | 1. Connectivity | 41 tests, Ruff, loopback smoke checks passed | Completion reported by learner | Signed off 2026-09-21 |
 | 2. Test IVR | 168 tests and Ruff passed | Successful calls reported; intermittent delivery failures observed | Signed off 2026-09-21 |
 | 3. Automated caller | 369 tests and Ruff passed | Normal and leading-zero calls completed; wrong-ID rejected; intermittent STT failures recorded | Signed off 2026-09-22 |
-| 4. Value or error | Not run | Not run | Pending |
+| 4. Value or error | 422 tests and Ruff passed | Not run | Pending |
 | 5. Reliability drills | Not run | Not run | Pending |
 
 The two final deliverables are the independently runnable flow client and test

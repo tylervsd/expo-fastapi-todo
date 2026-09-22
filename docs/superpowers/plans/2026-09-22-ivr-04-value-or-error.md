@@ -1,6 +1,6 @@
 # IVR Lesson 4 Value-or-Error Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox syntax for tracking. Execution method has not been selected; planning used no subagents. This document does not authorize deployment or paid calls.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox syntax for tracking. The learner selected direct execution and prohibited all subagents; implementation and final review were performed by the author. This document does not authorize deployment or paid calls.
 
 **Goal:** Return exactly one speech-derived USD amount or explicit error from the existing IVR caller.
 
@@ -10,7 +10,7 @@
 
 **Spec:** [Lesson 4 design](../specs/2026-09-22-ivr-04-value-or-error-design.md).
 
-**Status:** Planning complete; implementation and live acceptance pending. Baseline: 369 tests passed, Ruff check and format passed, two existing upstream warnings.
+**Status:** Implemented 2026-09-22; 422 tests passed, Ruff check and format passed, two existing upstream warnings. Both CLI help commands and document links verified. No subagents, deployment, or paid calls. Live acceptance pending. [Walkthrough](../../../spikes/ivr/lessons/04-value-or-error.md). Baseline was 369 tests.
 
 ## Global Constraints
 
@@ -64,7 +64,7 @@ Do not split the existing controller or add a result framework. Read `_evaluate`
 
 **Interfaces:** Produce `parse_amount(text: str) -> str`, raising `ValueError("result_unrecognized")`; preserve `recognize(stage: str, text: str, synthetic_id: str) -> tuple[str, str | None]`. Result completion now carries an amount string.
 
-- [ ] Add a focused parameterized check with exact values, using the existing pytest module:
+- [x] Add a focused parameterized check with exact values, using the existing pytest module:
 
 ```python
 @pytest.mark.parametrize(("body", "expected"), [
@@ -93,8 +93,8 @@ def test_unsupported_amount(body):
         parse_amount(f"Your requested value is {body}.")
 ```
 
-- [ ] Run `.venv/bin/python -m pytest tests/test_speech.py -q`; confirm the new missing-parser failures.
-- [ ] Implement anchored full-body parsing with separate decimal and dollars/cents matches. Normalize only case, whitespace, inter-word hyphens, and terminal punctuation. Keep decimal points and signs intact for validation. Use explicit zero–nineteen/tens tables and bounded hundreds/thousands decomposition; reject extra scale tokens, zero tails, and residual words. Implement the arithmetic as:
+- [x] Run `.venv/bin/python -m pytest tests/test_speech.py -q`; confirm the new missing-parser failures.
+- [x] Implement anchored full-body parsing with separate decimal and dollars/cents matches. Normalize only case, whitespace, inter-word hyphens, and terminal punctuation. Keep decimal points and signs intact for validation. Use explicit zero–nineteen/tens tables and bounded hundreds/thousands decomposition; reject extra scale tokens, zero tails, and residual words. Implement the arithmetic as:
 
 ```python
 value = Decimal(dollars) + Decimal(cents) / Decimal(100)
@@ -102,8 +102,8 @@ return format(value, ".2f")
 ```
 
   For decimal input, validate the full numeric regex and comma grouping before removing commas, enforce 0–9999.99, and format Decimal directly. Never call float or import `fixture`.
-- [ ] Update result recognition: split complete anchored announcements, parse each full body, require one distinct normalized value; return pending for an unfinished suffix and invalid for a completed unsupported body. Retain the full bounded stage buffer so a later segment can finish it. One complete announcement followed by another incomplete announcement is pending, not success.
-- [ ] Add recognizer assertions for prefix-only, split cents, same-value repeated announcements, different-value announcements, trailing unexplained numeric text, case/hyphen normalization, and fixture rejection priority. Representative checks:
+- [x] Update result recognition: split complete anchored announcements, parse each full body, require one distinct normalized value; return pending for an unfinished suffix and invalid for a completed unsupported body. Retain the full bounded stage buffer so a later segment can finish it. One complete announcement followed by another incomplete announcement is pending, not success.
+- [x] Add recognizer assertions for prefix-only, split cents, same-value repeated announcements, different-value announcements, trailing unexplained numeric text, case/hyphen normalization, and fixture rejection priority. Representative checks:
 
 ```python
 assert recognize("result", "Your requested value is", "000123456") == ("pending", None)
@@ -111,8 +111,8 @@ assert recognize("result", "Your requested value is zero dollars and zero cents.
 assert recognize("result", "Your requested value is 1.00. Your requested value is 2.00.", "000123456") == ("invalid", "result_unrecognized")
 ```
 
-- [ ] In tests only, compare fixture-generated prompts at dollar boundaries `0, 1, 19, 20, 21, 99, 100, 101, 999, 1000, 1001, 9999`, crossed with cents `0, 1, 9, 10, 19, 20, 21, 99`. This checks the shared documented grammar without coupling client runtime to the fixture.
-- [ ] Run focused tests and Ruff; commit `feat: parse documented IVR result amounts` using explicit paths.
+- [x] In tests only, compare fixture-generated prompts at dollar boundaries `0, 1, 19, 20, 21, 99, 100, 101, 999, 1000, 1001, 9999`, crossed with cents `0, 1, 9, 10, 19, 20, 21, 99`. This checks the shared documented grammar without coupling client runtime to the fixture.
+- [x] Run focused tests and Ruff; commit `feat: parse documented IVR result amounts` using explicit paths.
 
 ## Task 2 — Finalize one immutable value or error
 
@@ -120,8 +120,8 @@ assert recognize("result", "Your requested value is 1.00. Your requested value i
 
 **Interfaces:** Consume `recognize` from Task 1. Add `ClientFlow.result` and `Caller.result`, each `dict[str, str] | None`; add `failure_stage: str | None` to the flow. Provide `error_result(reason: str, stage: str) -> dict[str, str]` in `client.py` for shared mapping. Keep `Caller.done`, `outcome`, and `exit_code` for compatibility.
 
-- [ ] Update `HAPPY_TEXTS[-1]` to the full fixture phrase ending “dollars and thirty cents.” Replace assertions that accept “available” or dollars-only as success. Keep the original prompt-marker tests as negative cases.
-- [ ] Add a fake-clock check with the existing `_flow`, `_Builder`, `_drive_happy`, and `_say` helpers:
+- [x] Update `HAPPY_TEXTS[-1]` to the full fixture phrase ending “dollars and thirty cents.” Replace assertions that accept “available” or dollars-only as success. Keep the original prompt-marker tests as negative cases.
+- [x] Add a fake-clock check with the existing `_flow`, `_Builder`, `_drive_happy`, and `_say` helpers:
 
 ```python
 flow, events = _flow(), _Builder()
@@ -137,10 +137,10 @@ flow.handle(events.event("call.hangup", offset=offset + 1), now=now + 6)
 assert flow.result == saved
 ```
 
-- [ ] Add sibling replay checks: complete amount after hangup; zero; conflicting second amount within the window; cents split across final events; partial text cannot finish an amount; marker-only ends `result_unrecognized`; hangup before result ends `early_hangup`; foreign leg cannot finish; duplicate hangup cannot extend. Reuse `_CallerHarness` for identity tests, not only direct flow tests.
-- [ ] Add exact overall-boundary checks with started-at 1000 and timeout 180: result hangup at 1178 has finalization deadline 1180, not 1183; final text at 1179.999 can contribute, at 1180 cannot. A candidate at deadline survives; missing text becomes `result_unrecognized` if hangup was already observed. Without hangup, missing text yields `overall_timeout`.
-- [ ] Run `.venv/bin/python -m pytest tests/test_client.py -q`; inspect the new failures.
-- [ ] Retain result buffers/candidate until finalization. Remove the result-checkpoint shortcut in `_on_transcript`; prefix recognition alone must never set success. At the event gate and watchdog, calculate the boundary from monotonic times:
+- [x] Add sibling replay checks: complete amount after hangup; zero; conflicting second amount within the window; cents split across final events; partial text cannot finish an amount; marker-only ends `result_unrecognized`; hangup before result ends `early_hangup`; foreign leg cannot finish; duplicate hangup cannot extend. Reuse `_CallerHarness` for identity tests, not only direct flow tests.
+- [x] Add exact overall-boundary checks with started-at 1000 and timeout 180: result hangup at 1178 has finalization deadline 1180, not 1183; final text at 1179.999 can contribute, at 1180 cannot. A candidate at deadline survives; missing text becomes `result_unrecognized` if hangup was already observed. Without hangup, missing text yields `overall_timeout`.
+- [x] Run `.venv/bin/python -m pytest tests/test_client.py -q`; inspect the new failures.
+- [x] Retain result buffers/candidate until finalization. Remove the result-checkpoint shortcut in `_on_transcript`; prefix recognition alone must never set success. At the event gate and watchdog, calculate the boundary from monotonic times:
 
 ```python
 finalize_at = min(
@@ -150,7 +150,7 @@ finalize_at = min(
 ```
 
   Only calculate this once hangup exists. At/after the boundary, finalize before consuming another event. Before hangup use existing stage and overall deadlines. Once hangup exists, ignore stage deadline and cap by overall deadline. Re-evaluate the retained complete buffer at finalization; pending/invalid becomes `result_unrecognized`. Without hangup at a recognition deadline, preserve a complete candidate and initiate bounded cleanup, or preserve the timeout failure when incomplete.
-- [ ] Capture `failure_stage` before `_hangup` changes stage. Implement the spec's public error mapping in `error_result`, with a fixed allowlist for stages and an `internal_error` fallback. Map each existing outcome explicitly; keep internal reasons separate. Validate representative mappings:
+- [x] Capture `failure_stage` before `_hangup` changes stage. Implement the spec's public error mapping in `error_result`, with a fixed allowlist for stages and an `internal_error` fallback. Map each existing outcome explicitly; keep internal reasons separate. Validate representative mappings:
 
 ```python
 assert error_result("dial_rejected", "dialing") == {
@@ -161,10 +161,10 @@ assert error_result("transcript_order", "result") == {
 }
 ```
 
-- [ ] Set the terminal snapshot once, before cleanup; copy it from flow to controller in `_finalize`. `_finish` creates mapped errors for pre-bind failures. `_clear_sensitive` retains only sanitized result/diagnostic fields. Derive exit 0 only from a success snapshot, never `checkpoint_reached`. Keep `outcome="completed"` for success compatibility.
-- [ ] Audit `_fail`, `command_failed`, `stop`, `expire`, `_finish`, `_finalize`, and `close`: teardown failure cannot overwrite a decided result or original error. Failure to hang up still logs a cleanup reason. Bounded cleanup settles `done`; ended calls cannot reopen. Keep active command failures before a decision as `provider_failure`.
-- [ ] Extend harness checks to cover successful speech plus failed hangup, failure plus cleanup timeout, duplicate `_finalize`/`close`, dial rejection before identity, out-of-order finals, and final result survival after identity/transcript clearing. Assert no extra DTMF and unchanged snapshot.
-- [ ] Run all IVR tests and Ruff; commit `feat: finalize one IVR value or error within call deadlines`.
+- [x] Set the terminal snapshot once, before cleanup; copy it from flow to controller in `_finalize`. `_finish` creates mapped errors for pre-bind failures. `_clear_sensitive` retains only sanitized result/diagnostic fields. Derive exit 0 only from a success snapshot, never `checkpoint_reached`. Keep `outcome="completed"` for success compatibility.
+- [x] Audit `_fail`, `command_failed`, `stop`, `expire`, `_finish`, `_finalize`, and `close`: teardown failure cannot overwrite a decided result or original error. Failure to hang up still logs a cleanup reason. Bounded cleanup settles `done`; ended calls cannot reopen. Keep active command failures before a decision as `provider_failure`.
+- [x] Extend harness checks to cover successful speech plus failed hangup, failure plus cleanup timeout, duplicate `_finalize`/`close`, dial rejection before identity, out-of-order finals, and final result survival after identity/transcript clearing. Assert no extra DTMF and unchanged snapshot.
+- [x] Run all IVR tests and Ruff; commit `feat: finalize one IVR value or error within call deadlines`.
 
 ## Task 3 — Deliver the contract through local and cloud commands
 
@@ -172,7 +172,7 @@ assert error_result("transcript_order", "result") == {
 
 **Interfaces:** Consume `Caller.result`, `Caller.exit_code`, `Caller.done`, and `error_result`. Preserve `run_call(app_name: str, env_file: str) -> int`. Extend cloud socket/CLI command choices with `result`.
 
-- [ ] Extend `FakeCaller` to expose a terminal result. Replace stdout-empty assertions with exactly-one-line JSON assertions:
+- [x] Extend `FakeCaller` to expose a terminal result. Replace stdout-empty assertions with exactly-one-line JSON assertions:
 
 ```python
 out, err = capsys.readouterr()
@@ -182,10 +182,10 @@ assert err.strip()
 ```
 
   For the existing stage-timeout case use `{"status":"error","code":"stage_timeout","stage":"challenge"}` and assert exit 1. Constructor/lifespan failure expects `startup_failed`/`startup`, one line, and zero dials. Add start exception, unexpected server stop, cleanup exception, and cancellation cases. Interruption emits `interrupted`, cleans up, then propagates cancellation; the CLI maps user interrupt to exit 130 without a traceback or second record.
-- [ ] Run `.venv/bin/python -m pytest tests/test_caller.py -q` to observe failures.
-- [ ] Give `run_call` one terminal payload variable, initialized to `error_result("server_startup_failed", "startup")`. Update it on each existing failure path or from the completed caller. Keep one `print(json.dumps(payload))` at the outer finalization boundary after bounded cleanup. Nest cleanup in `try/finally` so shutdown exceptions cannot suppress output or override the payload. Return the corresponding code; avoid stale `exit_code` in early-return diagnostics. Keep cancellation cleanup shielded and bounded.
-- [ ] Test the cloud protocol with existing `Writer`/`Control` fake helpers: `result` before start and during a call returns `result_not_ready` without starting anything; after done returns the exact snapshot repeatedly; status includes `result`; start after completion remains restart-required. Existing invalid/oversized input, permissions, and no-auto-dial tests remain.
-- [ ] Extend only the existing command allowlist and status branch. The result branch uses:
+- [x] Run `.venv/bin/python -m pytest tests/test_caller.py -q` to observe failures.
+- [x] Give `run_call` one terminal payload variable, initialized to `error_result("server_startup_failed", "startup")`. Update it on each existing failure path or from the completed caller. Keep one `print(json.dumps(payload))` at the outer finalization boundary after bounded cleanup. Nest cleanup in `try/finally` so shutdown exceptions cannot suppress output or override the payload. Return the corresponding code; avoid stale `exit_code` in early-return diagnostics. Keep cancellation cleanup shielded and bounded.
+- [x] Test the cloud protocol with existing `Writer`/`Control` fake helpers: `result` before start and during a call returns `result_not_ready` without starting anything; after done returns the exact snapshot repeatedly; status includes `result`; start after completion remains restart-required. Existing invalid/oversized input, permissions, and no-auto-dial tests remain.
+- [x] Extend only the existing command allowlist and status branch. The result branch uses:
 
 ```python
 response = (
@@ -196,8 +196,8 @@ response = (
 ```
 
   Add `result` to argparse choices. `request("result")` exits 0 only for a success payload and 1 otherwise; status retains its query exit-0 semantics. Keep the existing five-second socket request bound; result retrieval does not block on call completion.
-- [ ] Add fake-socket request tests that assert one JSON line, matching exit status for success/error/not-ready, unchanged start/status behavior, and no socket request on `--help`. Update `SimpleNamespace` test callers with `result=None` so mocks preserve the new interface.
-- [ ] Run `.venv/bin/python -m pytest tests/test_caller.py tests/test_cloud_runner.py -q`, then all tests and Ruff. Commit `feat: expose IVR terminal JSON locally and over cloud control`.
+- [x] Add fake-socket request tests that assert one JSON line, matching exit status for success/error/not-ready, unchanged start/status behavior, and no socket request on `--help`. Update `SimpleNamespace` test callers with `result=None` so mocks preserve the new interface.
+- [x] Run `.venv/bin/python -m pytest tests/test_caller.py tests/test_cloud_runner.py -q`, then all tests and Ruff. Commit `feat: expose IVR terminal JSON locally and over cloud control`.
 
 ## Task 4 — Add safe correlated traces and the lesson checkpoint
 
@@ -205,8 +205,8 @@ response = (
 
 **Interfaces:** Add `ClientSettings.debug_transcripts: bool = False`, env `IVR_CLIENT_DEBUG_TRANSCRIPTS`; only `0` and `1` are accepted. Existing loader must convert it separately from `_INT_FIELDS` and reject any other value with the generic settings error.
 
-- [ ] Add settings cases for unset/0/1 and rejection of `true`, blank, and `2`. Add `caplog` checks for default trace fields and debug-only metadata. Seed raw call/control IDs, phone numbers, challenge digits, synthetic ID digits/words, API key, and transcript sentinel text; assert none appear in either mode.
-- [ ] Run focused settings/log tests to see failures. Extend `_log` with correlation references and stage transitions, using existing logger/run ID/clock. Hash identities while bound:
+- [x] Add settings cases for unset/0/1 and rejection of `true`, blank, and `2`. Add `caplog` checks for default trace fields and debug-only metadata. Seed raw call/control IDs, phone numbers, challenge digits, synthetic ID digits/words, API key, and transcript sentinel text; assert none appear in either mode.
+- [x] Run focused settings/log tests to see failures. Extend `_log` with correlation references and stage transitions, using existing logger/run ID/clock. Hash identities while bound:
 
 ```python
 call_ref = hashlib.sha256(identity.call_control_id.encode()).hexdigest()[:12]
@@ -214,14 +214,14 @@ leg_ref = hashlib.sha256(identity.call_leg_id.encode()).hexdigest()[:12]
 ```
 
   Cache only hashes through final log emission. Wrap existing flow event/watchdog/replay transitions with before/after-stage observations; do not create a new event bus or logging framework. Move unconditional per-transcript metadata behind the debug setting, with run ID and elapsed time. Emit only character/segment counts, ownership booleans, final flag, and parser status/reason. Never log tokenized or raw text. Preserve concise lifecycle/terminal default logs.
-- [ ] Add `.env.example` documentation:
+- [x] Add `.env.example` documentation:
 
 ```dotenv
 # Safe transcription metadata only; never prints transcript text.
 IVR_CLIENT_DEBUG_TRANSCRIPTS=0
 ```
 
-- [ ] Write the guide with prerequisites, small build steps, complete amount vs marker-only examples, result-versus-cleanup explanation, parser exercises, stdout/stderr/exit contract, and local/cloud alternatives. Explain why the five-second window was already present but now applies to every result and is capped by overall time. Include the exact offline commands and learner-operated local command:
+- [x] Write the guide with prerequisites, small build steps, complete amount vs marker-only examples, result-versus-cleanup explanation, parser exercises, stdout/stderr/exit contract, and local/cloud alternatives. Explain why the five-second window was already present but now applies to every result and is capped by overall time. Include the exact offline commands and learner-operated local command:
 
 ```sh
 uv run pytest -q
@@ -235,7 +235,7 @@ cat /tmp/ivr-result.json
 printf 'exit=%s\n' "$call_exit"
 ```
 
-- [ ] Document cloud retrieval separately from start acknowledgment, using the existing SSH-only runner after a separately authorized deployment:
+- [x] Document cloud retrieval separately from start acknowledgment, using the existing SSH-only runner after a separately authorized deployment:
 
 ```sh
 sudo -u ivr /opt/ivr/current/.venv/bin/python /opt/ivr/current/cloud_runner.py start
@@ -246,9 +246,9 @@ printf 'exit=%s\n' "$call_exit"
 ```
 
   Wait for status `done=true` before retrieving the terminal result. Explain `result_not_ready` and that querying never redials. Service logs contain the stderr trace; the result command prints the value/error and its exit status. Preserve existing restart/manual termination guidance.
-- [ ] Provide acceptance rows for normal `1425.30`, changed `17.42`, wrong-ID rejection, and every unsuccessful live attempt. Initialize live evidence “Not run” and learner acceptance “Pending”. Zero and unsupported wording are offline exercises. Show how to change only `IVR_RESULT_AMOUNT` for the fixture between calls, leaving client configuration untouched, and restore it afterward. Do not introduce a scenario switch solely for this lesson.
-- [ ] Update README/curriculum planning links and explain that local stdout-empty/checkpoint semantics are superseded once implementation passes. Preserve historical Lesson 3 evidence and observed STT limitations. Add a deployment-doc `result` command example without claiming it has been deployed.
-- [ ] Final verification from `spikes/ivr/`, then repository root:
+- [x] Provide acceptance rows for normal `1425.30`, changed `17.42`, wrong-ID rejection, and every unsuccessful live attempt. Initialize live evidence “Not run” and learner acceptance “Pending”. Zero and unsupported wording are offline exercises. Show how to change only `IVR_RESULT_AMOUNT` for the fixture between calls, leaving client configuration untouched, and restore it afterward. Do not introduce a scenario switch solely for this lesson.
+- [x] Update README/curriculum planning links and explain that local stdout-empty/checkpoint semantics are superseded once implementation passes. Preserve historical Lesson 3 evidence and observed STT limitations. Add a deployment-doc `result` command example without claiming it has been deployed.
+- [x] Final verification from `spikes/ivr/`, then repository root:
 
 ```sh
 uv run pytest -q
@@ -261,7 +261,7 @@ git diff --check
 git status --short --branch
 ```
 
-- [ ] Record actual offline results and commit the explicit changed paths as `docs: teach IVR value-or-error contract and acceptance`. Stop for learner review/live checkpoint; do not merge or begin Lesson 5.
+- [x] Record actual offline results and commit the explicit changed paths as `docs: teach IVR value-or-error contract and acceptance`. Stop for learner review/live checkpoint; do not merge or begin Lesson 5.
 
 ## Spec coverage and self-review
 
@@ -275,4 +275,17 @@ git status --short --branch
 | Correlation, metadata-only debug, privacy | 4 |
 | Walkthrough, truthful offline/live/learner records | 4 |
 
-Author self-review checked task interfaces, existing caller sites, grammar bounds, all curriculum Lesson 4 checkboxes, and boundary/failure checks. No provider schema changes are proposed; reverify official provider documentation only if implementation discovers a need to alter provider commands. No implementation, deployment, paid call, or independent review occurred during planning.
+Author self-review checked task interfaces, existing caller sites, grammar bounds, all curriculum Lesson 4 checkboxes, and boundary/failure checks. No provider schema changes are proposed; reverify official provider documentation only if implementation discovers a need to alter provider commands. No implementation, deployment, paid call, or independent review occurred during planning. Subsequent implementation followed the learner's direct-execution instruction; the final review was an author self-review, not an independent review.
+
+
+## Implementation review record — 2026-09-22
+
+- Amount-parser tests failed on the missing parser, then passed; fixture boundary checks cover the documented grammar without runtime fixture imports.
+- Terminal snapshot/deadline tests failed before implementation; the full suite reached 405 passing tests after the lifecycle change.
+- Local/cloud output tests failed before implementation; the full suite reached 409 passing tests after command integration.
+- Trace/debug settings tests failed before implementation; privacy and stage-correlation checks passed afterward.
+- Final author review reproduced and fixed three issues: punctuated dollar fragments were rejected before cents could arrive; interruption after a decided result kept the value but returned an interrupt exit status; unexpected dial exceptions were classified as provider failures. Each new regression failed before the fix; final suite: 422 passed.
+- Ruling: Direct author review replaces all reviewer dispatch because the user prohibited subagents. No independent-review claim.
+- Ruling: Normalize only the dollar/cents sentence boundary introduced by segmented final speech. Unsupported words and numeric punctuation remain strict; no general transcript cleanup was added.
+- Ruling: Preserve an already decided result's exit code if interruption arrives during cleanup. Before a decision, interruption still emits its error and propagates cancellation.
+- No deferred code findings. Live evidence and learner sign-off remain pending, and the branch/worktree are retained under the lesson checkpoint convention.

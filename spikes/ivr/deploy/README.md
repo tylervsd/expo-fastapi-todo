@@ -29,6 +29,24 @@ legs have ended and at least 60 seconds have elapsed, explicitly restart for a
 new call: `sudo systemctl restart ivr`. If termination is unconfirmed, inspect
 and end the remote call in Telnyx first. Restart loses all process-local state.
 
+## Lesson 4 result retrieval (requires deploying the Lesson 4 release)
+
+Lesson 4 has been verified offline; this document does not claim that release
+is deployed. After an explicitly started call reports `done=true` in `status`:
+
+```sh
+sudo -u ivr /opt/ivr/current/.venv/bin/python /opt/ivr/current/cloud_runner.py result
+call_exit=$?
+printf 'exit=%s\n' "$call_exit"
+```
+
+This read-only command prints terminal value/error JSON and exits 0 for success,
+1 for failure. Before completion it returns `result_not_ready`; it never starts
+another call. `status` retains its query exit-0 behavior and adds `result`, null
+until done. Results survive cleanup and repeated queries, but not service restart.
+Trace diagnostics remain in the journal; `IVR_CLIENT_DEBUG_TRANSCRIPTS=1` adds
+safe metadata only. See [Lesson 4](../lessons/04-value-or-error.md) for acceptance.
+
 ## Runtime and credentials
 
 Caddy proxies only POSTs to the two webhook paths. Uvicorn listens on loopback

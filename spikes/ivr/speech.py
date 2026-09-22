@@ -383,6 +383,8 @@ def parse_amount(text: str) -> str:
         raise ValueError("result_unrecognized")  # noqa: TRY004 — parser contract
     normalized = " ".join(re.sub(r"(?<=[a-z])-(?=[a-z])", " ", text.lower()).split())
     normalized = normalized.rstrip(".!?").strip()
+    # Final STT segments may punctuate the dollars/cents boundary.
+    normalized = re.sub(r"\b(dollars?)[.!?]\s+and\b", r"\1 and", normalized)
     match = re.fullmatch(r"your requested value is (.+)", normalized)
     if not match:
         raise ValueError("result_unrecognized")
@@ -413,8 +415,27 @@ def _recognize_result(text: str) -> tuple[str, str | None]:
         try:
             values.add(parse_amount(announcement))
         except ValueError:
-            if index == len(starts) - 1 and not announcement.endswith((".", "!", "?")):
-                return ("pending", None)
+            if index == len(starts) - 1:
+                if not announcement.endswith((".", "!", "?")):
+                    return ("pending", None)
+                body = (
+                    re.sub(r"^your\s+requested\s+value\s+is\b", "", announcement)
+                    .strip()
+                    .rstrip(".!?")
+                    .strip()
+                )
+                if not body:
+                    return ("pending", None)
+                fragment = re.fullmatch(r"(.+) dollars?(?: and(?: (.+))?)?", body)
+                if fragment:
+                    try:
+                        _integer(fragment[1].replace("-", " "), 9999)
+                        if fragment[2]:
+                            _integer(fragment[2].replace("-", " "), 99)
+                    except ValueError:
+                        pass
+                    else:
+                        return ("pending", None)
             return ("invalid", "result_unrecognized")
         if len(values) > 1:
             return ("invalid", "result_unrecognized")
