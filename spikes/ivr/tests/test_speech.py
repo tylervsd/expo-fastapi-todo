@@ -272,3 +272,19 @@ def test_reasons_are_sanitized():
         status, reason = recognize(stage, "Business requests are not supported.", "x")
         assert status == "invalid"
         assert evil not in (reason or "")
+
+
+def test_telnyx_plural_pounds_prompt_ending():
+    assert recognize(
+        "identifier", "Enter your 9 digit personal ID followed by pounds.", "000123456"
+    ) == ("complete", "000123456#")
+    assert recognize(
+        "challenge",
+        "Your verification code is zero seven four two. Enter the code followed by pounds.",
+        "000123456",
+    ) == ("complete", "0742#")
+    assert recognize(
+        "identifier",
+        "Enter your 9 digit personal ID followed by poundsworth.",
+        "000123456",
+    ) == ("pending", None)
