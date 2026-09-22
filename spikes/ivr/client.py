@@ -70,7 +70,7 @@ class ClientSettings:
     )
 
     transcription_track: str = field(
-        default="outbound", metadata={"env": "IVR_CLIENT_TRANSCRIPTION_TRACK"}
+        default="inbound", metadata={"env": "IVR_CLIENT_TRANSCRIPTION_TRACK"}
     )
 
     def __post_init__(self):
@@ -398,11 +398,10 @@ def _dial_fields(settings):
         "time_limit_secs": settings.call_timeout_seconds,
         "transcription": True,
         "transcription_config": {
-            "transcription_engine": "Google",
+            "transcription_engine": "Telnyx",
             "transcription_engine_config": {
-                "transcription_engine": "Google",
+                "transcription_engine": "Telnyx",
                 "language": "en",
-                "interim_results": False,
             },
             "transcription_tracks": settings.transcription_track,
         },

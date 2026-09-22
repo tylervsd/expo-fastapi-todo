@@ -164,13 +164,12 @@ def _dial_fields():
         "time_limit_secs": 180,
         "transcription": True,
         "transcription_config": {
-            "transcription_engine": "Google",
+            "transcription_engine": "Telnyx",
             "transcription_engine_config": {
-                "transcription_engine": "Google",
+                "transcription_engine": "Telnyx",
                 "language": "en",
-                "interim_results": False,
             },
-            "transcription_tracks": "outbound",
+            "transcription_tracks": "inbound",
         },
     }
 
@@ -208,7 +207,7 @@ def test_dial_success_fixed_origin_single_submission():
         body = json.loads(seen[0].content)
         assert body["connection_id"] == "app-id"
         assert body["transcription"] is True
-        assert body["transcription_config"]["transcription_tracks"] == "outbound"
+        assert body["transcription_config"]["transcription_tracks"] == "inbound"
         assert body["command_id"] == request.command_id
         assert body["client_state"] == request.client_state
         assert seen[0].content == request.body

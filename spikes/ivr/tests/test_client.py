@@ -1634,7 +1634,7 @@ def test_transcription_track_setting(monkeypatch):
     settings = _settings()
     assert (
         _dial_fields(settings)["transcription_config"]["transcription_tracks"]
-        == "outbound"
+        == "inbound"
     )
     assert (
         _dial_fields(replace(settings, transcription_track="inbound"))[
@@ -1660,3 +1660,19 @@ def test_parser_diagnostics_do_not_log_speech(caplog):
     )
     assert any('"parser": "pending"' in r.getMessage() for r in caplog.records)
     assert "SECRET_SENTINEL" not in caplog.text
+
+
+def test_dial_uses_telnyx_inbound_without_google_options():
+    from client import ClientSettings, _dial_fields
+
+    config = _dial_fields(ClientSettings("key", "app", "+12025550101", "+12025550102"))[
+        "transcription_config"
+    ]
+    assert config == {
+        "transcription_engine": "Telnyx",
+        "transcription_engine_config": {
+            "transcription_engine": "Telnyx",
+            "language": "en",
+        },
+        "transcription_tracks": "inbound",
+    }
