@@ -114,3 +114,22 @@ unsigned webhook requests all returned 401; `/status` returned 404. These checks
 used curl `--resolve` with the reserved IP because local DNS was still pending;
 no certificate verification was bypassed. Google public DNS already resolved
 the A record. Telnyx callback cutover and a real call remain unverified.
+
+## Transcription diagnostics — 2026-09-21
+
+Google/inbound with interim results produced only partial events. Disabling
+interim results produced no transcription events, both at dial time and with
+an accepted explicit transcription_start command after answer.
+
+The same explicit-start probe using Telnyx/inbound returned final results and
+passed welcome, challenge and menu in one call, then stalled at identifier.
+A targeted probe confirmed the engine can transcribe "followed by pound" as
+"followed by pounds". Release `328cbb9` narrowly normalizes that complete phrase;
+it does not relax numeric validation or accept interim results. Regression test
+failed before the fix; all 365 tests and Ruff passed afterward.
+
+The full-flow retest with that fix stalled earlier at challenge (`pending`), so
+end-to-end acceptance remains unverified. That challenge transcript was not
+retained. Investigate its wording before broadening grammar. Temporary probe
+service overrides were removed; normal service remains Google/final-only,
+with the parser fix deployed. No permanent Telnyx-engine migration is claimed.
