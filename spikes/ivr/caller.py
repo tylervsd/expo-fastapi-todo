@@ -2,12 +2,14 @@
 
 import argparse
 import asyncio
+import json
 import sys
 from contextlib import suppress
 
 import uvicorn
 
 import webhooks
+from client import error_result
 
 _PORTS = {"public": 8010, "client": 8011}
 
@@ -34,8 +36,11 @@ async def _wait_ready(server: uvicorn.Server, task: asyncio.Task) -> bool:
 
 async def _cleanup(caller) -> None:
     if caller is not None:
-        with suppress(Exception):
-            await caller.close()
+        try:
+            async with asyncio.timeout(20):
+                await caller.close()
+        except Exception:  # noqa: BLE001 — cleanup cannot overwrite the terminal result
+            print("ivr caller: cleanup_failed", file=sys.stderr)
 
 
 async def run_call(app_name: str, env_file: str) -> int:
@@ -45,6 +50,8 @@ async def run_call(app_name: str, env_file: str) -> int:
     caller = None
     outcome = "server_startup_failed"
     exit_code = 1
+    payload = None
+    stage = "startup"
     try:
         app.state.caller_enabled = True
         try:
@@ -79,6 +86,7 @@ async def run_call(app_name: str, env_file: str) -> int:
             if caller is None:
                 outcome = "caller_unavailable"
                 return 1
+            stage = "dialing"
             try:
                 await caller.start()
             except Exception:  # noqa: BLE001 — start failure is a sanitized outcome, never a URL leak
@@ -96,32 +104,55 @@ async def run_call(app_name: str, env_file: str) -> int:
             if server_task.done() and not caller.done.is_set():
                 outcome = "server_stopped"
                 return 1
-            await _cleanup(caller)
             outcome = caller.outcome or "unknown"
-            exit_code = caller.exit_code if caller.exit_code is not None else 1
+            payload = caller.result or error_result("internal_error", stage)
+            exit_code = 0 if payload["status"] == "success" else 1
             return exit_code
         except Exception:  # noqa: BLE001 — sanitized outcome only; raw HTTP text may carry call-control URLs
             outcome = "internal_error"
             return 1
     except asyncio.CancelledError:
-        with suppress(Exception):
-            await asyncio.shield(_cleanup(caller))
+        outcome = "interrupted"
+        exit_code = 130
+        flow = getattr(caller, "flow", None)
+        payload = getattr(caller, "result", None) or getattr(flow, "result", None)
+        if payload is not None:
+            outcome = getattr(flow, "outcome", None) or caller.outcome or "unknown"
+            exit_code = 0 if payload["status"] == "success" else 1
+            return exit_code
         raise
     finally:
-        if server is not None:
-            server.should_exit = True
-        if server_task is not None and not server_task.done():
-            with suppress(Exception):
-                await asyncio.wait_for(asyncio.shield(server_task), timeout=10)
-        with suppress(AttributeError, KeyError):
-            del app.state.caller_enabled
-        # Concise stderr diagnostic; stdout stays empty (Lesson 4 owns JSON).
-        print(f"ivr caller {app_name}: {outcome} (exit {exit_code})", file=sys.stderr)
+        flow = getattr(caller, "flow", None)
+        if payload is None:
+            payload = error_result(
+                outcome,
+                getattr(flow, "failure_stage", None) or getattr(flow, "stage", stage),
+            )
+        try:
+            await asyncio.shield(_cleanup(caller))
+            if server is not None:
+                server.should_exit = True
+            if server_task is not None and not server_task.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(server_task), timeout=10)
+                except TimeoutError:
+                    server_task.cancel()
+                    await asyncio.gather(server_task, return_exceptions=True)
+        finally:
+            with suppress(AttributeError, KeyError):
+                del app.state.caller_enabled
+            print(
+                f"ivr caller {app_name}: {outcome} (exit {exit_code})", file=sys.stderr
+            )
+            print(json.dumps(payload))
 
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
-    return asyncio.run(run_call(args.app, args.env_file))
+    try:
+        return asyncio.run(run_call(args.app, args.env_file))
+    except KeyboardInterrupt:
+        return 130
 
 
 if __name__ == "__main__":

@@ -29,6 +29,26 @@ legs have ended and at least 60 seconds have elapsed, explicitly restart for a
 new call: `sudo systemctl restart ivr`. If termination is unconfirmed, inspect
 and end the remote call in Telnyx first. Restart loses all process-local state.
 
+## Lesson 4 result retrieval
+
+Lesson 4 release `bde9fdf` was deployed on 2026-09-22. Deployment checks passed;
+the learner reported walkthrough completion and signed off on 2026-09-22
+(see the Lesson 4 acceptance record). After an explicitly
+started call reports `done=true` in `status`:
+
+```sh
+sudo -u ivr /opt/ivr/current/.venv/bin/python /opt/ivr/current/cloud_runner.py result
+call_exit=$?
+printf 'exit=%s\n' "$call_exit"
+```
+
+This read-only command prints terminal value/error JSON and exits 0 for success,
+1 for failure. Before completion it returns `result_not_ready`; it never starts
+another call. `status` retains its query exit-0 behavior and adds `result`, null
+until done. Results survive cleanup and repeated queries, but not service restart.
+Trace diagnostics remain in the journal; `IVR_CLIENT_DEBUG_TRANSCRIPTS=1` adds
+safe metadata only. See [Lesson 4](../lessons/04-value-or-error.md) for acceptance.
+
 ## Runtime and credentials
 
 Caddy proxies only POSTs to the two webhook paths. Uvicorn listens on loopback
@@ -164,3 +184,30 @@ The fixture advanced only after the exact challenge plus pound matched.
 At 02:18 UTC all test drop-ins and temporary settings were removed; systemd
 reported no DropInPaths, normal cloud_runner.py serve, and idle/not-started.
 Both original blockers (permanent engine and full live success) are closed.
+
+## Lesson 4 deployment — 2026-09-22
+
+Deployed committed release `bde9fdf` to `/opt/ivr/releases/bde9fdf`; service
+became active at 15:50:46 UTC. Previous release `/opt/ivr/releases/11f2e01`
+remains available for rollback. No recent call activity was present and control
+reported idle before cutover. An automatic rollback guard protected startup.
+
+Archive SHA-256: `794cd37b84389c2e380bdac28e3d60a1ff0dcdd748cabb0f56712d35c177dbdc`.
+Only tracked IVR files were packaged; no `.env`, environment, caches, or unrelated
+repository files. Python 3.14.7 and uv 0.12.17 installed the locked dependencies.
+422 tests passed locally and on the VM under the `ivr` user, with two existing
+upstream warnings; Ruff check and format passed on both. The preflight corrected
+formatting in the new Markdown guide's code examples before packaging.
+
+Post-cutover checks:
+
+- `ivr` and `caddy` active; current release resolves to `bde9fdf`; no service drop-ins.
+- Control status: `started=false`, `done=false`, `stage=idle`, `result=null`.
+- `result` prints `result_not_ready` at stage `startup`, exits 1, and leaves the caller idle.
+- HTTPS unsigned client/fixture webhook requests return 401/401; public `/status` returns 404. TLS verification remained enabled.
+- Existing service/Caddy files match the repository; credentials and callback configuration were unchanged.
+- Credential file remains root-owned 0600; runtime directory and control socket remain ivr-owned 0700/0600.
+
+No paid calls were placed during deployment verification. The learner subsequently
+reported walkthrough completion and signed off on 2026-09-22; detailed live call
+artifacts were not supplied. See the [Lesson 4 acceptance record](../lessons/04-value-or-error.md#learner-acceptance--2026-09-22).

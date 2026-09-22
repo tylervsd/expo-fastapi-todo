@@ -28,6 +28,7 @@ def test_control_single_start_and_status():
             _started=False,
             done=asyncio.Event(),
             flow=None,
+            result=None,
             outcome=None,
             exit_code=None,
         )
@@ -48,10 +49,18 @@ def test_control_single_start_and_status():
             return json.loads(writer.data)
 
         assert (await request(b"status\n"))["started"] is False
+        assert (await request(b"result\n"))["code"] == "result_not_ready"
+        assert calls == []
         results = await asyncio.gather(request(b"start\n"), request(b"start\n"))
         assert {r["status"] for r in results} == {"started", "busy"}
         assert len(calls) == 1
+        caller.result = {"status": "success", "value": "0.00", "currency": "USD"}
+        assert (await request(b"result\n"))["code"] == "result_not_ready"
         caller.done.set()
+        assert (await request(b"result\n")) == caller.result
+        assert (await request(b"result\n")) == caller.result
+        assert (await request(b"status\n"))["result"] == caller.result
+        assert len(calls) == 1
         assert (await request(b"start\n"))["status"] == "restart_required"
         for invalid in (b"bad\n", b"start", b"x" * 65 + b"\n"):
             assert (await request(invalid))["status"] == "invalid_request"
@@ -76,6 +85,7 @@ def test_server_never_dials_and_survives_completion(monkeypatch, tmp_path):
             _started=False,
             done=asyncio.Event(),
             flow=None,
+            result=None,
             outcome=None,
             exit_code=None,
         )
@@ -129,5 +139,32 @@ def test_server_never_dials_and_survives_completion(monkeypatch, tmp_path):
         monkeypatch.setattr(cloud_runner.uvicorn, "Server", Server)
         await cloud_runner.serve()
         assert not socket.exists()
+
+    asyncio.run(exercise())
+
+
+def test_result_request_output_and_exit(monkeypatch, capsys):
+    import cloud_runner
+
+    async def exercise():
+        for payload, expected in [
+            ({"status": "success", "value": "0.00", "currency": "USD"}, 0),
+            ({"status": "error", "code": "result_unrecognized", "stage": "result"}, 1),
+            ({"status": "error", "code": "result_not_ready", "stage": "startup"}, 1),
+        ]:
+            writer = Writer()
+
+            async def connect(*args, payload=payload, writer=writer, **kwargs):
+                reader = asyncio.StreamReader()
+                reader.feed_data(json.dumps(payload).encode() + b"\n")
+                reader.feed_eof()
+                return reader, writer
+
+            monkeypatch.setattr(cloud_runner.asyncio, "open_unix_connection", connect)
+            assert await cloud_runner.request("result") == expected
+            out, _ = capsys.readouterr()
+            assert len(out.splitlines()) == 1
+            assert json.loads(out) == payload
+            assert writer.data == b"result\n"
 
     asyncio.run(exercise())

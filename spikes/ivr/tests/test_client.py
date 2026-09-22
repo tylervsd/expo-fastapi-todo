@@ -253,7 +253,7 @@ HAPPY_TEXTS = [
     "Press one for personal. Press two for business.",
     "Enter your nine digit personal ID followed by pound.",
     ("You entered zero zero zero one two three four five six. Press one if correct."),
-    "Your requested value is one thousand four hundred twenty-five dollars.",
+    "Your requested value is one thousand four hundred twenty-five dollars and thirty cents.",
 ]
 
 
@@ -291,6 +291,7 @@ def test_happy_path_replay_exact_tones():
     assert flow.outcome is None
     hangup = flow.handle(builder.event("call.hangup", offset=offset), now=now)
     assert hangup is None
+    flow.expire(now=now + 5)
     assert flow.stage == "ended"
     assert flow.exit_code == 0
 
@@ -559,14 +560,14 @@ def test_partials_and_duplicates_never_refresh_deadline():
     assert flow.outcome == "overall_timeout" or flow.outcome == "stage_timeout"
 
 
-def test_result_timeout_cannot_manufacture_success():
+def test_result_without_hangup_preserves_complete_amount():
     flow = _flow()
     builder = _Builder()
     _drive_happy(flow, builder)
     assert flow.checkpoint_reached is True
     command = flow.expire(now=1000.0 + 180.0)
     assert command is not None
-    assert flow.exit_code is None
+    assert flow.exit_code == 0
     assert flow.stage == "hanging_up"
 
 
@@ -581,7 +582,7 @@ def test_cleanup_budget_ends_hanging_up():
     done = flow.expire(now=1017.0)
     assert done is None
     assert flow.stage == "ended"
-    assert flow.outcome == "hangup_unconfirmed"
+    assert flow.cleanup_reason == "hangup_unconfirmed"
     assert flow.exit_code == 1
 
 
@@ -609,8 +610,8 @@ def test_hanging_up_ignores_transcripts():
 def test_timeout_then_hangup_stays_failed():
     flow = _flow()
     builder = _Builder()
-    _drive_happy(flow, builder)
-    assert flow.checkpoint_reached is True
+    _drive_happy(flow, builder, texts=HAPPY_TEXTS[:-1])
+    assert flow.checkpoint_reached is False
     command = flow.expire(now=1000.0 + 180.0)
     assert command is not None
     assert flow.outcome == "overall_timeout"
@@ -633,39 +634,20 @@ def test_missing_hangup_ack_is_unconfirmed():
     failed = flow.command_failed(hangup.command_id, now=1004.0)
     assert failed is None
     assert flow.stage == "ended"
-    assert flow.outcome == "hangup_unconfirmed"
+    assert flow.cleanup_reason == "hangup_unconfirmed"
     assert flow.exit_code == 1
 
 
-def test_post_result_transcripts_ignored():
-    flow = _flow()
-    builder = _Builder()
+def test_post_result_conflicting_prompt_is_rejected():
+    flow, builder = _flow(), _Builder()
     _drive_happy(flow, builder)
-    assert flow.stage == "result"
-    assert flow.checkpoint_reached is True
-    for index in range(70):
-        ignored = _say(
-            flow,
-            builder,
-            "Your verification code is zero seven four two. Enter the code followed by pound.",
-            now=1010.0 + index * 0.1,
-            offset=30 + index,
-        )
-        assert ignored is None
-    assert flow.stage == "result"
-    assert flow.checkpoint_reached is True
-    assert flow.outcome is None
-    stale = builder.event(
-        "call.transcription",
-        offset=1,
-        transcript="garbage out of order",
-        is_final=True,
-    )
-    assert flow.handle(stale, now=1020.0) is None
-    assert flow.outcome is None
-    hangup = flow.handle(builder.event("call.hangup", offset=200), now=1021.0)
-    assert hangup is None
-    assert flow.exit_code == 0
+    command = _say(flow, builder, "Your requested value is 17.42.", now=1010, offset=30)
+    assert command.action == "hangup"
+    assert flow.result == {
+        "status": "error",
+        "code": "result_unrecognized",
+        "stage": "result",
+    }
 
 
 def test_stop_and_hangup_idempotent():
@@ -1399,6 +1381,8 @@ def test_caller_full_happy_path_checkpoint_then_hangup():
         assert harness.caller.flow.checkpoint_reached
         assert not harness.caller.done.is_set()
         await harness.caller.accept(_changup(harness))
+        harness.clock.advance(5)
+        await harness.caller.tick()
         await harness.drain()
         assert harness.caller.done.is_set()
         assert harness.caller.exit_code == 0
@@ -1658,7 +1642,8 @@ def test_parser_diagnostics_do_not_log_speech(caplog):
         ),
         now=1002,
     )
-    assert any('"parser": "pending"' in r.getMessage() for r in caplog.records)
+    assert flow.parser_status == "pending"
+    assert not caplog.records
     assert "SECRET_SENTINEL" not in caplog.text
 
 
@@ -1704,7 +1689,7 @@ def test_result_final_can_follow_hangup_with_bounded_wait():
                 "payload": {
                     "transcription_data": {
                         "is_final": True,
-                        "transcript": "Your requested value is available.",
+                        "transcript": "Your requested value is 17.42.",
                     }
                 },
             },
@@ -1712,12 +1697,14 @@ def test_result_final_can_follow_hangup_with_bounded_wait():
         )
         is None
     )
+    assert f.result is None
+    f.expire(now=6)
     assert (f.stage, f.outcome, f.exit_code) == ("ended", "completed", 0)
     f = flow()
     f.handle({"id": "hang", "event_type": "call.hangup"}, now=1)
     f.handle({"id": "duplicate-hang", "event_type": "call.hangup"}, now=4)
     assert f.expire(now=6) is None
-    assert (f.stage, f.outcome, f.exit_code) == ("ended", "early_hangup", 1)
+    assert (f.stage, f.outcome, f.exit_code) == ("ended", "result_unrecognized", 1)
 
 
 def test_caller_late_result_preserves_ownership_until_final():
@@ -1735,10 +1722,187 @@ def test_caller_late_result_preserves_ownership_until_final():
         )
         assert not harness.caller.done.is_set()
         await harness.caller.accept(_ctranscript(harness, HAPPY_TEXTS[-1]))
+        assert not harness.caller.done.is_set()
+        harness.clock.advance(5)
+        await harness.caller.tick()
         await harness.drain()
         assert harness.caller.outcome == "completed"
         assert harness.caller.exit_code == 0
+        assert harness.caller.result["value"] == "1425.30"
         assert harness.caller.identity is None
         await harness.close()
 
     _run(main)
+
+
+def test_value_finalization_window_and_snapshot():
+    flow, events = _flow(), _Builder()
+    _, now, offset = _drive_happy(flow, events)
+    assert flow.result is None
+    flow.handle(events.event("call.hangup", offset=offset), now=now)
+    flow.expire(now=now + 4.999)
+    assert flow.result is None
+    flow.expire(now=now + 5)
+    assert flow.result == {"status": "success", "value": "1425.30", "currency": "USD"}
+    saved = flow.result.copy()
+    flow.handle(events.event("call.hangup", offset=offset + 1), now=now + 6)
+    assert flow.result == saved
+
+
+@pytest.mark.parametrize("arrival", [1179.999, 1180.0])
+def test_result_window_capped_by_overall_deadline(arrival):
+    flow, events = _flow(), _Builder()
+    flow.stage = "result"
+    flow.stage_started_at = 1170
+    flow.handle(events.event("call.hangup", offset=178), now=1178)
+    _say(flow, events, "Your requested value is 0.00.", now=arrival, offset=179)
+    flow.expire(now=1180)
+    assert flow.stage == "ended"
+    if arrival < 1180:
+        assert flow.result == {"status": "success", "value": "0.00", "currency": "USD"}
+    else:
+        assert flow.result == {
+            "status": "error",
+            "code": "result_unrecognized",
+            "stage": "result",
+        }
+
+
+def test_result_conflict_after_hangup_rejects_candidate():
+    flow, events = _flow(), _Builder()
+    _, now, offset = _drive_happy(flow, events)
+    flow.handle(events.event("call.hangup", offset=offset), now=now)
+    _say(flow, events, "Your requested value is 17.42.", now=now + 1, offset=offset + 1)
+    flow.expire(now=now + 5)
+    assert flow.result == {
+        "status": "error",
+        "code": "result_unrecognized",
+        "stage": "result",
+    }
+
+
+def test_cleanup_failure_preserves_original_decision():
+    flow, events = _flow(), _Builder()
+    _drive_happy(flow, events)
+    hangup = flow.expire(now=1180)
+    flow.command_failed(hangup.command_id, now=1181)
+    assert flow.result == {"status": "success", "value": "1425.30", "currency": "USD"}
+    assert flow.exit_code == 0
+    flow = _flow()
+    flow.stage = "challenge"
+    hangup = flow.stop("challenge_unrecognized", now=1001)
+    flow.expire(now=1016)
+    assert flow.result == {
+        "status": "error",
+        "code": "challenge_unrecognized",
+        "stage": "challenge",
+    }
+
+
+def test_public_error_mapping():
+    from client import error_result
+
+    assert error_result("dial_rejected", "dialing")["code"] == "provider_failure"
+    assert error_result("transcript_order", "result")["code"] == "protocol_error"
+    assert error_result("unexpected-secret", "ended") == {
+        "status": "error",
+        "code": "internal_error",
+        "stage": "startup",
+    }
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"), [(None, False), ("0", False), ("1", True)]
+)
+def test_debug_setting(monkeypatch, raw, expected):
+    monkeypatch.setenv("TELNYX_API_KEY", "key")
+    monkeypatch.setenv("IVR_CLIENT_CONNECTION_ID", "app")
+    monkeypatch.setenv("IVR_CLIENT_FROM_NUMBER", "+12025550101")
+    monkeypatch.setenv("IVR_CLIENT_TO_NUMBER", "+12025550102")
+    monkeypatch.delenv("IVR_CLIENT_DEBUG_TRANSCRIPTS", raising=False)
+    if raw is not None:
+        monkeypatch.setenv("IVR_CLIENT_DEBUG_TRANSCRIPTS", raw)
+    assert load_client_settings().debug_transcripts is expected
+
+
+@pytest.mark.parametrize("raw", ["", "true", "2"])
+def test_invalid_debug_setting(monkeypatch, raw):
+    for key, value in VALID.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("IVR_CLIENT_DEBUG_TRANSCRIPTS", raw)
+    with pytest.raises(RuntimeError, match="Invalid client configuration"):
+        load_client_settings()
+
+
+@pytest.mark.parametrize("debug", [False, True])
+def test_correlated_trace_and_debug_privacy(caplog, debug):
+    async def exercise():
+        harness = _CallerHarness(debug_transcripts=debug)
+        await harness.start_and_bind()
+        await harness.caller.accept(_canswered(harness))
+        await harness.caller.accept(
+            _ctranscript(harness, "SECRET_SENTINEL zero seven four two 000123456")
+        )
+        await harness.caller.accept(_changup(harness))
+        await harness.drain()
+        records = [
+            json.loads(r.getMessage()) for r in caplog.records if r.name == "ivr.client"
+        ]
+        assert all("run_id" in r and "elapsed" in r for r in records)
+        transitions = [r for r in records if "previous_stage" in r]
+        assert any(r["stage"] == "welcome" for r in transitions)
+        bound = [r for r in records if r.get("call_ref")]
+        assert bound and all(
+            len(r["call_ref"]) == 12 and len(r["leg_ref"]) == 12 for r in bound
+        )
+        assert any("final" in r for r in records) is debug
+        assert any(r.get("parser") == "pending" for r in records) is debug
+        for secret in (
+            "SECRET_SENTINEL",
+            "zero seven four two",
+            "000123456",
+            "client-call",
+            "client-leg",
+            "test-api-key",
+        ):
+            assert secret not in caplog.text
+        await harness.close()
+
+    _run(exercise)
+
+
+def test_internal_dial_failure_remains_distinct_from_provider_failure():
+    async def exercise():
+        harness = _CallerHarness()
+
+        async def broken(request):
+            raise RuntimeError("private-message")
+
+        harness.caller.dial = broken
+        await harness.caller.start()
+        await harness.drain()
+        harness.clock.advance(15)
+        await harness.caller.tick()
+        await harness.drain()
+        assert harness.caller.result == {
+            "status": "error",
+            "code": "internal_error",
+            "stage": "dialing",
+        }
+
+    _run(exercise)
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_split_result_cents_after_hangup(partial):
+    flow, events = _flow(), _Builder()
+    flow.stage = "result"
+    _say(flow, events, "Your requested value is one dollar", now=1001, offset=1)
+    flow.handle(events.event("call.hangup", offset=2), now=1002)
+    _say(flow, events, "and five cents.", now=1003, offset=3, final=not partial)
+    flow.expire(now=1007)
+    assert flow.result == (
+        {"status": "error", "code": "result_unrecognized", "stage": "result"}
+        if partial
+        else {"status": "success", "value": "1.05", "currency": "USD"}
+    )

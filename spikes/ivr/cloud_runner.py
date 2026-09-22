@@ -32,7 +32,11 @@ class Control:
                 try:
                     async with asyncio.timeout(2):
                         data = await reader.readuntil(b"\n")
-                    if len(data) > 64 or data not in (b"start\n", b"status\n"):
+                    if len(data) > 64 or data not in (
+                        b"start\n",
+                        b"status\n",
+                        b"result\n",
+                    ):
                         raise ValueError
                 except (
                     ValueError,
@@ -45,6 +49,17 @@ class Control:
                     async with self.lock:
                         if not self.ready():
                             response = {"status": "not_ready"}
+                        elif data == b"result\n":
+                            response = (
+                                dict(self.caller.result)
+                                if self.caller.done.is_set()
+                                and self.caller.result is not None
+                                else {
+                                    "status": "error",
+                                    "code": "result_not_ready",
+                                    "stage": "startup",
+                                }
+                            )
                         elif data == b"status\n":
                             flow = self.caller.flow
                             response = {
@@ -53,6 +68,9 @@ class Control:
                                 "stage": flow.stage if flow else "idle",
                                 "outcome": self.caller.outcome,
                                 "exit_code": self.caller.exit_code,
+                                "result": self.caller.result
+                                if self.caller.done.is_set()
+                                else None,
                             }
                         elif self.caller._started:
                             response = {
@@ -123,7 +141,13 @@ async def request(command):
             await writer.drain()
             result = json.loads(await reader.readline())
             print(json.dumps(result))
-            return 0 if command == "status" or result.get("status") == "started" else 1
+            return (
+                0
+                if command == "status"
+                or result.get("status")
+                == ("success" if command == "result" else "started")
+                else 1
+            )
         finally:
             writer.close()
             await writer.wait_closed()
@@ -131,7 +155,7 @@ async def request(command):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("serve", "start", "status"))
+    parser.add_argument("command", choices=("serve", "start", "status", "result"))
     command = parser.parse_args().command
     try:
         return asyncio.run(serve() if command == "serve" else request(command))

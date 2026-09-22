@@ -1,5 +1,6 @@
 """Automated IVR caller settings (Task 1: settings only)."""
 
+import hashlib
 import os
 import re
 from dataclasses import dataclass, field, fields
@@ -73,8 +74,14 @@ class ClientSettings:
         default="inbound", metadata={"env": "IVR_CLIENT_TRANSCRIPTION_TRACK"}
     )
 
+    debug_transcripts: bool = field(
+        default=False, metadata={"env": "IVR_CLIENT_DEBUG_TRANSCRIPTS"}
+    )
+
     def __post_init__(self):
         try:
+            if type(self.debug_transcripts) is not bool:
+                raise ValueError
             object.__setattr__(self, "api_key", _api_key(self.api_key))
             object.__setattr__(
                 self, "connection_id", _connection_id(self.connection_id)
@@ -126,7 +133,11 @@ def load_client_settings() -> ClientSettings:
             name = item.metadata["env"]
             if name in os.environ:
                 raw = os.environ[name]
-                if item.name in _INT_FIELDS:
+                if item.name == "debug_transcripts":
+                    if raw not in ("0", "1"):
+                        raise ValueError
+                    values[item.name] = raw == "1"
+                elif item.name in _INT_FIELDS:
                     if not re.fullmatch(r"[0-9]+", raw):
                         raise ValueError
                     values[item.name] = int(raw)
@@ -163,6 +174,59 @@ _NEXT = {
 }
 
 
+_PUBLIC_ERRORS = frozenset(
+    {
+        "challenge_unrecognized",
+        "unexpected_menu",
+        "id_mismatch",
+        "confirmation_unrecognized",
+        "fixture_rejection",
+        "result_unrecognized",
+        "stage_timeout",
+        "overall_timeout",
+        "early_hangup",
+        "provider_failure",
+        "protocol_error",
+        "startup_failed",
+        "internal_error",
+        "interrupted",
+    }
+)
+_ERROR_ALIASES = {
+    "dial_rejected": "provider_failure",
+    "dial_uncertain": "provider_failure",
+    "transcript_order": "protocol_error",
+    "identity_conflict": "protocol_error",
+    "buffer_overflow": "protocol_error",
+    "event_overflow": "protocol_error",
+    "unknown_stage": "protocol_error",
+    "ambiguous": "protocol_error",
+    "server_startup_failed": "startup_failed",
+    "caller_unavailable": "startup_failed",
+    "dial_reservation_failed": "internal_error",
+    "server_stopped": "internal_error",
+    "shutdown": "interrupted",
+    "hangup_unconfirmed": "provider_failure",
+}
+
+
+def error_result(reason: str, stage: str) -> dict[str, str]:
+    if stage not in {"startup", "dialing", "result", *_NEXT}:
+        stage = "startup"
+    if reason == "unrecognized":
+        reason = {
+            "challenge": "challenge_unrecognized",
+            "confirmation": "confirmation_unrecognized",
+            "result": "result_unrecognized",
+        }.get(stage, "protocol_error")
+    code = _ERROR_ALIASES.get(reason, reason)
+    return {
+        "status": "error",
+        "code": code if code in _PUBLIC_ERRORS else "internal_error",
+        "stage": stage,
+    }
+
+
 class ClientFlow:
     """Synchronous stage machine; no I/O, no stdout, no fixture imports."""
 
@@ -174,6 +238,11 @@ class ClientFlow:
         self.stage_started_at = now
         self.pending = None
         self.checkpoint_reached = False
+        self.result = None
+        self.failure_stage = None
+        self.cleanup_reason = None
+        self.parser_status = None
+        self.parser_reason = None
         self.outcome = None
         self.exit_code = None
         self.answered = False
@@ -185,8 +254,26 @@ class ClientFlow:
         self._hangup_started_at = None
         self._result_hangup_at = None
 
+    def _decide(self, reason, value=None):
+        if self.result is not None:
+            return
+        self.outcome = reason
+        if value is not None:
+            self.result = {"status": "success", "value": value, "currency": "USD"}
+            self.exit_code = 0
+        else:
+            self.failure_stage = self.stage
+            self.result = error_result(reason, self.failure_stage)
+            self.exit_code = 1
+
+    def _end(self):
+        self.stage = "ended"
+        self.pending = None
+        self._segments = []
+        self._chars = 0
+
     def _hangup(self, reason, *, now):
-        self.outcome = self.outcome or reason
+        self._decide(reason)
         command = make_command(self.identity.call_control_id, "hangup", {})
         self.pending = command
         self.stage = "hanging_up"
@@ -198,21 +285,37 @@ class ClientFlow:
     def _fail(self, reason, *, now):
         if self.stage == "ended":
             return None
+        self._decide(reason)
         if self._result_hangup_at is not None:
-            self.stage, self.outcome, self.exit_code = "ended", reason, 1
-            self.pending = None
-            self._segments = []
+            self._end()
             return None
         return self._hangup(reason, now=now)
 
     def _expired(self, now):
         if self._result_hangup_at is not None:
-            return "early_hangup" if now - self._result_hangup_at >= 5 else None
+            boundary = min(
+                self._result_hangup_at + 5,
+                self.started_at + self.settings.call_timeout_seconds,
+            )
+            return "result_unrecognized" if now >= boundary else None
         if now - self.started_at >= self.settings.call_timeout_seconds:
             return "overall_timeout"
         if now - self.stage_started_at >= self.settings.stage_timeout_seconds:
             return "stage_timeout"
         return None
+
+    def _on_deadline(self, reason, *, now):
+        if self.stage == "result":
+            status, value = recognize(
+                "result", " ".join(self._segments), self.settings.synthetic_id
+            )
+            if status == "complete":
+                self._decide("completed", value)
+                if self._result_hangup_at is not None:
+                    self._end()
+                    return None
+                return self._hangup("completed", now=now)
+        return self._fail(reason, now=now)
 
     @staticmethod
     def _occurred(data):
@@ -246,25 +349,18 @@ class ClientFlow:
     def _evaluate(self, *, now, occurred):
         joined = " ".join(self._segments)
         status, value = recognize(self.stage, joined, self.settings.synthetic_id)
-        logger.info(json.dumps({"stage": self.stage, "parser": status}))
+        self.parser_status = status
+        self.parser_reason = value if status == "invalid" else None
         if status == "pending":
             return None
         if status == "invalid":
             return self._fail(value, now=now)
         if self.stage == "result":
             self.checkpoint_reached = True
-            if self._result_hangup_at is not None:
-                self.stage, self.outcome, self.exit_code = "ended", "completed", 0
-            self._segments = []
-            self._chars = 0
-            self._last_time = None
-            self._consumed_at = occurred
             return None
         return self._reserve_dtmf(value, now=now, occurred=occurred)
 
     def _on_transcript(self, data, *, now):
-        if self.stage == "result" and self.checkpoint_reached:
-            return None
         try:
             payload = data["payload"]
             speech = payload["transcription_data"]
@@ -310,7 +406,7 @@ class ClientFlow:
         else:
             expired = self._expired(now)
             if expired is not None:
-                return self._fail(expired, now=now)
+                return self._on_deadline(expired, now=now)
         event_id = data.get("id")
         if not isinstance(event_id, str) or not 1 <= len(event_id) <= 256:
             return None
@@ -334,22 +430,14 @@ class ClientFlow:
         if event_type == "call.transcription":
             return self._on_transcript(data, now=now)
         if event_type == "call.hangup":
-            if self.stage == "result" and not self.checkpoint_reached:
+            if self.stage == "result":
                 # Final STT webhooks can arrive after the matching hangup.
                 if self._result_hangup_at is None:
                     self._result_hangup_at = now
                 self.pending = None
                 return None
-            self._segments = []
-            self._chars = 0
-            self.pending = None
-            self.stage = "ended"
-            if self.checkpoint_reached and self.outcome is None:
-                self.outcome = "completed"
-                self.exit_code = 0
-            else:
-                self.outcome = self.outcome or "early_hangup"
-                self.exit_code = 1
+            self._decide("early_hangup")
+            self._end()
             return None
         return None
 
@@ -361,14 +449,12 @@ class ClientFlow:
                 self._hangup_started_at is not None
                 and now - self._hangup_started_at >= _CLEANUP_SECONDS
             ):
-                self.outcome = "hangup_unconfirmed"
-                self.exit_code = 1
-                self.stage = "ended"
-                self.pending = None
+                self.cleanup_reason = "hangup_unconfirmed"
+                self._end()
             return None
         expired = self._expired(now)
         if expired is not None:
-            return self._fail(expired, now=now)
+            return self._on_deadline(expired, now=now)
         return None
 
     def command_failed(self, command_id, *, now):
@@ -378,17 +464,15 @@ class ClientFlow:
         if pending is None or pending.command_id != command_id:
             return None
         if pending.action == "hangup":
-            self.outcome = "hangup_unconfirmed"
-            self.exit_code = 1
-            self.stage = "ended"
-            self.pending = None
+            self.cleanup_reason = "hangup_unconfirmed"
+            self._end()
             return None
         return self._fail("provider_failure", now=now)
 
     def stop(self, reason, *, now):
         if self.stage == "ended" or self.stage == "hanging_up":
             return None
-        return self._hangup(reason, now=now)
+        return self._fail(reason, now=now)
 
 
 """Runtime ownership: one outbound call, early callbacks, bounded cleanup."""
@@ -435,6 +519,7 @@ class Caller:
         self.done = asyncio.Event()
         self.exit_code = None
         self.outcome = None
+        self.result = None
         self.request = None
         self.identity = None
         self.flow = None
@@ -456,21 +541,29 @@ class Caller:
         self._cleared = False
         self._pending_failure = None
         self._cleanup_deadline = None
+        self._logged_stage = "idle"
+        self._call_refs = {}
 
-    def _log(self, reason):
-        flow = self.flow
-        logger.info(
-            json.dumps(
-                {
-                    "run_id": self.run_id,
-                    "reason": reason,
-                    "stage": flow.stage if flow else "idle",
-                    "elapsed": round(self.clock() - self._started_at, 3)
-                    if self._started
-                    else 0,
-                }
-            )
-        )
+    def _log(self, reason, **details):
+        stage = self.flow.stage if self.flow else "idle"
+        record = {
+            "run_id": self.run_id,
+            "reason": reason,
+            "stage": stage,
+            "elapsed": round(self.clock() - self._started_at, 3)
+            if self._started
+            else 0,
+            **self._call_refs,
+            **details,
+        }
+        if stage != self._logged_stage:
+            record["previous_stage"] = self._logged_stage
+            self._logged_stage = stage
+        logger.info(json.dumps(record))
+
+    def _trace_transition(self):
+        if self.flow and self.flow.stage != self._logged_stage:
+            self._log("stage_changed")
 
     async def start(self):
         if self._started:
@@ -544,6 +637,8 @@ class Caller:
         if reason == "rejected":
             self._finish("dial_rejected", 1)
         else:
+            if reason == "internal_error":
+                self._pending_failure = self._pending_failure or reason
             # Uncertain dial: keep the run open for identifying callbacks until
             # the cleanup budget expires; a late bind still hangs up (see accept).
             self._dial_uncertain = True
@@ -552,6 +647,12 @@ class Caller:
             self._log("dial_uncertain")
 
     def _bind(self, identity):
+        self._call_refs = {
+            "call_ref": hashlib.sha256(identity.call_control_id.encode()).hexdigest()[
+                :12
+            ],
+            "leg_ref": hashlib.sha256(identity.call_leg_id.encode()).hexdigest()[:12],
+        }
         self.identity = identity
         self.flow = ClientFlow(
             self.settings, identity, started_at=self._started_at, now=self.clock()
@@ -572,6 +673,7 @@ class Caller:
         rest = [data for data in matching if data["event_type"] != "call.hangup"]
         for data in hangups + rest:
             command = self.flow.handle(data, now=self.clock())
+            self._trace_transition()
             if command is not None:
                 self._schedule(command)
             if self.flow.stage == "ended":
@@ -650,26 +752,25 @@ class Caller:
         occurred = self._validate(data)
         if occurred is None:
             return
-        if data["event_type"] == "call.transcription":
+        if (
+            self.settings.debug_transcripts
+            and data["event_type"] == "call.transcription"
+        ):
             payload = data["payload"]
-            logger.info(
-                json.dumps(
-                    {
-                        "stage": self.flow.stage if self.flow else "idle",
-                        "final": payload["transcription_data"]["is_final"],
-                        "connection_match": payload["connection_id"]
-                        == self.settings.connection_id,
-                        "call_match": bool(
-                            self.identity
-                            and payload["call_control_id"]
-                            == self.identity.call_control_id
-                        ),
-                        "leg_match": bool(
-                            self.identity
-                            and payload["call_leg_id"] == self.identity.call_leg_id
-                        ),
-                    }
-                )
+            self._log(
+                "transcription",
+                final=payload["transcription_data"]["is_final"],
+                characters=len(payload["transcription_data"]["transcript"]),
+                connection_match=payload["connection_id"]
+                == self.settings.connection_id,
+                call_match=bool(
+                    self.identity
+                    and payload["call_control_id"] == self.identity.call_control_id
+                ),
+                leg_match=bool(
+                    self.identity
+                    and payload["call_leg_id"] == self.identity.call_leg_id
+                ),
             )
         if data["payload"]["connection_id"] != self.settings.connection_id:
             return
@@ -766,12 +867,24 @@ class Caller:
         ):
             return
         command = self.flow.handle(data, now=now)
+        self._trace_transition()
+        if (
+            self.settings.debug_transcripts
+            and data["event_type"] == "call.transcription"
+        ):
+            self._log(
+                "parser",
+                parser=self.flow.parser_status,
+                parser_reason=self.flow.parser_reason,
+                segments=len(self.flow._segments),
+            )
         if command is not None:
             self._schedule(command)
         if self.flow.stage == "ended":
             self._finalize()
 
     def _schedule(self, command):
+        self._trace_transition()
         task = asyncio.create_task(self._run_command(command))
         self.tasks[task] = command
         task.add_done_callback(lambda finished: self.tasks.pop(finished, None))
@@ -834,6 +947,7 @@ class Caller:
                         )
                 return
             command = self.flow.expire(now=now)
+            self._trace_transition()
             if command is not None:
                 self._schedule(command)
             if self.flow.stage == "ended":
@@ -844,7 +958,8 @@ class Caller:
             return
         self._finishing = True
         self.outcome = outcome
-        self.exit_code = exit_code
+        self.result = error_result(outcome, "dialing")
+        self.exit_code = 1
         self._log(outcome)
         current = asyncio.current_task()
         dial = self._dial_task
@@ -869,7 +984,12 @@ class Caller:
             return
         self._finishing = True
         self.outcome = flow.outcome or "unknown"
-        self.exit_code = flow.exit_code if flow.exit_code is not None else 1
+        self.result = dict(
+            flow.result or error_result(self.outcome, flow.failure_stage or "dialing")
+        )
+        self.exit_code = 0 if self.result["status"] == "success" else 1
+        if flow.cleanup_reason:
+            self._log(flow.cleanup_reason)
         self._log(self.outcome)
         current = asyncio.current_task()
         dial = self._dial_task
@@ -940,10 +1060,9 @@ class Caller:
         async with self.lock:
             if self._started and not self.done.is_set() and not self._finishing:
                 if self.flow is not None and self.flow.stage != "ended":
-                    self.flow.outcome = "hangup_unconfirmed"
-                    self.flow.exit_code = 1
-                    self.flow.stage = "ended"
-                    self.flow.pending = None
+                    self.flow._decide("shutdown")
+                    self.flow.cleanup_reason = "hangup_unconfirmed"
+                    self.flow._end()
                     self._finalize()
                 elif self.flow is not None:
                     self._finalize()

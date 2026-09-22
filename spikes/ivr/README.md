@@ -1,13 +1,11 @@
 # IVR spike
 
-Lesson 3 implements the automated caller: a one-call CLI that dials only the
-configured test number, transcribes the remote side, replays the spoken
-challenge, selects personal, enters the synthetic ID, checks its readback,
-and waits for the result announcement plus fixture hangup. Local
-implementation is verified (358 tests, Ruff clean); live verification and
-learner acceptance remain pending. Intermittent webhook delivery failures
-remain under investigation. Amount extraction and the value-or-error JSON
-contract wait for Lesson 4.
+Lessons 1–4 are accepted. Lesson 4 adds strict amount extraction, one terminal
+value-or-error JSON record, bounded finalization, and correlated safe diagnostics.
+Implementation is verified offline; the learner reported Lesson 4 walkthrough
+completion and signed off on 2026-09-22. Prior transcription reliability limitations remain.
+
+**Developer guide:** [Client call flow and how to change it](docs/client-call-flow.md) — source walkthrough, stage map, and a worked menu-step example.
 
 Python 3.14 and uv are required. From this worktree's `spikes/ivr` directory:
 
@@ -24,12 +22,15 @@ uv run python caller.py --help
 uv run python caller.py --env-file .env --app public
 ```
 
-One CLI invocation places exactly one call, then exits. Exit 0 requires the
-result announcement plus a matching fixture hangup; stdout stays empty and one
-final diagnostic line goes to stderr. `--app public` binds `127.0.0.1:8010` and runs
-both role controllers (replacing the Lesson 2 Uvicorn process on that port);
-`--app client` binds `127.0.0.1:8011` and hosts only the caller. The amount is
-not extracted in this lesson.
+One CLI invocation places exactly one call, then exits. Stdout contains one
+JSON success (`value` as a two-place decimal string, `currency: USD`) or error
+(`code`, original `stage`). Exit 0 means a complete unambiguous amount; errors
+exit 1 and interruption may exit 130. Diagnostics go to stderr. Cleanup failure
+does not replace an already decided result. `--app public` binds loopback 8010
+and hosts both roles; `--app client` binds loopback 8011 and hosts only the caller.
+See [Lesson 4](lessons/04-value-or-error.md) for grammar, finalization, output
+capture, and cloud result retrieval. `IVR_CLIENT_DEBUG_TRANSCRIPTS=1` enables
+metadata-only diagnostics without transcript text.
 
 The combined ingress and independent fixture require `TELNYX_PUBLIC_KEY`,
 `TELNYX_API_KEY`, and `IVR_CONNECTION_ID`. The automated caller requires
@@ -52,7 +53,8 @@ scenario, health, documentation, or call-start endpoints are exposed.
 
 - [Lesson 1: connectivity](lessons/01-connectivity.md) — accepted 2026-09-21.
 - [Lesson 2: navigate the IVR by hand](lessons/02-test-ivr.md) — walkthrough and acceptance record.
-- [Lesson 3: automated caller](lessons/03-automated-caller.md) — implemented offline; live verification pending.
+- [Lesson 3: automated caller](lessons/03-automated-caller.md) — accepted 2026-09-22.
+- [Lesson 4: value or error](lessons/04-value-or-error.md) — accepted 2026-09-22; walkthrough completion reported by learner.
 
 Accepted webhooks return empty **200**, after original-byte signature/freshness,
 64 KiB body, and envelope checks. Fixture events additionally validate call

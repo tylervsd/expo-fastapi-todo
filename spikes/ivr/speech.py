@@ -5,6 +5,7 @@ No fixture imports; identifiers stay strings; unknown text is never guessed.
 """
 
 import re
+from decimal import Decimal
 
 WORDS = dict(
     zip(
@@ -300,6 +301,142 @@ def recognize(stage: str, text: str, synthetic_id: str) -> tuple[str, str | None
             return ("invalid", "id_mismatch")
         return ("complete", "1")
 
-    if _RESULT.search(low):
-        return ("complete", None)
-    return ("pending", None)
+    return _recognize_result(low)
+
+
+_SMALL = dict(
+    zip(
+        [
+            "zero",
+            "one",
+            "two",
+            "three",
+            "four",
+            "five",
+            "six",
+            "seven",
+            "eight",
+            "nine",
+            "ten",
+            "eleven",
+            "twelve",
+            "thirteen",
+            "fourteen",
+            "fifteen",
+            "sixteen",
+            "seventeen",
+            "eighteen",
+            "nineteen",
+        ],
+        range(20),
+        strict=True,
+    )
+)
+_TENS = dict(
+    zip(
+        ["twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"],
+        range(20, 100, 10),
+        strict=True,
+    )
+)
+_UNIT = "(?:one|two|three|four|five|six|seven|eight|nine)"
+_UNDER_100 = (
+    "(?:"
+    + "|".join(list(_SMALL)[1:])
+    + "|(?:"
+    + "|".join(_TENS)
+    + ")(?: "
+    + _UNIT
+    + ")?)"
+)
+_UNDER_1000 = "(?:" + _UNIT + " hundred(?: " + _UNDER_100 + ")?|" + _UNDER_100 + ")"
+_INTEGER = (
+    "(?:zero|" + _UNIT + " thousand(?: " + _UNDER_1000 + ")?|" + _UNDER_1000 + ")"
+)
+
+
+def _integer(text: str, maximum: int) -> int:
+    if re.fullmatch(r"(?:0|[1-9][0-9]{0,3})", text):
+        value = int(text)
+    elif re.fullmatch(_INTEGER, text):
+        value = 0
+        group = 0
+        for word in text.split():
+            if word == "thousand":
+                value += group * 1000
+                group = 0
+            elif word == "hundred":
+                group *= 100
+            else:
+                group += _SMALL.get(word, _TENS.get(word, 0))
+        value += group
+    else:
+        raise ValueError("result_unrecognized")
+    if value > maximum:
+        raise ValueError("result_unrecognized")
+    return value
+
+
+def parse_amount(text: str) -> str:
+    """Parse one complete fixture-compatible USD announcement, never guess."""
+    if not isinstance(text, str):
+        raise ValueError("result_unrecognized")  # noqa: TRY004 — parser contract
+    normalized = " ".join(re.sub(r"(?<=[a-z])-(?=[a-z])", " ", text.lower()).split())
+    normalized = normalized.rstrip(".!?").strip()
+    # Final STT segments may punctuate the dollars/cents boundary.
+    normalized = re.sub(r"\b(dollars?)[.!?]\s+and\b", r"\1 and", normalized)
+    match = re.fullmatch(r"your requested value is (.+)", normalized)
+    if not match:
+        raise ValueError("result_unrecognized")
+    body = match[1]
+    decimal = re.fullmatch(
+        r"\$?((?:0|[1-9][0-9]{0,3}|[1-9],[0-9]{3})\.[0-9]{2})(?: dollars?)?", body
+    )
+    if decimal:
+        return format(Decimal(decimal[1].replace(",", "")), ".2f")
+    parts = re.fullmatch(r"(.+) dollars? and (.+) cents?", body)
+    if not parts:
+        raise ValueError("result_unrecognized")
+    dollars, cents = _integer(parts[1], 9999), _integer(parts[2], 99)
+    return format(Decimal(dollars) + Decimal(cents) / 100, ".2f")
+
+
+def _recognize_result(text: str) -> tuple[str, str | None]:
+    # Retain the whole bounded buffer: a later final may add cents or a conflict.
+    starts = list(re.finditer(r"\byour\s+requested\s+value\s+is\b", text))
+    if not starts:
+        return ("pending", None)
+    if text[: starts[0].start()].strip():
+        return ("invalid", "result_unrecognized")
+    values = set()
+    for index, start in enumerate(starts):
+        end = starts[index + 1].start() if index + 1 < len(starts) else len(text)
+        announcement = text[start.start() : end].strip()
+        try:
+            values.add(parse_amount(announcement))
+        except ValueError:
+            if index == len(starts) - 1:
+                if not announcement.endswith((".", "!", "?")):
+                    return ("pending", None)
+                body = (
+                    re.sub(r"^your\s+requested\s+value\s+is\b", "", announcement)
+                    .strip()
+                    .rstrip(".!?")
+                    .strip()
+                )
+                if not body:
+                    return ("pending", None)
+                fragment = re.fullmatch(r"(.+) dollars?(?: and(?: (.+))?)?", body)
+                if fragment:
+                    try:
+                        _integer(fragment[1].replace("-", " "), 9999)
+                        if fragment[2]:
+                            _integer(fragment[2].replace("-", " "), 99)
+                    except ValueError:
+                        pass
+                    else:
+                        return ("pending", None)
+            return ("invalid", "result_unrecognized")
+        if len(values) > 1:
+            return ("invalid", "result_unrecognized")
+    return ("complete", values.pop())

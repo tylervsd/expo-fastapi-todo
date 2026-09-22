@@ -2,7 +2,7 @@
 
 import pytest
 
-from speech import parse_digits, recognize
+from speech import parse_amount, parse_digits, recognize
 
 
 @pytest.mark.parametrize("text", ["zero seven four two", "0742", "0 7-4,2"])
@@ -217,7 +217,7 @@ def test_challenge_wrong_count_invalid():
 
 def test_result_completes_without_digits():
     text = "Your requested value is one thousand dollars and zero cents."
-    assert recognize("result", text, "000123456") == ("complete", None)
+    assert recognize("result", text, "000123456") == ("complete", "1000.00")
     assert recognize("result", "Please hold.", "000123456") == ("pending", None)
 
 
@@ -226,7 +226,7 @@ def test_result_requires_your_prefix():
         "result",
         "YOUR requested value is one thousand dollars and zero cents.",
         "000123456",
-    ) == ("complete", None)
+    ) == ("complete", "1000.00")
     status, _ = recognize(
         "result",
         "The requested value is one thousand dollars.",
@@ -299,3 +299,100 @@ def test_telnyx_article_before_pound_key():
     assert recognize(
         "identifier", "Enter your 9 digit personal ID followed by a pound.", "000123456"
     ) == ("complete", "000123456#")
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ("one thousand four hundred twenty-five dollars and thirty cents", "1425.30"),
+        ("zero dollars and zero cents", "0.00"),
+        ("one dollar and one cent", "1.01"),
+        ("two thousand dollars and five cents", "2000.05"),
+        ("9999 dollars and 99 cents", "9999.99"),
+        ("$1,425.30", "1425.30"),
+        ("1425.30 dollars", "1425.30"),
+        ("17.42", "17.42"),
+    ],
+)
+def test_amount(body, expected):
+    assert parse_amount(f"Your requested value is {body}.") == expected
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "",
+        "available",
+        "one dollar",
+        "1.2",
+        "1.234",
+        "-1.00",
+        "1e3",
+        "NaN",
+        "infinity",
+        "10000.00",
+        "1,42.30",
+        "one dollars and one hundred cents",
+        "one hundred hundred dollars and zero cents",
+        "zero thousand dollars and zero cents",
+        "one thousand zero dollars and zero cents",
+        "one hundred and five dollars and zero cents",
+        "1.00 euros",
+        "1.00 or 2.00",
+        "1.00 then 2",
+        "one point five dollars",
+    ],
+)
+def test_unsupported_amount(body):
+    with pytest.raises(ValueError, match="result_unrecognized"):
+        parse_amount(f"Your requested value is {body}.")
+
+
+def test_fixture_amount_boundaries():
+    from fixture import result_prompt
+
+    for dollars in (0, 1, 19, 20, 21, 99, 100, 101, 999, 1000, 1001, 9999):
+        for cents in (0, 1, 9, 10, 19, 20, 21, 99):
+            amount = f"{dollars}.{cents:02}"
+            assert parse_amount(result_prompt(amount)) == amount
+
+
+def test_result_assembly():
+    def result(text):
+        return recognize("result", text, "000123456")
+
+    assert result("Your requested value is") == ("pending", None)
+    assert result("Your requested value is one dollar and") == ("pending", None)
+    assert result("Your requested value is one dollar and five cents.") == (
+        "complete",
+        "1.05",
+    )
+    assert result("Your requested value is 1.00. Your requested value is 1.00.") == (
+        "complete",
+        "1.00",
+    )
+    assert result("Your requested value is 1.00. Your requested value is 2.00.") == (
+        "invalid",
+        "result_unrecognized",
+    )
+    assert result("Your requested value is 1.00. Your requested value is") == (
+        "pending",
+        None,
+    )
+    assert result("Your requested value is 1.00 then 2.") == (
+        "invalid",
+        "result_unrecognized",
+    )
+    assert result("Your requested value is 1.00. That entry was not accepted.") == (
+        "invalid",
+        "fixture_rejection",
+    )
+
+
+def test_dollars_fragment_waits_for_cents_even_with_sentence_punctuation():
+    prefix = "Your requested value is one dollar."
+    assert recognize("result", prefix, "000123456") == ("pending", None)
+    assert recognize("result", prefix + " And five cents.", "000123456") == (
+        "complete",
+        "1.05",
+    )
