@@ -1,9 +1,9 @@
 # IVR spike
 
-Lessons 1–3 are accepted. Lesson 4 adds strict amount extraction, one terminal
+Lessons 1–4 are accepted. Lesson 4 adds strict amount extraction, one terminal
 value-or-error JSON record, bounded finalization, and correlated safe diagnostics.
-Implementation is verified offline; Lesson 4 live verification and learner
-acceptance remain pending. Prior transcription reliability limitations remain.
+Implementation is verified offline; the learner reported Lesson 4 walkthrough
+completion and signed off on 2026-09-22. Prior transcription reliability limitations remain.
 
 **Developer guide:** [Client call flow and how to change it](docs/client-call-flow.md) — source walkthrough, stage map, and a worked menu-step example.
 
@@ -54,7 +54,7 @@ scenario, health, documentation, or call-start endpoints are exposed.
 - [Lesson 1: connectivity](lessons/01-connectivity.md) — accepted 2026-09-21.
 - [Lesson 2: navigate the IVR by hand](lessons/02-test-ivr.md) — walkthrough and acceptance record.
 - [Lesson 3: automated caller](lessons/03-automated-caller.md) — accepted 2026-09-22.
-- [Lesson 4: value or error](lessons/04-value-or-error.md) — implemented offline; live acceptance pending.
+- [Lesson 4: value or error](lessons/04-value-or-error.md) — accepted 2026-09-22; walkthrough completion reported by learner.
 
 Accepted webhooks return empty **200**, after original-byte signature/freshness,
 64 KiB body, and envelope checks. Fixture events additionally validate call

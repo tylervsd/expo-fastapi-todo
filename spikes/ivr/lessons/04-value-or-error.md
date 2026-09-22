@@ -2,8 +2,8 @@
 
 Lesson 4 extends the accepted Lesson 3 caller. Work in
 `.worktrees/ivr-01-connectivity`, branch `codex/ivr-04-value-or-error`.
-Implementation is verified offline; live verification and learner acceptance
-are pending. No deployment or paid calls were performed during implementation.
+Implementation is verified offline. The learner reported walkthrough completion
+and signed off on 2026-09-22; detailed live artifacts were not supplied. No deployment or paid calls were performed during implementation.
 
 ## Prerequisites
 
@@ -137,7 +137,7 @@ and dials zero times.
 
 Lesson 4 release `bde9fdf` was deployed separately on 2026-09-22 and verified
 idle. See [deployment evidence](../deploy/README.md#lesson-4-deployment--2026-09-22).
-Live call acceptance remains pending. SSH through the existing IAP path, then:
+Learner acceptance is recorded below. SSH through the existing IAP path, then:
 
 ```sh
 sudo -u ivr /opt/ivr/current/.venv/bin/python /opt/ivr/current/cloud_runner.py start
@@ -183,11 +183,11 @@ first. Do not relax the grammar or accept partial transcripts to force success.
 | Evidence | Result |
 | --- | --- |
 | Offline suite and Ruff | See implementation verification record below |
-| Live normal `1425.30`: release, stdout, stderr, exit, timing | Not run |
-| Live changed `17.42`: same evidence | Not run |
-| Live wrong-ID rejection: same evidence | Not run |
+| Live normal `1425.30`: release, stdout, stderr, exit, timing | Walkthrough completion reported by learner; detailed artifacts not supplied |
+| Live changed `17.42`: same evidence | Walkthrough completion reported by learner; detailed artifacts not supplied |
+| Live wrong-ID rejection: same evidence | Walkthrough completion reported by learner; detailed artifacts not supplied |
 | Additional failed attempts and diagnosis | None performed during implementation |
-| Learner acceptance | Pending |
+| Learner acceptance | Signed off 2026-09-22 |
 
 Checkpoint: the client prints exactly one structured result and terminates;
 changing only the fixture amount changes the returned value. Offline passing
@@ -204,7 +204,7 @@ warnings remain. No dependencies added. Tests used the existing worktree Python
 environment. Final review was performed by the author; no subagents were used.
 The three final-review regressions cover segmented dollar/cents punctuation,
 interruption after a terminal decision, and internal-vs-provider dial failure.
-No deployment, paid call, or live acceptance is claimed.
+This implementation verification record does not claim deployment or live-call evidence.
 
 
 ## Deployment verification — 2026-09-22
@@ -213,5 +213,14 @@ Release `bde9fdf` is running on `ivr-webhook` in `us-west1-a`, project
 `fullstack-sandbox-tylervsd`. All 422 tests and Ruff passed on the VM. Both services
 are active; caller is idle; result retrieval returns `result_not_ready`/exit 1;
 public unsigned webhooks return 401 and `/status` returns 404. No paid calls were
-placed, so live acceptance rows above remain unchanged. Previous release
+placed during deployment verification. Previous release
 `11f2e01` is retained for rollback.
+
+
+## Learner acceptance — 2026-09-22
+
+The learner reported: “i have completed the lesson 4 walkthrough and signed off.”
+They authorized committing and merging to main and updating the local checkout.
+This records learner-reported completion, separately from the automated checks
+and deployment verification above. Per-call output, timestamps, and run IDs were
+not supplied with sign-off; no additional live calls were observed by the author.

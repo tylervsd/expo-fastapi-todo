@@ -2,7 +2,7 @@
 
 ## Status and outcome
 
-Curriculum started September 20, 2026. Lessons 1–3 are accepted. Lesson 3 was signed off on 2026-09-22. Lesson 2 was signed off by the learner on
+Curriculum started September 20, 2026. Lessons 1–4 are accepted. Lessons 3 and 4 were signed off on 2026-09-22. Lesson 2 was signed off by the learner on
 2026-09-21 after successful live calls. This is a separate learning track from
 the numbered fullstack curriculum. Each lesson will get a concrete implementation
 plan and walkthrough when we work through it.
@@ -201,12 +201,12 @@ transcription failures remain documented as a reliability limitation.
 **Planning:** [Spec](superpowers/specs/2026-09-22-ivr-04-value-or-error-design.md) and
 [implementation plan](superpowers/plans/2026-09-22-ivr-04-value-or-error.md).
 Implemented 2026-09-22 on `codex/ivr-04-value-or-error`: 422 tests and Ruff
-passed. [Walkthrough](../spikes/ivr/lessons/04-value-or-error.md). Live
-verification and learner acceptance remain pending. Reuses the existing IVR
+passed. [Walkthrough](../spikes/ivr/lessons/04-value-or-error.md). The learner
+reported walkthrough completion and signed off on 2026-09-22. Reuses the existing IVR
 worktree and the merged Lesson 3 local/cloud caller; no subagents used.
 Release `bde9fdf` deployed to the existing VM on 2026-09-22; idle service,
-result retrieval, and public route protection verified. No Lesson 4 paid calls
-placed; live acceptance remains pending.
+result retrieval, and public route protection verified. Detailed live call
+artifacts were not supplied with learner sign-off.
 
 **Learn:** separate recognizing a result from successfully completing transport;
 distinguish failure to understand speech from a provider or call failure.
@@ -226,7 +226,8 @@ No general English-number framework or LLM is required for this narrow grammar.
   Preserve an already completed result when late terminal events arrive.
 - [x] Emit a concise trace with local run ID, call IDs, state transitions, and
   elapsed times. Make sanitized transcription diagnostics an explicit debug option.
-- [ ] Verify stdout, stderr, and exit status for one live success and one failure.
+- [x] Verify stdout, stderr, and exit status for one live success and one failure
+  (walkthrough completion reported by learner; detailed artifacts not supplied).
 
 **Checkpoint:** running the client produces exactly one structured value or error
 and terminates. Changing the fixture's amount changes the client's output.
@@ -275,7 +276,7 @@ it is not a production reliability estimate.
 | 1. Connectivity | 41 tests, Ruff, loopback smoke checks passed | Completion reported by learner | Signed off 2026-09-21 |
 | 2. Test IVR | 168 tests and Ruff passed | Successful calls reported; intermittent delivery failures observed | Signed off 2026-09-21 |
 | 3. Automated caller | 369 tests and Ruff passed | Normal and leading-zero calls completed; wrong-ID rejected; intermittent STT failures recorded | Signed off 2026-09-22 |
-| 4. Value or error | 422 tests and Ruff passed | Not run | Pending |
+| 4. Value or error | 422 tests and Ruff passed | Walkthrough completion reported by learner; detailed artifacts not supplied | Signed off 2026-09-22 |
 | 5. Reliability drills | Not run | Not run | Pending |
 
 The two final deliverables are the independently runnable flow client and test

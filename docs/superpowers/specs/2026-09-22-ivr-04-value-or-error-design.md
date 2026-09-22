@@ -1,6 +1,6 @@
 # IVR Lesson 4: a value-or-error contract
 
-**Date:** 2026-09-22. **Status:** Implemented and verified offline: 422 tests passed; Ruff check and formatting passed, with two existing upstream deprecation warnings. Live verification and learner acceptance remain pending. Implementation and final author review used no subagents, as explicitly requested. No deployment or paid calls were performed.
+**Date:** 2026-09-22. **Status:** Implemented and verified offline: 422 tests passed; Ruff check and formatting passed, with two existing upstream deprecation warnings. The learner reported walkthrough completion and signed off on 2026-09-22; detailed live call artifacts were not supplied. Implementation and final author review used no subagents, as explicitly requested. Release `bde9fdf` was subsequently deployed and verified idle; no paid calls were placed by the author.
 
 **Walkthrough:** [Lesson 4](../../../spikes/ivr/lessons/04-value-or-error.md).
 
@@ -122,4 +122,4 @@ Live acceptance: on the selected existing local or cloud path, capture one `1425
 
 ## Review record
 
-Author self-review checked existing call sites (`recognize`, `ClientFlow`, `Caller`, local CLI, cloud Control), fixture amount bounds, cleanup retention, curriculum coverage, and prior lesson conventions. The five-second window and cloud runner are existing code to extend, not new infrastructure. No independent review or live validation claimed. Final author review added regressions for punctuated dollar/cents fragmentation, preserving the exit code on interruption after a decision, and distinguishing internal dial errors. All three failed before their fixes and passed afterward. Implementation remains on the lesson branch for the live learner checkpoint.
+Author self-review checked existing call sites (`recognize`, `ClientFlow`, `Caller`, local CLI, cloud Control), fixture amount bounds, cleanup retention, curriculum coverage, and prior lesson conventions. The five-second window and cloud runner are existing code to extend, not new infrastructure. No independent review or live validation claimed. Final author review added regressions for punctuated dollar/cents fragmentation, preserving the exit code on interruption after a decision, and distinguishing internal dial errors. All three failed before their fixes and passed afterward. The learner checkpoint was accepted on 2026-09-22, with merge to main authorized.

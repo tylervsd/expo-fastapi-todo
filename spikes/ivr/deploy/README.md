@@ -32,7 +32,8 @@ and end the remote call in Telnyx first. Restart loses all process-local state.
 ## Lesson 4 result retrieval
 
 Lesson 4 release `bde9fdf` was deployed on 2026-09-22. Deployment checks passed;
-paid-call verification and learner acceptance remain pending. After an explicitly
+the learner reported walkthrough completion and signed off on 2026-09-22
+(see the Lesson 4 acceptance record). After an explicitly
 started call reports `done=true` in `status`:
 
 ```sh
@@ -208,6 +209,6 @@ Post-cutover checks:
 - Existing service/Caddy files match the repository; credentials and callback configuration were unchanged.
 - Credential file remains root-owned 0600; runtime directory and control socket remain ivr-owned 0700/0600.
 
-No paid calls were placed. This verifies deployment and idle control behavior,
-not Lesson 4 end-to-end live acceptance. Use the Lesson 4 walkthrough for the
-normal, changed-amount, and rejected-ID exercises when authorized.
+No paid calls were placed during deployment verification. The learner subsequently
+reported walkthrough completion and signed off on 2026-09-22; detailed live call
+artifacts were not supplied. See the [Lesson 4 acceptance record](../lessons/04-value-or-error.md#learner-acceptance--2026-09-22).

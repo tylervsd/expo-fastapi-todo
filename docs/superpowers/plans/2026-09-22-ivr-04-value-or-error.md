@@ -10,7 +10,7 @@
 
 **Spec:** [Lesson 4 design](../specs/2026-09-22-ivr-04-value-or-error-design.md).
 
-**Status:** Implemented 2026-09-22; 422 tests passed, Ruff check and format passed, two existing upstream warnings. Both CLI help commands and document links verified. No subagents, deployment, or paid calls. Live acceptance pending. [Walkthrough](../../../spikes/ivr/lessons/04-value-or-error.md). Baseline was 369 tests.
+**Status:** Implemented 2026-09-22; 422 tests passed, Ruff check and format passed, two existing upstream warnings. Both CLI help commands and document links verified. No subagents or author-placed paid calls. Release `bde9fdf` was subsequently deployed and verified idle. The learner reported walkthrough completion and signed off on 2026-09-22; detailed live call artifacts were not supplied. [Walkthrough](../../../spikes/ivr/lessons/04-value-or-error.md). Baseline was 369 tests.
 
 ## Global Constraints
 
@@ -288,4 +288,4 @@ Author self-review checked task interfaces, existing caller sites, grammar bound
 - Ruling: Direct author review replaces all reviewer dispatch because the user prohibited subagents. No independent-review claim.
 - Ruling: Normalize only the dollar/cents sentence boundary introduced by segmented final speech. Unsupported words and numeric punctuation remain strict; no general transcript cleanup was added.
 - Ruling: Preserve an already decided result's exit code if interruption arrives during cleanup. Before a decision, interruption still emits its error and propagates cancellation.
-- No deferred code findings. Live evidence and learner sign-off remain pending, and the branch/worktree are retained under the lesson checkpoint convention.
+- No deferred code findings. The learner reported walkthrough completion and signed off on 2026-09-22, authorizing merge to main. Detailed live call artifacts were not supplied. The existing worktree is retained for subsequent lessons.
