@@ -405,3 +405,231 @@ def test_full_flow_logs_are_private(private, monkeypatch, caplog):
         assert secret not in caplog.text
     assert "result_spoken" in caplog.text
     assert "uncertain" in caplog.text
+
+
+class RecordingCaller:
+    def __init__(self):
+        self.seen = []
+
+    async def accept(self, data):
+        self.seen.append(data)
+
+    async def tick(self):
+        pass
+
+    async def close(self):
+        pass
+
+
+def _client_event(**payload):
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    return envelope(
+        id=str(uuid4()),
+        event_type="call.answered",
+        occurred_at=datetime.now(UTC).isoformat(),
+        payload={
+            "connection_id": "client-app",
+            "call_control_id": "call",
+            "call_leg_id": "leg",
+            **payload,
+        },
+    )
+
+
+def test_client_route_dispatches_only_to_caller(private):
+    import webhooks
+
+    recorded = RecordingCaller()
+    webhooks.public_app.state.caller = recorded
+    try:
+        body = _client_event()
+        with TestClient(public_app) as client:
+            response = client.post(
+                "/webhooks/client", content=body, headers=headers(private, body)
+            )
+            assert response.status_code == 200
+            assert response.content == b""
+            fixture_body = envelope(
+                id="evt-fixture", event_type="unknown.event", payload={}
+            )
+            assert (
+                client.post(
+                    "/webhooks/test-ivr",
+                    content=fixture_body,
+                    headers=headers(private, fixture_body),
+                ).status_code
+                == 200
+            )
+    finally:
+        for name in ("caller", "caller_enabled"):
+            if hasattr(webhooks.public_app.state, name):
+                delattr(webhooks.public_app.state, name)
+    assert len(recorded.seen) == 1
+    assert recorded.seen[0]["payload"]["connection_id"] == "client-app"
+
+
+def test_rejected_requests_mutate_neither(private):
+    import webhooks
+
+    recorded = RecordingCaller()
+    webhooks.public_app.state.caller = recorded
+    try:
+        with TestClient(public_app) as client:
+            valid = _client_event()
+            assert client.post("/webhooks/client", content=valid).status_code == 401
+            malformed = b"not json"
+            assert (
+                client.post(
+                    "/webhooks/client",
+                    content=malformed,
+                    headers=headers(private, malformed),
+                ).status_code
+                == 400
+            )
+            big = b"x" * 65537
+            assert (
+                client.post(
+                    "/webhooks/client",
+                    content=big,
+                    headers=headers(private, big),
+                ).status_code
+                == 413
+            )
+    finally:
+        for name in ("caller", "caller_enabled"):
+            if hasattr(webhooks.public_app.state, name):
+                delattr(webhooks.public_app.state, name)
+    assert recorded.seen == []
+
+
+def test_client_app_receipt_only_without_caller(private):
+    assert not hasattr(client_app.state, "caller")
+    body = _client_event()
+    with TestClient(client_app) as client:
+        assert (
+            client.post(
+                "/webhooks/client", content=body, headers=headers(private, body)
+            ).status_code
+            == 200
+        )
+    assert not hasattr(client_app.state, "caller")
+
+
+def _client_env(monkeypatch, connection="client-app"):
+    monkeypatch.setenv("TELNYX_API_KEY", "test-only")
+    monkeypatch.setenv("IVR_CONNECTION_ID", "fixture-app")
+    monkeypatch.setenv("IVR_CLIENT_CONNECTION_ID", connection)
+    monkeypatch.setenv("IVR_CLIENT_FROM_NUMBER", "+15555550100")
+    monkeypatch.setenv("IVR_CLIENT_TO_NUMBER", "+15555550199")
+
+
+def test_cli_lifespan_creates_and_clears_caller(private, monkeypatch):
+    import webhooks
+
+    _client_env(monkeypatch)
+    webhooks.public_app.state.caller_enabled = True
+    try:
+        with TestClient(public_app) as client:
+            assert webhooks.public_app.state.caller.exit_code is None
+            body = _client_event()
+            assert (
+                client.post(
+                    "/webhooks/client",
+                    content=body,
+                    headers=headers(private, body),
+                ).status_code
+                == 200
+            )
+    finally:
+        for name in ("caller", "caller_enabled"):
+            if hasattr(webhooks.public_app.state, name):
+                delattr(webhooks.public_app.state, name)
+    assert not hasattr(webhooks.public_app.state, "caller")
+    assert not hasattr(webhooks.public_app.state, "caller_enabled")
+
+
+def test_shutdown_still_closes_caller_and_http_when_fixture_close_fails(
+    private, monkeypatch
+):
+    import httpx
+
+    import webhooks
+
+    _client_env(monkeypatch)
+    caller_closed = []
+    http_closed = []
+
+    class BoomFixture:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def tick(self):
+            pass
+
+        async def close(self):
+            raise RuntimeError("boom")
+
+    class QuietCaller:
+        _started = True
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def tick(self):
+            pass
+
+        async def close(self):
+            caller_closed.append(1)
+
+    class RecordingClient(httpx.AsyncClient):
+        async def aclose(self):
+            http_closed.append(1)
+            await super().aclose()
+
+    monkeypatch.setattr(webhooks, "Fixture", BoomFixture)
+    monkeypatch.setattr(webhooks, "Caller", QuietCaller)
+    monkeypatch.setattr(webhooks.httpx, "AsyncClient", RecordingClient)
+    webhooks.public_app.state.caller_enabled = True
+    try:
+        with pytest.raises(RuntimeError, match="boom"), TestClient(public_app):
+            pass
+    finally:
+        for name in ("caller", "caller_enabled"):
+            if hasattr(webhooks.public_app.state, name):
+                delattr(webhooks.public_app.state, name)
+    assert caller_closed == [1]
+    assert http_closed != []
+
+
+def test_combined_mode_requires_distinct_app_ids(private, monkeypatch):
+    import webhooks
+
+    _client_env(monkeypatch, connection="fixture-app")
+    webhooks.public_app.state.caller_enabled = True
+    try:
+        with (
+            pytest.raises(RuntimeError, match="distinct"),
+            TestClient(public_app),
+        ):
+            pass
+    finally:
+        for name in ("caller", "caller_enabled"):
+            if hasattr(webhooks.public_app.state, name):
+                delattr(webhooks.public_app.state, name)
+
+
+def test_rejected_request_diagnostics_are_private(private, caplog):
+    caplog.set_level(logging.INFO, logger="ivr.http")
+    with TestClient(client_app) as client:
+        response = client.post(
+            "/webhooks/client?secret=SECRET_QUERY", content=b"SECRET_BODY"
+        )
+    assert response.status_code == 401
+    records = [
+        json.loads(r.getMessage()) for r in caplog.records if r.name == "ivr.http"
+    ]
+    assert records[-1]["status"] == 401
+    assert records[-1]["path"] == "/webhooks/client"
+    assert "SECRET_" not in caplog.text
