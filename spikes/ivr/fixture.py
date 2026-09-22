@@ -65,6 +65,7 @@ class Settings:
     call_timeout_seconds: int = 300
     voice: str = "female"
     challenge_override: str = ""
+    scenario: str = "normal"
 
     def __post_init__(self):
         try:
@@ -86,6 +87,20 @@ class Settings:
             if not (
                 not self.challenge_override
                 or re.fullmatch("[0-9]{4}", self.challenge_override)
+            ):
+                raise ValueError()
+            if self.scenario not in (
+                "normal",
+                "leading_zero",
+                "rejected_id",
+                "silent_stage",
+                "unsupported_result",
+                "early_hangup",
+            ):
+                raise ValueError()
+            if self.scenario == "leading_zero" and self.challenge_override not in (
+                "",
+                "0742",
             ):
                 raise ValueError()
             if not self.voice in ("female", "male"):
@@ -156,7 +171,11 @@ class Flow:
         self.challenge = (
             challenge
             if challenge is not None
-            else (settings.challenge_override or new_challenge())
+            else (
+                "0742"
+                if settings.scenario == "leading_zero"
+                else settings.challenge_override or new_challenge()
+            )
         )
         if not re.fullmatch(r"[0-9]{4}", self.challenge):
             raise ValueError("Invalid challenge")
@@ -241,6 +260,8 @@ class Flow:
         if event_type == "call.hangup":
             self.end(self.outcome or "remote_hangup")
             return None
+        if self.pending is None:
+            return self.expire(now=now)
         if payload.get("client_state") != self.pending.client_state:
             return None
         status = payload.get("status")
@@ -288,12 +309,31 @@ class Flow:
                 "identifier": "confirmation",
                 "confirmation": "result",
             }[self.stage]
+            scenario = self.settings.scenario
+            if next_stage == "challenge":
+                if scenario == "early_hangup":
+                    return self.hangup(now=now)
+                if scenario == "silent_stage":
+                    self.stage = "silent"
+                    self.pending = None
+                    self.deadline = self.call_deadline
+                    return None
+            if next_stage == "confirmation" and scenario == "rejected_id":
+                return self.fail(
+                    "input_rejected",
+                    now=now,
+                    prompt="We could not verify your entry. Goodbye.",
+                )
             if next_stage == "result":
                 self.attempt = 1
                 return self._reserve(
                     "result",
                     "speak",
-                    self._speech_fields(result_prompt(self.settings.result_amount)),
+                    self._speech_fields(
+                        "Your requested value is unavailable."
+                        if scenario == "unsupported_result"
+                        else result_prompt(self.settings.result_amount)
+                    ),
                     now,
                     self.settings.speech_grace_seconds,
                 )

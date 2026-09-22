@@ -38,6 +38,7 @@ def test_defaults_and_explicit_values(monkeypatch):
 def test_fixture_only_vars_are_ignored(monkeypatch):
     for key, value in VALID.items():
         monkeypatch.setenv(key, value)
+    monkeypatch.setenv("IVR_SCENARIO", "unsupported_result")
     monkeypatch.setenv("IVR_CHALLENGE_OVERRIDE", "not-a-code")
     monkeypatch.setenv("IVR_RESULT_AMOUNT", "not-an-amount")
     monkeypatch.setenv("IVR_CONNECTION_ID", "fixture-app-id")
