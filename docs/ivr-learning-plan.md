@@ -2,7 +2,7 @@
 
 ## Status and outcome
 
-Curriculum started September 20, 2026. Lessons 1–4 are accepted. Lessons 3 and 4 were signed off on 2026-09-22. Lesson 2 was signed off by the learner on
+Curriculum started September 20, 2026. Lessons 1–5 are accepted. Lesson 5 was signed off on 2026-09-22. Lessons 3 and 4 were signed off on 2026-09-22. Lesson 2 was signed off by the learner on
 2026-09-21 after successful live calls. This is a separate learning track from
 the numbered fullstack curriculum. Each lesson will get a concrete implementation
 plan and walkthrough when we work through it.
@@ -236,6 +236,13 @@ and terminates. Changing the fixture's amount changes the client's output.
 
 ## Lesson 5 — Repeatable end-to-end tests and failure drills
 
+**Planning:** [Spec](superpowers/specs/2026-09-22-ivr-05-reliability-drills-design.md) and
+[implementation plan](superpowers/plans/2026-09-22-ivr-05-reliability-drills.md).
+Implemented offline 2026-09-22 on `codex/ivr-05-reliability-drills`, reusing the
+existing IVR worktree from merged Lesson 4. 452 tests and Ruff passed.
+[Walkthrough](../spikes/ivr/lessons/05-reliability-drills.md). Learner sign-off received 2026-09-22; detailed live-call evidence was not supplied.
+No subagents used.
+
 **Learn:** webhook retries, duplicate commands, late events, and the limits of a
 local process with in-memory state.
 
@@ -243,19 +250,19 @@ local process with in-memory state.
 before a call: normal, leading-zero code, rejected ID, silent stage, unsupported
 result, and early hangup. The client has no access to scenario expectations.
 
-- [ ] Serialize state changes per call and deduplicate webhook event IDs for the
+- [x] Serialize state changes per call and deduplicate webhook event IDs for the
   call's lifetime. Use stable command IDs for the same logical action; a deliberate
   new attempt gets its own ID.
-- [ ] Replay duplicate and late events offline: no repeated DTMF, invalid state
+- [x] Replay duplicate and late events offline: no repeated DTMF, invalid state
   advancement, second terminal output, or reopening of a completed call.
-- [ ] Handle an uncertain command response without blindly issuing a new command.
+- [x] Handle an uncertain command response without blindly issuing a new command.
   Verify the provider's current retry and command-ID semantics during implementation.
-- [ ] Enforce the one-active-call limit locally; reject a second start rather than
+- [x] Enforce the one-active-call limit locally; reject a second start rather than
   queueing it. Ensure deadlines attempt hangup and release local state.
 - [ ] Run five normal live calls with changing challenges and at least two amounts,
   plus the leading-zero case and each failure scenario. Record every attempt,
   including failures; separate offline event-order tests from live-call evidence.
-- [ ] Document stop/restart cleanup and manual termination of a call if the local
+- [x] Document stop/restart cleanup and manual termination of a call if the local
   process or network fails. In-memory deduplication does not survive a restart.
 
 **Checkpoint:** all five normal calls return the correct amount, the leading-zero
@@ -277,7 +284,7 @@ it is not a production reliability estimate.
 | 2. Test IVR | 168 tests and Ruff passed | Successful calls reported; intermittent delivery failures observed | Signed off 2026-09-21 |
 | 3. Automated caller | 369 tests and Ruff passed | Normal and leading-zero calls completed; wrong-ID rejected; intermittent STT failures recorded | Signed off 2026-09-22 |
 | 4. Value or error | 422 tests and Ruff passed | Walkthrough completion reported by learner; detailed artifacts not supplied | Signed off 2026-09-22 |
-| 5. Reliability drills | Not run | Not run | Pending |
+| 5. Reliability drills | 452 tests and Ruff passed | Detailed live-call evidence not supplied | Signed off 2026-09-22 |
 
 The two final deliverables are the independently runnable flow client and test
 IVR, with reproducible setup, lesson guides, offline checks, and recorded live

@@ -49,6 +49,14 @@ until done. Results survive cleanup and repeated queries, but not service restar
 Trace diagnostics remain in the journal; `IVR_CLIENT_DEBUG_TRANSCRIPTS=1` adds
 safe metadata only. See [Lesson 4](../lessons/04-value-or-error.md) for acceptance.
 
+## Lesson 5 scenario drills
+
+Lesson 5 is implemented offline, not yet deployed. After separately deploying
+the committed lesson release, select `IVR_SCENARIO` in `/etc/ivr/ivr.env` and
+restart only after confirming previous call termination. No public scenario
+endpoint exists. Follow the [Lesson 5 walkthrough](../lessons/05-reliability-drills.md)
+for the ten-call matrix, result retrieval, cleanup, and restoration to normal.
+
 ## Runtime and credentials
 
 Caddy proxies only POSTs to the two webhook paths. Uvicorn listens on loopback

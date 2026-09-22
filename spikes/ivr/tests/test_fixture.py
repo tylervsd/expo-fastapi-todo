@@ -661,3 +661,134 @@ def test_runtime_sender_failure_is_bounded_and_private(answered, caplog):
         assert "SECRET_PROVIDER_BODY" not in caplog.text
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("scenario", ["", "NORMAL", "unknown", None, []])
+def test_invalid_scenario(scenario):
+    with pytest.raises(RuntimeError, match="^Invalid fixture configuration$"):
+        settings(scenario=scenario)
+
+
+@pytest.mark.parametrize("override", ["", "0742"])
+def test_leading_zero_scenario(override):
+    flow = Flow(
+        settings(scenario="leading_zero", challenge_override=override),
+        "call",
+        "leg",
+        now=0,
+    )
+    assert flow.challenge == "0742"
+    with pytest.raises(RuntimeError, match="Invalid fixture configuration"):
+        settings(scenario="leading_zero", challenge_override="1234")
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "normal",
+        "leading_zero",
+        "rejected_id",
+        "silent_stage",
+        "unsupported_result",
+        "early_hangup",
+    ],
+)
+def test_scenario_environment(monkeypatch, scenario):
+    monkeypatch.setenv("TELNYX_API_KEY", "test-only")
+    monkeypatch.setenv("IVR_CONNECTION_ID", "app")
+    monkeypatch.setenv("IVR_SCENARIO", scenario)
+    monkeypatch.delenv("IVR_CHALLENGE_OVERRIDE", raising=False)
+    assert load_settings().scenario == scenario
+
+
+def test_rejected_id_scenario():
+    flow = flow_at("identifier", scenario="rejected_id")
+    command = complete(flow, status="valid", digits="000123456#")
+    assert flow.stage == "failure"
+    assert (
+        json.loads(command.body)["payload"]
+        == "We could not verify your entry. Goodbye."
+    )
+    assert complete(flow, "call.speak.ended", status="completed").action == "hangup"
+
+
+def test_unsupported_result_scenario():
+    flow = flow_at("result", scenario="unsupported_result")
+    assert (
+        json.loads(flow.pending.body)["payload"]
+        == "Your requested value is unavailable."
+    )
+    assert complete(flow, "call.speak.ended", status="completed").action == "hangup"
+
+
+def test_early_hangup_scenario():
+    flow = flow_at("welcome", scenario="early_hangup")
+    assert complete(flow, status="valid", digits="1").action == "hangup"
+    assert flow.stage == "hanging_up"
+
+
+@pytest.mark.parametrize("ending", ["remote", "deadline", "close"])
+def test_silent_scenario_cleanup(ending):
+    async def exercise():
+        sent = []
+
+        async def send(command):
+            sent.append(command)
+
+        flow = flow_at("welcome", scenario="silent_stage")
+        assert complete(flow, status="valid", digits="1") is None
+        assert flow.stage == "silent" and flow.pending is None
+        assert flow.deadline == flow.call_deadline
+        assert flow.command_failed("obsolete", now=2) is None
+        for kind in ("call.gather.ended", "call.speak.ended", "call.answered"):
+            assert flow.handle(kind, {"client_state": "obsolete"}, now=2) is None
+        runtime = Fixture(
+            flow.settings,
+            send,
+            started_at=datetime.now(UTC),
+            clock=lambda: flow.call_deadline if ending == "deadline" else 2,
+        )
+        runtime.active = flow
+        if ending == "remote":
+            flow.handle("call.hangup", {}, now=2)
+            await runtime.tick()
+            assert runtime.active is None
+            assert not sent
+        elif ending == "deadline":
+            await runtime.tick()
+            await runtime.drain()
+            assert [c.action for c in sent] == ["hangup"]
+        await runtime.close()
+        assert runtime.active is None and not runtime.tasks
+        assert len(sent) == (0 if ending == "remote" else 1)
+
+    asyncio.run(exercise())
+
+
+def test_fresh_id_obsolete_completion_does_not_repeat_action():
+    async def exercise():
+        sent = []
+
+        async def send(command):
+            sent.append(command)
+
+        ivr = runtime(send)
+        await ivr.accept(event())
+        await ivr.drain()
+        await runtime_complete(ivr, "call.answered")
+        token = ivr.active.pending.client_state
+        await ivr.accept(
+            event("call.gather.ended", client_state=token, status="valid", digits="1")
+        )
+        await ivr.drain()
+        pending = ivr.active.pending
+        count = len(sent)
+        await ivr.accept(
+            event("call.gather.ended", client_state=token, status="valid", digits="1")
+        )
+        await ivr.drain()
+        assert ivr.active.stage == "challenge"
+        assert ivr.active.pending is pending and len(sent) == count
+        await ivr.close()
+
+    asyncio.run(exercise())
