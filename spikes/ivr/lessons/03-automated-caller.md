@@ -295,7 +295,6 @@ time, last prompt, provider delivery status, and ingress errors. No
 credentials or raw call payloads belong in this record.
 Stop after this lesson; Lesson 4 has not been implemented.
 
-
 Cloud acceptance update (2026-09-21 PDT / 2026-09-22 UTC): permanent
 Telnyx/inbound release `11f2e01` passed normal and leading-zero full calls.
 Wrong-ID rejection passed on `e493bb5`; later changes only normalize prompt
