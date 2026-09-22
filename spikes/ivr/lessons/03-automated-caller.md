@@ -153,7 +153,9 @@ echo $?
 ```
 
 One invocation places exactly one call, then exits. Exit 0 only when the
-result announcement **and** a matching fixture hangup were both observed.
+result announcement **and** a matching call hangup were both observed.
+At the result stage, the caller allows five seconds after hangup for a delayed
+final transcription webhook. Other stages still fail on early hangup.
 Stdout stays empty; one final diagnostic line goes to stderr:
 
 ```sh
@@ -203,6 +205,7 @@ tune these and rerun; do not add sleeps to the navigation.
 | --- | --- | --- |
 | Stage deadline | 30 s (10–60) | Each new stage gets a fresh window; partials and duplicates never extend it |
 | Overall deadline | 180 s (60–600, ≥ stage) | Starts at dial reservation; navigation stops when it expires |
+| Final result after hangup | 5 s | Only at result stage; duplicate hangups do not extend it; call/leg ownership remains enforced |
 | Cleanup budget | 15 s | One best-effort hangup of the owned leg after errors/timeout/Ctrl-C |
 | Server readiness | 10 s | CLI dials only after its Uvicorn server reports ready; a bind/startup failure dials zero times |
 | Dial submission | 5 s, once | No retry even on 429/5xx; uncertainty waits for a correlated callback, never redials |
@@ -258,7 +261,8 @@ existing upstream Starlette/AnyIO deprecation warnings), Ruff check, Ruff
 format check (`16 files already formatted`), `caller.py --help`, and
 `git diff --check`. Tests isolate inherited account settings, block real
 outbound HTTP, use synthetic signatures, and use fake transports/clocks. No
-live calls were placed by the implementation agent.
+live calls were placed during that initial offline verification. Subsequent
+agent-run cloud diagnostics and acceptance are recorded below.
 
 | Evidence | Offline result | Live observation / time | Learner acceptance |
 | --- | --- | --- | --- |
@@ -268,13 +272,13 @@ live calls were placed by the implementation agent.
 | Five-action prompt navigation replay | Passed (358 tests) | Not run | Pending |
 | Call/leg ownership, early callbacks, cleanup | Passed (358 tests) | Not run | Pending |
 | CLI lifecycle, role isolation, stdout privacy | Passed (358 tests) | Not run | Pending |
-| Normal live call to result announcement | Passed (offline replay) | Not run | Pending |
-| Different-challenge live repeat | Passed (offline replay) | Not run | Pending |
-| `0742` override live replay | Passed (offline replay) | Not run | Pending |
-| Mismatched-ID live rejection | Passed (offline replay) | Not run | Pending |
-| Transcription track hears fixture speech | Not applicable offline | Not run | Pending |
+| Normal live call to result announcement | Passed (offline replay) | Passed 2026-09-22 02:15:06 UTC; release 11f2e01, completed / exit 0 | Pending learner review |
+| Different-challenge live repeat | Passed (offline replay) | Normal random-challenge call and separate fixed 0742 call completed on 11f2e01 | Pending learner review |
+| `0742` override live replay | Passed (offline replay) | Passed 2026-09-22 02:17:58 UTC; completed / exit 0; fixture accepted exact challenge | Pending learner review |
+| Mismatched-ID live rejection | Passed (offline replay) | Passed 2026-09-22 02:08:27 UTC; fixture_rejection / exit 1, no confirmation DTMF | Pending learner review |
+| Transcription track hears fixture speech | Not applicable offline | Telnyx/inbound finals observed across all stages | Pending learner review |
 | Scoped tunnel cleanup | Not applicable | Not run | Pending |
-| Lesson completion | Local implementation verified | Not run | Pending |
+| Lesson completion | 369 tests, Ruff and formatting pass | Normal and leading-zero success; wrong-ID rejected; cloud runtime restored idle | Pending learner review |
 
 For each attempt record date/time, scenario, expected versus heard speech,
 stage progression, provider-side received DTMF (synthetic ID redacted),
@@ -289,3 +293,14 @@ successful Lesson 3 reruns as a reliability fix. On recurrence, retain call
 time, last prompt, provider delivery status, and ingress errors. No
 credentials or raw call payloads belong in this record.
 Stop after this lesson; Lesson 4 has not been implemented.
+
+
+Cloud acceptance update (2026-09-21 PDT / 2026-09-22 UTC): permanent
+Telnyx/inbound release `11f2e01` passed normal and leading-zero full calls.
+Wrong-ID rejection passed on `e493bb5`; later changes only normalize prompt
+wording and add tests. Detailed timestamps and failed attempts are in
+[the deployment record](../deploy/README.md). Temporary environment overrides
+were removed and the service was verified idle with its normal ExecStart.
+These results close the engine-configuration and successful-live-call blockers.
+Learner sign-off and any unperformed manual troubleshooting exercises remain
+explicitly separate; intermittent STT failures above are not a reliability fix.

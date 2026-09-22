@@ -132,3 +132,35 @@ end-to-end acceptance remains unverified. That challenge transcript was not
 retained. Investigate its wording before broadening grammar. Temporary probe
 service overrides were removed; normal service remains Google/final-only,
 with the parser fix deployed. No permanent Telnyx-engine migration is claimed.
+
+## Permanent Telnyx release and acceptance — 2026-09-22 UTC
+
+Release `11f2e01` uses Telnyx/inbound transcription enabled at dial time,
+without Google-only interim options. It normalizes only the observed
+"followed by pounds" / "followed by a pound" instruction variants. It waits
+at most five seconds for a final result transcript after a matching hangup;
+missing results still fail, duplicate hangups cannot extend the wait, and
+other-call transcripts remain rejected. No temporary engine probe is required.
+
+Offline: 369 tests passed, Ruff and formatting passed (two existing warnings).
+Normal live acceptance: 02:14:14–02:15:06 UTC, caller run
+`50a1a401-2112-4678-b661-4bd6970af486`, all six parser stages complete,
+fixture `result_spoken`, caller `completed` / exit 0.
+Wrong-ID scenario: 02:07:38–02:08:27 UTC on release e493bb5, rejected at
+identifier, caller `fixture_rejection` / exit 1, no confirmation tone sent.
+
+Failed attempts remain material: before the final prompt normalization,
+Google yielded no finals; explicit Telnyx start sometimes missed prompt text;
+normal repeat reported unexpected_menu; menu transcription was absent in one
+run; leading-zero challenge stalled on "a pound"; final result arrived after
+hangup before the five-second grace was added. The first leading-zero run on
+11f2e01 failed at welcome with unexpected_menu. A successful run is functional
+acceptance evidence, not proof of transcription reliability.
+
+Leading-zero final rerun: 02:17:05–02:17:58 UTC on `11f2e01`, caller
+`6192c797-e7d0-45ff-8d32-b53f5e8cc29a`, fixture-only override `0742`, all six
+parser stages complete, fixture `result_spoken`, caller `completed` / exit 0.
+The fixture advanced only after the exact challenge plus pound matched.
+At 02:18 UTC all test drop-ins and temporary settings were removed; systemd
+reported no DropInPaths, normal cloud_runner.py serve, and idle/not-started.
+Both original blockers (permanent engine and full live success) are closed.
