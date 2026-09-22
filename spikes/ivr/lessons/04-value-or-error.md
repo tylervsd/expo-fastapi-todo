@@ -133,11 +133,11 @@ Inspect `/tmp/ivr-trace.log` locally for stage transitions and cleanup warnings.
 Retain only sanitized evidence. A bind/startup failure prints a structured error
 and dials zero times.
 
-### Existing cloud runner (after separate deployment)
+### Existing cloud runner
 
-The cloud VM has not been updated as part of this lesson implementation. Follow
-[deployment guidance](../deploy/README.md) for a separately authorized release.
-SSH through the existing IAP path, then:
+Lesson 4 release `bde9fdf` was deployed separately on 2026-09-22 and verified
+idle. See [deployment evidence](../deploy/README.md#lesson-4-deployment--2026-09-22).
+Live call acceptance remains pending. SSH through the existing IAP path, then:
 
 ```sh
 sudo -u ivr /opt/ivr/current/.venv/bin/python /opt/ivr/current/cloud_runner.py start
@@ -205,3 +205,13 @@ environment. Final review was performed by the author; no subagents were used.
 The three final-review regressions cover segmented dollar/cents punctuation,
 interruption after a terminal decision, and internal-vs-provider dial failure.
 No deployment, paid call, or live acceptance is claimed.
+
+
+## Deployment verification — 2026-09-22
+
+Release `bde9fdf` is running on `ivr-webhook` in `us-west1-a`, project
+`fullstack-sandbox-tylervsd`. All 422 tests and Ruff passed on the VM. Both services
+are active; caller is idle; result retrieval returns `result_not_ready`/exit 1;
+public unsigned webhooks return 401 and `/status` returns 404. No paid calls were
+placed, so live acceptance rows above remain unchanged. Previous release
+`11f2e01` is retained for rollback.

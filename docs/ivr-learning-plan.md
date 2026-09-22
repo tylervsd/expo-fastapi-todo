@@ -204,6 +204,9 @@ Implemented 2026-09-22 on `codex/ivr-04-value-or-error`: 422 tests and Ruff
 passed. [Walkthrough](../spikes/ivr/lessons/04-value-or-error.md). Live
 verification and learner acceptance remain pending. Reuses the existing IVR
 worktree and the merged Lesson 3 local/cloud caller; no subagents used.
+Release `bde9fdf` deployed to the existing VM on 2026-09-22; idle service,
+result retrieval, and public route protection verified. No Lesson 4 paid calls
+placed; live acceptance remains pending.
 
 **Learn:** separate recognizing a result from successfully completing transport;
 distinguish failure to understand speech from a provider or call failure.

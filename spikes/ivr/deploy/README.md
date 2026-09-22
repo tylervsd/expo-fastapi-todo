@@ -29,10 +29,11 @@ legs have ended and at least 60 seconds have elapsed, explicitly restart for a
 new call: `sudo systemctl restart ivr`. If termination is unconfirmed, inspect
 and end the remote call in Telnyx first. Restart loses all process-local state.
 
-## Lesson 4 result retrieval (requires deploying the Lesson 4 release)
+## Lesson 4 result retrieval
 
-Lesson 4 has been verified offline; this document does not claim that release
-is deployed. After an explicitly started call reports `done=true` in `status`:
+Lesson 4 release `bde9fdf` was deployed on 2026-09-22. Deployment checks passed;
+paid-call verification and learner acceptance remain pending. After an explicitly
+started call reports `done=true` in `status`:
 
 ```sh
 sudo -u ivr /opt/ivr/current/.venv/bin/python /opt/ivr/current/cloud_runner.py result
@@ -182,3 +183,31 @@ The fixture advanced only after the exact challenge plus pound matched.
 At 02:18 UTC all test drop-ins and temporary settings were removed; systemd
 reported no DropInPaths, normal cloud_runner.py serve, and idle/not-started.
 Both original blockers (permanent engine and full live success) are closed.
+
+
+## Lesson 4 deployment — 2026-09-22
+
+Deployed committed release `bde9fdf` to `/opt/ivr/releases/bde9fdf`; service
+became active at 15:50:46 UTC. Previous release `/opt/ivr/releases/11f2e01`
+remains available for rollback. No recent call activity was present and control
+reported idle before cutover. An automatic rollback guard protected startup.
+
+Archive SHA-256: `794cd37b84389c2e380bdac28e3d60a1ff0dcdd748cabb0f56712d35c177dbdc`.
+Only tracked IVR files were packaged; no `.env`, environment, caches, or unrelated
+repository files. Python 3.14.7 and uv 0.12.17 installed the locked dependencies.
+422 tests passed locally and on the VM under the `ivr` user, with two existing
+upstream warnings; Ruff check and format passed on both. The preflight corrected
+formatting in the new Markdown guide's code examples before packaging.
+
+Post-cutover checks:
+
+- `ivr` and `caddy` active; current release resolves to `bde9fdf`; no service drop-ins.
+- Control status: `started=false`, `done=false`, `stage=idle`, `result=null`.
+- `result` prints `result_not_ready` at stage `startup`, exits 1, and leaves the caller idle.
+- HTTPS unsigned client/fixture webhook requests return 401/401; public `/status` returns 404. TLS verification remained enabled.
+- Existing service/Caddy files match the repository; credentials and callback configuration were unchanged.
+- Credential file remains root-owned 0600; runtime directory and control socket remain ivr-owned 0700/0600.
+
+No paid calls were placed. This verifies deployment and idle control behavior,
+not Lesson 4 end-to-end live acceptance. Use the Lesson 4 walkthrough for the
+normal, changed-amount, and rejected-ID exercises when authorized.
