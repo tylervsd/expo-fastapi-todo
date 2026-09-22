@@ -40,7 +40,7 @@ Add `Settings.scenario: str = "normal"`, loaded through the existing `IVR_` mapp
 | --- | --- | --- |
 | `normal` | Existing flow, random four-digit challenge, configured amount | Success with the spoken configured amount |
 | `leading_zero` | Existing flow with challenge `0742` | Success; sent challenge preserves its leading zero |
-| `rejected_id` | After otherwise valid identifier entry, speak the existing rejection phrase and hang up, without confirmation/result | `fixture_rejected`, stage `confirmation` |
+| `rejected_id` | After otherwise valid identifier entry, speak the existing rejection phrase and hang up, without confirmation/result | `fixture_rejection`, stage `confirmation` |
 | `silent_stage` | After valid welcome input, send no challenge prompt and wait for remote hangup or the existing fixture overall deadline | `stage_timeout`, stage `challenge` |
 | `unsupported_result` | At result, speak “Your requested value is unavailable.” and finish normally | `result_unrecognized`, stage `result` |
 | `early_hangup` | After valid welcome input, hang up before speaking the challenge | `early_hangup`, stage `challenge` |

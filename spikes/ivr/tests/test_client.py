@@ -1913,3 +1913,116 @@ def test_split_result_cents_after_hangup(partial):
         if partial
         else {"status": "success", "value": "1.05", "currency": "USD"}
     )
+
+
+@pytest.mark.parametrize(
+    "scenario,amount,code,stage",
+    [
+        ("normal", "1425.30", None, None),
+        ("normal", "17.42", None, None),
+        ("leading_zero", "1425.30", None, None),
+        ("rejected_id", "1425.30", "fixture_rejection", "confirmation"),
+        ("silent_stage", "1425.30", "stage_timeout", "challenge"),
+        ("unsupported_result", "1425.30", "result_unrecognized", "result"),
+        ("early_hangup", "1425.30", "early_hangup", "challenge"),
+    ],
+)
+def test_scenario_prompt_replay(scenario, amount, code, stage):
+    # Test-only bridge: real fixture prompts become synthetic final transcripts.
+    # This verifies protocol compatibility, not STT or provider delivery quality.
+    from fixture import Flow, Settings
+
+    async def exercise():
+        harness = _CallerHarness()
+        fixture = Flow(
+            Settings(
+                api_key="test-only",
+                connection_id="fixture-app",
+                scenario=scenario,
+                result_amount=amount,
+            ),
+            "fixture-call",
+            "fixture-leg",
+            now=0,
+        )
+        await harness.start_and_bind()
+        answered = _canswered(harness)
+        await asyncio.gather(
+            harness.caller.accept(answered), harness.caller.accept(answered)
+        )
+        fixture.handle(
+            "call.answered", {"client_state": fixture.pending.client_state}, now=1
+        )
+        for _ in range(10):
+            command = fixture.pending
+            if command is None:
+                assert fixture.stage == "silent"
+                harness.clock.advance(30)
+                await harness.caller.tick()
+                break
+            if command.action == "hangup":
+                break
+            body = json.loads(command.body)
+            transcript = _ctranscript(harness, body["payload"])
+            await asyncio.gather(
+                harness.caller.accept(transcript), harness.caller.accept(transcript)
+            )
+            await harness.drain()
+            if command.action == "gather_using_speak":
+                digits = harness.dtmf_digits()[-1]
+                fixture.handle(
+                    "call.gather.ended",
+                    {
+                        "client_state": command.client_state,
+                        "status": "valid",
+                        "digits": digits,
+                    },
+                    now=2,
+                )
+            else:
+                assert command.action == "speak"
+                fixture.handle(
+                    "call.speak.ended",
+                    {"client_state": command.client_state, "status": "completed"},
+                    now=2,
+                )
+        else:
+            pytest.fail("fixture replay did not terminate")
+        await harness.drain()
+        hangup = _changup(harness)
+        await harness.caller.accept(hangup)
+        harness.clock.advance(4)
+        # Fresh-ID duplicate hangup must not extend result finalization.
+        await harness.caller.accept(_changup(harness))
+        harness.clock.advance(1)
+        await harness.caller.tick()
+        await harness.drain()
+        assert harness.caller.done.is_set()
+        expected = (
+            {"status": "error", "code": code, "stage": stage}
+            if code
+            else {"status": "success", "value": amount, "currency": "USD"}
+        )
+        assert harness.caller.result == expected
+        assert harness.caller.exit_code == (1 if code else 0)
+        assert len(harness.dial_requests) == 1
+        expected_count = (
+            1
+            if scenario in ("silent_stage", "early_hangup")
+            else 4
+            if scenario == "rejected_id"
+            else 5
+        )
+        assert len(harness.dtmf_digits()) == expected_count
+        if scenario == "leading_zero":
+            assert harness.dtmf_digits()[1] == "0742#"
+        count = len(harness.sent)
+        await harness.caller.accept(transcript)
+        await harness.caller.accept(answered)
+        await harness.caller.accept(hangup)
+        await harness.drain()
+        assert len(harness.sent) == count
+        assert harness.caller.result == expected
+        await harness.close()
+
+    asyncio.run(exercise())

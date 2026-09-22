@@ -763,3 +763,32 @@ def test_silent_scenario_cleanup(ending):
         assert len(sent) == (0 if ending == "remote" else 1)
 
     asyncio.run(exercise())
+
+
+def test_fresh_id_obsolete_completion_does_not_repeat_action():
+    async def exercise():
+        sent = []
+
+        async def send(command):
+            sent.append(command)
+
+        ivr = runtime(send)
+        await ivr.accept(event())
+        await ivr.drain()
+        await runtime_complete(ivr, "call.answered")
+        token = ivr.active.pending.client_state
+        await ivr.accept(
+            event("call.gather.ended", client_state=token, status="valid", digits="1")
+        )
+        await ivr.drain()
+        pending = ivr.active.pending
+        count = len(sent)
+        await ivr.accept(
+            event("call.gather.ended", client_state=token, status="valid", digits="1")
+        )
+        await ivr.drain()
+        assert ivr.active.stage == "challenge"
+        assert ivr.active.pending is pending and len(sent) == count
+        await ivr.close()
+
+    asyncio.run(exercise())

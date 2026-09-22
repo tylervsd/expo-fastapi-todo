@@ -139,7 +139,7 @@ async def replay(accept, events):
 | Cleanup command fails or hangup acknowledgement is absent | Original decision retained, tasks drained within bounds |
 
 - [ ] Reuse existing tests covering these schedules; add only missing combinations and explicit command-count assertions. Run the focused schedule check before each necessary runtime fix. Preserve guards and terminal semantics already proven in Lesson 4.
-- [ ] Extend scenario tests to assert expected client JSON from representative final transcripts/events: rejected-ID → `fixture_rejected/confirmation`; silence → `stage_timeout/challenge`; unsupported result → `result_unrecognized/result`; early hangup → `early_hangup/challenge`. Include normal amounts `1425.30`, `17.42`, and leading-zero challenge. Test scaffolding may know expectations; client code may not.
+- [ ] Extend scenario tests to assert expected client JSON from representative final transcripts/events: rejected-ID → `fixture_rejection/confirmation`; silence → `stage_timeout/challenge`; unsupported result → `result_unrecognized/result`; early hangup → `early_hangup/challenge`. Include normal amounts `1425.30`, `17.42`, and leading-zero challenge. Test scaffolding may know expectations; client code may not.
 - [ ] Retain the existing cloud concurrent-start check, repeated status/result read checks, and post-completion `restart_required`. Extend only if a path is missing. Verify local stdout is one JSON line and exit codes agree with cloud terminal results.
 - [ ] Run fixture/client/transport/cloud/CLI/webhook tests, then commit as `test: replay IVR duplicate and late-event failure drills`, or a precise `fix:` message if needed.
 
