@@ -100,3 +100,17 @@ Explicit teardown, only after rollback/no active calls: delete VM `ivr-webhook`
 and its auto-delete boot disk; release address `ivr-webhook-ip`; delete the two
 named IVR firewall rules, IVR subnet and VPC; remove only the `ivr` DNS A record.
 Do not delete the default network, other sandbox services, or shared IAM roles.
+
+## Deployment evidence — 2026-09-21
+
+Release `e4b5e29` deployed to the resources above. Debian 12, Python 3.14.7,
+uv 0.12.17, Caddy 2.6.2. Local verification: 364 tests passed; Ruff checks and
+formatting passed (two upstream deprecation warnings).
+
+Both systemd services are active. Control reports `started: false`, `stage: idle`.
+Credential file is root-owned 0600; runtime directory 0700; control socket 0600.
+TLS certificate validation succeeds for the hostname. Ten concurrent-batch
+unsigned webhook requests all returned 401; `/status` returned 404. These checks
+used curl `--resolve` with the reserved IP because local DNS was still pending;
+no certificate verification was bypassed. Google public DNS already resolved
+the A record. Telnyx callback cutover and a real call remain unverified.
