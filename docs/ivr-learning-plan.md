@@ -198,6 +198,12 @@ transcription failures remain documented as a reliability limitation.
 
 ## Lesson 4 — A value-or-error contract
 
+**Planning:** [Spec](superpowers/specs/2026-09-22-ivr-04-value-or-error-design.md) and
+[implementation plan](superpowers/plans/2026-09-22-ivr-04-value-or-error.md).
+Drafted 2026-09-22 on `codex/ivr-04-value-or-error`; implementation, live
+verification, and learner acceptance remain pending. Reuses the existing IVR
+worktree and the merged Lesson 3 local/cloud caller.
+
 **Learn:** separate recognizing a result from successfully completing transport;
 distinguish failure to understand speech from a provider or call failure.
 
