@@ -1,5 +1,9 @@
 """Phase 23 operator backfill: stamp legacy completed todos with completed_at.
 
+Also clears stamps on reopened rows, which pre-A code leaves behind after a
+rollback (it writes only `completed`). Valid only while `completed` is still
+written, i.e. before release C1.
+
 Deliberately not an Alembic migration, so releases can run ahead of it. The
 timestamp is the backfill time: real historical completion times are unknown.
 Run on the migration job:  python -m app.backfill_completed_at
@@ -26,15 +30,28 @@ WHERE id IN (
 AND completed AND completed_at IS NULL
 """
 
+CLEAR_SQL = """
+UPDATE todos SET completed_at = NULL
+WHERE id IN (
+    SELECT id FROM todos
+    WHERE NOT completed AND completed_at IS NOT NULL
+    ORDER BY id LIMIT :batch_size
+    FOR UPDATE SKIP LOCKED
+)
+AND NOT completed AND completed_at IS NOT NULL
+"""
+
 
 def backfill(session_factory: sessionmaker[Session], batch_size: int = 500) -> int:
     total = 0
     batches = 0
     while True:
-        with session_factory.begin() as session:
-            updated = session.execute(
-                text(BATCH_SQL), {"batch_size": batch_size}
-            ).rowcount
+        updated = 0
+        for statement in (BATCH_SQL, CLEAR_SQL):
+            with session_factory.begin() as session:
+                updated += session.execute(
+                    text(statement), {"batch_size": batch_size}
+                ).rowcount
         if updated == 0:
             break
         total += updated

@@ -1,6 +1,6 @@
 # Phase 23: Resilience and production operations
 
-**Status:** Design approved by the learner in conversation on 2026-09-23. Written spec awaiting learner review.
+**Status:** Design and written spec approved by the learner on 2026-09-23. Release A implemented; live drills pending.
 
 **Context:** Based on `main` at `f0e0006`, following Phase 22. The learner will be CTO of Accountable, a pre-launch fintech handling customer PII, and wants to judge whether an inherited team has *rehearsed* recovery or merely *assumes* it works. This phase is educational practice against the disposable sandbox, not Accountable's production runbook or compliance evidence. Use invented names and data throughout.
 
@@ -44,7 +44,7 @@ Replace the boolean `completed` with a nullable `completed_at timestamptz`. The 
 
 | Release | Branch | Migration | Writes | Reads | Safe rollback target |
 | --- | --- | --- | --- | --- | --- |
-| A: expand | `codex/phase-23-resilience` | add nullable `completed_at` | both | `completed` | previous release |
+| A: expand | `codex/phase-23-resilience` | add nullable `completed_at` | both | `completed` | previous release, then rerun the backfill before B |
 | B: read switch | `codex/phase-23-read-switch` | none | both | `completed_at IS NOT NULL` | A (B still writes `completed`) |
 | C1: stop writing | `codex/phase-23-contract` | none | `completed_at` only; `completed` is left to its server default on insert and no longer updated | `completed_at` | B, with `completed` stale — acceptable only because C2 follows |
 | C2: drop | `codex/phase-23-contract-drop` | drop `completed` | `completed_at` | `completed_at` | C1 |
@@ -59,7 +59,7 @@ C2's downgrade re-adds `completed` as `NOT NULL DEFAULT false` and sets it from 
 
 ### Backfill
 
-`python -m app.backfill_completed_at` updates rows `WHERE completed AND completed_at IS NULL` in batches of 500, committing each batch, and prints rows updated. A second run updates 0 rows. It never touches reopened rows. It stamps rows with the backfill time: historical completion times are **unknown**, and the guide says so plainly — a backfilled timestamp is an approximation, not audit evidence.
+`python -m app.backfill_completed_at` updates rows `WHERE completed AND completed_at IS NULL` in batches of 500, committing each batch, and prints rows updated. A second run updates 0 rows. In the same loop it clears `completed_at` on rows `WHERE NOT completed AND completed_at IS NOT NULL`: pre-A code reopening a todo after a rollback writes only `completed`, and B would otherwise read the stale stamp as completed. This reconcile is valid only while `completed` is still written, before C1. It stamps rows with the backfill time: historical completion times are **unknown**, and the guide says so plainly — a backfilled timestamp is an approximation, not audit evidence.
 
 It is run as an operator step on the existing migration job with overridden args (the job's command is `sh -c`):
 

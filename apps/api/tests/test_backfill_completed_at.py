@@ -72,3 +72,24 @@ def test_backfill_on_empty_table_reports_zero(
 def test_backfill_update_rechecks_conditions() -> None:
     """A row reopened after selection must not be stamped (outer WHERE re-check)."""
     assert BATCH_SQL.count("completed AND completed_at IS NULL") == 2
+
+
+def test_backfill_clears_stamps_left_by_pre_a_code_after_a_rollback(
+    database_session: Session, session_factory: sessionmaker[Session]
+) -> None:
+    """Rolled back to pre-A code, a reopen writes only `completed`, leaving a stale
+    stamp that release B would read as completed. The backfill reconciles it."""
+    owner = create_user(database_session, uuid4(), "owner", "hash")
+    database_session.flush()
+    todo = create_todo(database_session, uuid4(), "Reopened by old code", owner.id)
+    database_session.commit()
+    set_completed(database_session, todo.public_id, True, owner.id)
+    database_session.execute(
+        update(TodoRow).where(TodoRow.id == todo.id).values(completed=False)
+    )
+    database_session.commit()
+
+    assert backfill(session_factory) == 1
+    assert backfill(session_factory) == 0
+    with session_factory() as check:
+        assert check.get(TodoRow, todo.id).completed_at is None

@@ -114,7 +114,7 @@ Change `todos.completed` (boolean) into `todos.completed_at` (timestamp) without
 
 | Release | Branch | Migration | Writes | Reads | Safe rollback target |
 | --- | --- | --- | --- | --- | --- |
-| A: expand | `codex/phase-23-resilience` | add nullable `completed_at` | both | `completed` | previous release |
+| A: expand | `codex/phase-23-resilience` | add nullable `completed_at` | both | `completed` | previous release, then rerun the backfill before B |
 | B: read switch | `codex/phase-23-read-switch` | none | both | `completed_at IS NOT NULL` | A (B still writes `completed`) |
 | C1: stop writing | `codex/phase-23-contract` | none | `completed_at` only | `completed_at` | B, with `completed` stale |
 | C2: drop | `codex/phase-23-contract-drop` | drop `completed` | `completed_at` | `completed_at` | C1 |
@@ -140,7 +140,7 @@ FROM todos GROUP BY 1, 2 ORDER BY 1, 2;
      --region="$CLOUD_REGION" --wait --args="python -m app.backfill_completed_at"
    ```
 
-   Read `backfill_completed_at: updated=<n> batches=<m>` in the execution's logs. The second run must report `updated=0`. The query should now show no `true / false` rows.
+   Read `backfill_completed_at: updated=<n> batches=<m>` in the execution's logs. The second run must report `updated=0`. The query should now show no `true / false` rows and no `false / true` rows. The backfill also clears stale stamps on reopened todos. Those appear only if code older than release A ran after A, for example after rolling A itself back, because older code writes only `completed`. The query, not the printed count, is the gate: rows locked by a user's click at that moment are skipped and caught by a rerun.
 
    Backfilled rows are stamped with the **time of the backfill**, because the real completion time was never recorded. In a fintech, an approximated timestamp is not audit evidence. Say so wherever the data is used.
 5. **Return to B.** Route traffic back to B's revision, verify, and re-enable delivery as Phase 19 describes:
@@ -240,7 +240,7 @@ Live results are learner-reported unless stated otherwise.
 
 ## Local verification
 
-Observed on 2026-09-23 on `codex/phase-23-resilience`: `pnpm test:api`, 717 passed, including dual-write, cross-owner, migration reversal, and backfill idempotency tests; `pnpm lint:api` clean. These do not prove any live result above.
+Observed on 2026-09-23 on `codex/phase-23-resilience`: `pnpm test:api`, 718 passed, including dual-write, cross-owner, migration reversal, and backfill idempotency tests; `pnpm lint:api` clean. These do not prove any live result above.
 
 ## Sources
 
