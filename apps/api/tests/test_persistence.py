@@ -8,10 +8,12 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from alembic.config import Config
 from sqlalchemy import Engine, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from alembic import command
 from app.auth_repository import (
     create_session,
     create_user,
@@ -31,7 +33,7 @@ from app.todo_repository import (
 )
 from app.todo_repository import set_title as set_todo_title
 
-REVISION = "2026091801"
+REVISION = "2026092301"
 
 
 def test_alembic_cli_loads_api_package() -> None:
@@ -239,8 +241,21 @@ def test_migration_creates_expected_todos_shape(database_engine: Engine) -> None
         ("users", ("user_id",)),
     }
     columns = {column["name"]: column for column in inspector.get_columns("todos")}
-    assert list(columns) == ["id", "public_id", "title", "completed", "owner_id"]
-    assert all(column["nullable"] is False for column in columns.values())
+    assert list(columns) == [
+        "id",
+        "public_id",
+        "title",
+        "completed",
+        "owner_id",
+        "completed_at",
+    ]
+    assert all(
+        column["nullable"] is False
+        for name, column in columns.items()
+        if name != "completed_at"
+    )
+    assert columns["completed_at"]["nullable"] is True
+    assert columns["completed_at"]["type"].timezone is True
     assert str(columns["id"]["type"]) == "BIGINT"
     assert str(columns["public_id"]["type"]) == "UUID"
     assert str(columns["title"]["type"]) == "TEXT"
@@ -550,3 +565,53 @@ def test_todos_are_scoped_to_owner(database_session: Session) -> None:
     ]
     assert set_completed(database_session, mine.public_id, True, bob.id) is None
     assert delete_todo(database_session, mine.public_id, bob.id) is False
+
+
+def test_set_completed_dual_writes_and_preserves_first_completion_time(
+    database_session: Session,
+) -> None:
+    owner = create_user(database_session, uuid4(), "owner", "hash")
+    database_session.flush()
+    todo = create_todo(database_session, uuid4(), "Pay invoice", owner.id)
+    database_session.commit()
+    assert todo.completed_at is None
+
+    first = set_completed(database_session, todo.public_id, True, owner.id)
+    database_session.commit()
+    assert first is not None and first.completed is True
+    assert first.completed_at is not None
+    first_time = first.completed_at
+
+    again = set_completed(database_session, todo.public_id, True, owner.id)
+    database_session.commit()
+    assert again is not None and again.completed_at == first_time
+
+    reopened = set_completed(database_session, todo.public_id, False, owner.id)
+    database_session.commit()
+    assert reopened is not None
+    assert reopened.completed is False and reopened.completed_at is None
+    assert reopened.is_completed is False
+
+
+def test_set_completed_other_owner_touches_nothing(database_session: Session) -> None:
+    owner = create_user(database_session, uuid4(), "owner", "hash")
+    other = create_user(database_session, uuid4(), "other", "hash")
+    database_session.flush()
+    todo = create_todo(database_session, uuid4(), "Mine", owner.id)
+    database_session.commit()
+
+    assert set_completed(database_session, todo.public_id, True, other.id) is None
+    database_session.commit()
+    database_session.refresh(todo)
+    assert todo.completed is False and todo.completed_at is None
+
+
+def test_add_completed_at_migration_reverses(database_engine: Engine) -> None:
+    config = Config(Path(__file__).parents[1] / "alembic.ini")
+    with database_engine.begin() as connection:
+        config.attributes["connection"] = connection
+        command.downgrade(config, "2026091801")
+        assert "completed_at" not in {
+            column["name"] for column in inspect(connection).get_columns("todos")
+        }
+        command.upgrade(config, "head")

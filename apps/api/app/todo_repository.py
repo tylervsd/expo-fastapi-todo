@@ -1,14 +1,17 @@
 from collections.abc import Sequence
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    DateTime,
     ForeignKey,
     Identity,
     Text,
     delete,
+    func,
     select,
     update,
 )
@@ -38,6 +41,14 @@ class TodoRow(Base):
     owner_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
+    # Phase 23 expand/contract: dual-written with `completed` until release C.
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    @property
+    def is_completed(self) -> bool:
+        return self.completed
 
 
 def list_todos(session: Session, owner_id: int) -> Sequence[TodoRow]:
@@ -61,7 +72,12 @@ def set_completed(
     return session.execute(
         update(TodoRow)
         .where(TodoRow.public_id == public_id, TodoRow.owner_id == owner_id)
-        .values(completed=completed)
+        .values(
+            completed=completed,
+            completed_at=(
+                func.coalesce(TodoRow.completed_at, func.now()) if completed else None
+            ),
+        )
         .returning(TodoRow)
     ).scalar_one_or_none()
 
