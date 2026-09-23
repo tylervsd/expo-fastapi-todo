@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import pytest
 from alembic.config import Config
-from sqlalchemy import Engine, inspect, select, text
+from sqlalchemy import Engine, inspect, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -615,3 +615,38 @@ def test_add_completed_at_migration_reverses(database_engine: Engine) -> None:
             column["name"] for column in inspect(connection).get_columns("todos")
         }
         command.upgrade(config, "head")
+
+
+def test_reads_come_from_completed_at_so_unbackfilled_rows_read_open(
+    database_session: Session,
+) -> None:
+    """Pins the drill defect: before the backfill, legacy completions read as open."""
+    owner = create_user(database_session, uuid4(), "owner", "hash")
+    database_session.flush()
+    legacy = create_todo(database_session, uuid4(), "Legacy done", owner.id)
+    database_session.flush()
+    database_session.execute(
+        update(TodoRow).where(TodoRow.id == legacy.id).values(completed=True)
+    )
+    database_session.commit()
+    database_session.refresh(legacy)
+    assert legacy.completed is True and legacy.is_completed is False
+
+    done = set_completed(database_session, legacy.public_id, True, owner.id)
+    database_session.commit()
+    assert done is not None and done.is_completed is True and done.completed is True
+
+
+def test_dual_write_keeps_columns_consistent_for_rollback_to_a(
+    database_session: Session,
+) -> None:
+    owner = create_user(database_session, uuid4(), "owner", "hash")
+    database_session.flush()
+    todo = create_todo(database_session, uuid4(), "Workflow-made", owner.id)
+    database_session.commit()
+    assert todo.is_completed is False
+    for value in (True, False, True):
+        row = set_completed(database_session, todo.public_id, value, owner.id)
+        database_session.commit()
+        assert row is not None
+        assert row.completed is value and row.is_completed is value

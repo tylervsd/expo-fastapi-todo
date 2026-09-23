@@ -48,7 +48,7 @@ class TodoRow(Base):
 
     @property
     def is_completed(self) -> bool:
-        return self.completed
+        return self.completed_at is not None
 
 
 def list_todos(session: Session, owner_id: int) -> Sequence[TodoRow]:
