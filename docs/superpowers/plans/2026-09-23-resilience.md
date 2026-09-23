@@ -24,6 +24,7 @@
   | B | `codex/phase-23-read-switch` | `.worktrees/phase-23-read-switch` |
   | C1 | `codex/phase-23-contract` | `.worktrees/phase-23-contract` |
   | C2 | `codex/phase-23-contract-drop` | `.worktrees/phase-23-contract-drop` |
+
 - **B must not merge until the learner has released A and is at drill step 2.** C1 follows a stable B, and C2 follows a released C1.
 - Use invented data only. Keep `.pi/` and the untracked root `AGENTS.md` untouched.
 - Test command: `pnpm test:api` (it needs the compose test Postgres on port 5433). Lint: `uv run --directory apps/api ruff check . && uv run --directory apps/api ruff format --check .`.
@@ -44,6 +45,7 @@
 ### Task 1: Expand migration, dual-write, and a single read point
 
 **Files:**
+
 - Create: `apps/api/alembic/versions/2026092301_add_todo_completed_at.py`
 - Modify: `apps/api/app/todo_repository.py`
 - Modify: `apps/api/app/main.py:556` (`as_todo`)
@@ -51,6 +53,7 @@
 - Modify: `apps/api/tests/test_persistence.py` (`REVISION`, the todos shape assertion, new tests)
 
 **Interfaces:**
+
 - Produces: `TodoRow.completed_at: datetime | None` and `TodoRow.is_completed -> bool` (a property; in A it returns `self.completed`). Every application read of completion goes through `is_completed`. `set_completed(session, public_id, completed, owner_id) -> TodoRow | None` keeps its signature.
 
 - [ ] **Step 1: Write the failing tests** in `apps/api/tests/test_persistence.py`
@@ -202,10 +205,12 @@ git commit -m "feat(api): expand todos with dual-written completed_at (phase 23 
 ### Task 2: Idempotent batched backfill command
 
 **Files:**
+
 - Create: `apps/api/app/backfill_completed_at.py`
 - Create: `apps/api/tests/test_backfill_completed_at.py`
 
 **Interfaces:**
+
 - Consumes: `create_database_engine`, `create_session_factory` and `get_database_url` from `app.database`; `TodoRow`, `create_todo` and `set_completed` from Task 1.
 - Produces: `backfill(session_factory: sessionmaker[Session], batch_size: int = 500) -> int` (total rows updated), and `python -m app.backfill_completed_at`, which prints `backfill_completed_at: updated=<n> batches=<m>` and exits 0.
 
@@ -353,6 +358,7 @@ git commit -m "feat(api): add idempotent completed_at backfill command (phase 23
 ### Task 3: Walkthrough, questionnaire, and status
 
 **Files:**
+
 - Create: `docs/guides/23-resilience.md`
 - Create: `docs/guides/23-readiness-questionnaire.md`
 - Modify: `docs/curriculum-roadmap.md` (the intro status paragraph and the Phase 23 entry: scope and deferrals)
@@ -419,10 +425,12 @@ git commit -m "docs: add Phase 23 resilience walkthrough and readiness questionn
 ### Task 4: Read switch
 
 **Files:**
+
 - Modify: `apps/api/app/todo_repository.py` (the `is_completed` property)
 - Modify: `apps/api/tests/test_persistence.py`
 
 **Interfaces:**
+
 - Consumes: `TodoRow.is_completed` and `completed_at` from Task 1, and `create_todo`.
 - Produces: `is_completed` now returns `self.completed_at is not None`. Writes are unchanged, so both columns are still written.
 
@@ -483,11 +491,13 @@ Run: `pnpm test:api -- -k "completed_at or rollback_to_a" -v`. Expected: the fir
 ### Task 5: Stop writing `completed`, remove it from the ORM
 
 **Files:**
+
 - Modify: `apps/api/app/todo_repository.py`
 - Modify: `apps/api/tests/test_persistence.py` and `apps/api/tests/test_todos.py` (replace `row.completed` with `row.is_completed`)
 - Create: `apps/api/tests/test_contract_compatibility.py`
 
 **Interfaces:**
+
 - Consumes: Task 4's `is_completed`.
 - Produces: `TodoRow` without a `completed` attribute. `create_todo` no longer passes `completed`, and `set_completed` writes only `completed_at`.
 
@@ -560,6 +570,7 @@ def test_release_b_writes_fail_on_the_c2_schema(database_engine: Engine) -> None
 ### Task 6: Drop the column
 
 **Files:**
+
 - Create: `apps/api/alembic/versions/2026092302_drop_todo_completed.py`
 - Modify: `apps/api/tests/test_persistence.py`
 - Modify: `apps/api/tests/test_contract_compatibility.py`
