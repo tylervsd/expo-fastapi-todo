@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Status:** Tasks 1–4 implemented and deployed (PRs #38, #39). Tasks 5–6 (C1, C2) are deferred by the learner at sign-off on 2026-09-23. The backfill invocation in the spec and guide was corrected after the live drill.
+
 **Goal:** Ship release A (expand + dual-write + backfill), the Phase 23 walkthrough and readiness questionnaire now. Then ship releases B, C1 and C2 as separate PRs, each timed to the learner's live drill.
 
 **Architecture:** `TodoRow.is_completed` becomes the single read point for completion, so release B is a one-line read switch. The backfill is a small module using the existing SQLAlchemy engine, run on the existing migration job with overridden args, and is deliberately not an Alembic migration. The restore drill and tabletop are guide-only.

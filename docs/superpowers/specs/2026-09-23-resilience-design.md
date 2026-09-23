@@ -1,6 +1,6 @@
 # Phase 23: Resilience and production operations
 
-**Status:** Design and written spec approved by the learner on 2026-09-23. Release A implemented; live drills pending.
+**Status:** Design and written spec approved by the learner on 2026-09-23. Releases A and B implemented and deployed; phase signed off by the learner on 2026-09-23 with C1/C2, tabletop injects 3–4, and the listed deferrals not passed. See the [acceptance record](../../guides/23-resilience.md#acceptance-record).
 
 **Context:** Based on `main` at `f0e0006`, following Phase 22. The learner will be CTO of Accountable, a pre-launch fintech handling customer PII, and wants to judge whether an inherited team has *rehearsed* recovery or merely *assumes* it works. This phase is educational practice against the disposable sandbox, not Accountable's production runbook or compliance evidence. Use invented names and data throughout.
 
@@ -61,12 +61,7 @@ C2's downgrade re-adds `completed` as `NOT NULL DEFAULT false` and sets it from 
 
 `python -m app.backfill_completed_at` updates rows `WHERE completed AND completed_at IS NULL` in batches of 500, committing each batch, and prints rows updated. A second run updates 0 rows. In the same loop it clears `completed_at` on rows `WHERE NOT completed AND completed_at IS NOT NULL`: pre-A code reopening a todo after a rollback writes only `completed`, and B would otherwise read the stale stamp as completed. This reconcile is valid only while `completed` is still written, before C1. It stamps rows with the backfill time: historical completion times are **unknown**, and the guide says so plainly — a backfilled timestamp is an approximation, not audit evidence.
 
-It is run as an operator step on the existing migration job with overridden args (the job's command is `sh -c`):
-
-```sh
-gcloud run jobs execute "$MIGRATION_JOB" --region "$REGION" --wait \
-  --args="python -m app.backfill_completed_at"
-```
+It is run as an operator step on the existing migration job. **Correction after the live drill:** the live job's command is `alembic` (args `upgrade head`), not `sh -c`, and `gcloud run jobs execute` cannot override the command. The walkthrough therefore temporarily updates the job's command and args while delivery is paused, runs the backfill, and restores `alembic upgrade head`. A dedicated data-maintenance job is the recommended production pattern.
 
 The backfill ships in release A so it exists before B is deployed, but is **not** an Alembic migration, so the drill can deploy B before running it.
 
