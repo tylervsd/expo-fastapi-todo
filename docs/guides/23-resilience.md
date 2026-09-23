@@ -50,18 +50,26 @@ Record `BACKUP_ID` and `BACKUP_END` in the acceptance record.
 
 ### 2. Write marker data after the backup
 
-Use a synthetic account. Note one todo that existed **before** `BACKUP_END` as your survivor check.
+Use a synthetic account that existed **before** `BACKUP_END`, and note one of its todos from before that time as your survivor check. An account created now is itself post-backup data and disappears in the restore. If the sandbox has no suitable account, create one with `POST /auth/signup` and wait for the next nightly backup.
+
+Replace `USERNAME` and `PASSWORD` with real values. Log in and check the status before extracting the token:
 
 ```sh
-TOKEN=$(curl -sf -X POST "$API_URL/auth/login" -H 'Content-Type: application/json' \
-  -d '{"username":"<synthetic user>","password":"<password>"}' | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')
+curl -sS -o login.json -w 'login HTTP %{http_code}\n' -X POST "$API_URL/auth/login" \
+  -H 'Content-Type: application/json' -d '{"username":"USERNAME","password":"PASSWORD"}'
+TOKEN=$(python3 -c 'import json;print(json.load(open("login.json"))["token"])') && rm login.json
+```
+
+Anything other than `login HTTP 200` stops here. A `401` means wrong credentials or a user missing from this database. A `422` means a malformed body, for example unreplaced placeholders. A `404` or HTML means `API_URL` is wrong.
+
+```sh
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-curl -sf -X POST "$API_URL/todos" -H "Authorization: Bearer $TOKEN" \
+curl -sS --fail-with-body -X POST "$API_URL/todos" -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -d "{\"title\":\"restore-marker-open-$STAMP\"}"
-DONE_ID=$(curl -sf -X POST "$API_URL/todos" -H "Authorization: Bearer $TOKEN" \
+DONE_ID=$(curl -sS --fail-with-body -X POST "$API_URL/todos" -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -d "{\"title\":\"restore-marker-done-$STAMP\"}" \
   | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
-curl -sf -X PATCH "$API_URL/todos/$DONE_ID" -H "Authorization: Bearer $TOKEN" \
+curl -sS --fail-with-body -X PATCH "$API_URL/todos/$DONE_ID" -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -d '{"completed":true}'
 ```
 
@@ -92,7 +100,7 @@ The login `TOKEN` from step 2 was stored in the database after the backup, so it
 SELECT version_num FROM alembic_version;
 ```
 
-Compare it with the newest file in `apps/api/alembic/versions/`. If the database is behind, the running code expects columns the restored database doesn't have. Rerun migrations:
+Compare it with the migration head of the code that is **currently deployed**: the newest file in `apps/api/alembic/versions/` on `main`, not on this phase's branch. Until release A merges, that is `2026091801`. If the database is behind, the running code expects columns the restored database doesn't have. Rerun migrations:
 
 ```sh
 gcloud run jobs execute "$CLOUD_MIGRATION_JOB" --project="$CLOUD_PROJECT" \
