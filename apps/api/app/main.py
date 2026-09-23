@@ -553,7 +553,7 @@ def create_app(
             yield session
 
     def as_todo(row: TodoRow) -> Todo:
-        return Todo(id=row.public_id, title=row.title, completed=row.completed)
+        return Todo(id=row.public_id, title=row.title, completed=row.is_completed)
 
     def as_user(row: UserRow, *, include_name: bool = False) -> UserPublic:
         real_name = None

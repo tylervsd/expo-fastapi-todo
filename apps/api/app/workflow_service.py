@@ -221,7 +221,7 @@ def advance_workflow(
                 todo = create_todo(session, uuid4(), title, owner_id)
                 created.append(
                     CreatedTodo(
-                        id=todo.public_id, title=todo.title, completed=todo.completed
+                        id=todo.public_id, title=todo.title, completed=todo.is_completed
                     )
                 )
             completion_result = {
