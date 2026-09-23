@@ -1,6 +1,6 @@
 # Phase 23: Resilience and production operations
 
-**Status:** Release A (expand, dual-write, backfill) and this walkthrough are implemented and locally verified. Live drills and learner acceptance are pending. Releases B, C1, and C2 follow as separate pull requests timed to the drill. [Spec](../superpowers/specs/2026-09-23-resilience-design.md) and [implementation plan](../superpowers/plans/2026-09-23-resilience.md). Companion: [readiness questionnaire](23-readiness-questionnaire.md).
+**Status:** Signed off by the learner on 2026-09-23 with agreed deferrals: C1/C2 contract releases, tabletop injects 3–4, and the items under [Deferred, not passed](#deferred-not-passed). Releases A (PR #38) and B (PR #39) are deployed; the sandbox runs B, dual-writing both columns. [Spec](../superpowers/specs/2026-09-23-resilience-design.md) and [implementation plan](../superpowers/plans/2026-09-23-resilience.md). Companion: [readiness questionnaire](23-readiness-questionnaire.md).
 
 ## Why this phase
 
@@ -141,22 +141,57 @@ FROM todos GROUP BY 1, 2 ORDER BY 1, 2;
 1. **Release A.** Merge PR A and approve the sandbox release. The migration job adds the column before traffic moves. Complete one todo in the app, then check that the query shows `true / true` for it. Older completed todos show `true / false`. They are waiting for the backfill.
 2. **Release B, without the backfill.** Merge PR B and approve the release. CI and the smoke test pass. In the app, todos completed before release A now look **incomplete**. Nothing crashed; the data is quietly wrong. Record when B went live and when you noticed.
 3. **Roll back to A.** Follow the [Phase 19 manual rollback](19-continuous-delivery.md#manual-rollback) with `PREVIOUS_REVISION` set to A's revision. The expanded schema stays; never downgrade the database. Verify that old completions display correctly again. Also verify that anything you completed or reopened while B was live is still correct. B kept writing both columns, which is why rolling back loses nothing.
-4. **Backfill.** Run it twice:
+4. **Backfill.** The sandbox migration job's container command is `alembic` with args `upgrade head`; it is not wrapped in `sh -c`. `gcloud run jobs execute` can override args and environment variables but not the command, so passing the backfill as `--args` makes Alembic reject it (exit code 2) without touching data. Check your job first:
 
    ```sh
-   gcloud run jobs execute "$CLOUD_MIGRATION_JOB" --project="$CLOUD_PROJECT" \
-     --region="$CLOUD_REGION" --wait --args="python -m app.backfill_completed_at"
+   gcloud run jobs describe "$CLOUD_MIGRATION_JOB" --project="$CLOUD_PROJECT" \
+     --region="$CLOUD_REGION" \
+     --format='yaml(spec.template.spec.template.spec.containers[0].command,spec.template.spec.template.spec.containers[0].args)'
    ```
+
+   With delivery still paused from the rollback, point the job at the backfill temporarily, run it twice, then restore it, **even if a run failed**:
+
+   ```sh
+   gcloud run jobs update "$CLOUD_MIGRATION_JOB" --project="$CLOUD_PROJECT" \
+     --region="$CLOUD_REGION" --command=python --args="-m,app.backfill_completed_at"
+   gcloud run jobs execute "$CLOUD_MIGRATION_JOB" --project="$CLOUD_PROJECT" \
+     --region="$CLOUD_REGION" --wait
+   gcloud run jobs execute "$CLOUD_MIGRATION_JOB" --project="$CLOUD_PROJECT" \
+     --region="$CLOUD_REGION" --wait
+   gcloud run jobs update "$CLOUD_MIGRATION_JOB" --project="$CLOUD_PROJECT" \
+     --region="$CLOUD_REGION" --command=alembic --args="upgrade,head"
+   ```
+
+   Confirm with the `describe` command that the job is back to `alembic` / `upgrade head`. Read each run's result:
+
+   ```sh
+   EXECUTION=$(gcloud run jobs executions list --job="$CLOUD_MIGRATION_JOB" \
+     --project="$CLOUD_PROJECT" --region="$CLOUD_REGION" --limit=1 --format='value(metadata.name)')
+   gcloud logging read "resource.type=cloud_run_job AND labels.\"run.googleapis.com/execution_name\"=\"$EXECUTION\" AND textPayload:backfill_completed_at" \
+     --project="$CLOUD_PROJECT" --limit=5 --format='value(textPayload)'
+   ```
+
+   Temporarily changing the migration job is acceptable in this sandbox drill. For a real team, prefer a **dedicated one-off job** for data maintenance (same image, identity and database connection), so the migration job is never changed during an incident.
 
    Read `backfill_completed_at: updated=<n> batches=<m>` in the execution's logs. The second run must report `updated=0`. The query should now show no `true / false` rows and no `false / true` rows. The backfill also clears stale stamps on reopened todos. Those appear only if code older than release A ran after A, for example after rolling A itself back, because older code writes only `completed`. The query, not the printed count, is the gate: rows locked by a user's click at that moment are skipped and caught by a rerun.
 
    Backfilled rows are stamped with the **time of the backfill**, because the real completion time was never recorded. In a fintech, an approximated timestamp is not audit evidence. Say so wherever the data is used.
-5. **Return to B.** Route traffic back to B's revision, verify, and re-enable delivery as Phase 19 describes:
+5. **Return to B.** Use the same tag → smoke → cutover sequence as the Phase 19 rollback, then re-enable delivery:
 
    ```sh
    gcloud run services update-traffic "$CLOUD_SERVICE" --project="$CLOUD_PROJECT" \
-     --region="$CLOUD_REGION" --to-revisions="<B revision>=100"
+     --region="$CLOUD_REGION" --update-tags="return-to-b=$B_REVISION"
+   B_URL=$(gcloud run services describe "$CLOUD_SERVICE" --project="$CLOUD_PROJECT" \
+     --region="$CLOUD_REGION" --format=json \
+     | python3 -c 'import json,sys;print([t["url"] for t in json.load(sys.stdin)["status"]["traffic"] if t.get("tag")=="return-to-b"][0])')
+   python3 scripts/release_smoke.py "$B_URL"
+   gcloud run services update-traffic "$CLOUD_SERVICE" --project="$CLOUD_PROJECT" \
+     --region="$CLOUD_REGION" --to-revisions="$B_REVISION=100"
    python3 scripts/release_smoke.py "$API_URL"
+   gcloud run services update-traffic "$CLOUD_SERVICE" --project="$CLOUD_PROJECT" \
+     --region="$CLOUD_REGION" --remove-tags=return-to-b
+   gh workflow enable release.yml
+   gh variable set DELIVERY_ENABLED --body true
    ```
 
 6. **Contract, later.** Once B is stable, release C1, then C2, checking the app and the query after each one.
@@ -220,35 +255,53 @@ This guide gives no legal advice. These are the questions to bring:
 
 ## Acceptance record
 
-Live results are learner-reported unless stated otherwise.
+On 2026-09-23 the learner completed Parts 1 and 2 through the return to B, ran tabletop injects 1–2, and signed off Phase 23 with the deferrals below. Results are learner-reported; individual timings, row counts and the restore duration were not captured in this record.
 
 | Check | Result |
 | --- | --- |
-| Restore duration vs 30-minute RTO | Pending |
-| Post-backup markers absent | Pending |
-| Pre-backup survivor present | Pending |
-| Schema version after restore (and migration rerun if needed) | Pending |
-| Release A deployed; new completion dual-written | Pending |
-| Release B defect detected (time to detect) | Pending |
-| Rollback to A (duration, data intact) | Pending |
-| Backfill counts (first run / second run = 0) | Pending |
-| Traffic back on B, verified | Pending |
-| Release C1 deployed | Pending |
-| Release C2 deployed | Pending |
-| Tabletop incident record and review completed | Pending |
-| Readiness questionnaire reviewed | Pending |
+| Restore from the latest automated backup, in place | Passed, learner-reported; duration vs the 30-minute RTO not captured |
+| Post-backup markers absent; pre-backup survivor present | Passed, learner-reported |
+| Schema version after restore | `2026091801`, matching deployed `main`; migration job rerun was a no-op |
+| Release A deployed (PR #38); schema `2026092301` | Passed, learner-reported |
+| Release B (PR #39) deployed before the backfill; older completions shown as incomplete | Passed: defect reproduced; detection time not captured |
+| Rollback to A via tagged precheck and cutover | Passed: old completions correct again; duration not captured |
+| Backfill run twice; migration job restored to `alembic upgrade head` | Passed, learner-reported; counts not captured. First attempt failed: see below |
+| Traffic back on B; delivery re-enabled | Passed, learner-reported |
+| Terraform drift check after restoring the job | Not run: Terraform tooling and local backend/tfvars absent; job command/args verified with `describe` |
+| Releases C1 and C2 | Deferred, not passed |
+| Tabletop | Partial: injects 1–2 completed; injects 3–4 and the blameless review deferred |
+| Readiness questionnaire reviewed | Not confirmed |
+
+### What the drill surfaced
+
+- **The guide assumed configuration instead of observing it.** It was written from `terraform.tfvars.example` (`sh -c`), but the live job runs `alembic` directly. The first backfill attempt failed safely: Alembic rejected the argument and exited with code 2 before touching data. This is the rehearsed-versus-assumed gap this phase exists to find. The procedure above is corrected.
+- **`gcloud run jobs execute` cannot override the container command.** Data-maintenance commands need their own job, or a controlled, temporary job update while delivery is paused.
+- **Tooling decays.** The repo-local Terraform binary and local backend/tfvars from Phase 18 lived in a since-removed worktree, so the drift check couldn't run mid-drill. Ask a team whether they could run their infrastructure tooling today.
+- **CI and smoke checks do not catch data-state bugs.** Release B passed every automated gate while showing wrong data.
+
+### Tabletop decisions recorded (injects 1–2)
+
+| Time | Event | Decision | Owner |
+| --- | --- | --- | --- |
+| Fri 15:40 | Real names and emails found in production logs since a release 9 days ago; about 340 users | High severity; ship the fix immediately to stop new PII being logged | One engineer as commander and fixer (facilitator noted: separate the commander from the operations lead, name a scribe, and preserve evidence before deleting) |
+| Fri 16:30 | PII also in a BigQuery sink table; 3 contractors had Logs Viewer; no Data Access audit logs | Exposure widened; delete the BigQuery rows; Cloud Logging options reviewed (restrict access now, exclusion filters, shorten retention only after counsel) | Not assigned |
+
+Open when paused: the chosen Cloud Logging option, contractor access, and whether the CEO and counsel are told Friday or Monday. Remember that BigQuery time travel and fail-safe keep deleted rows recoverable for up to about 14 days, and that downstream copies (scheduled queries, exports, Hex) need checking.
 
 ### Deferred, not passed
 
+- Releases C1 and C2: the sandbox stays on B, dual-writing both columns, until they ship.
+- Tabletop injects 3–4 and the blameless review.
 - Cloud SQL regional high availability and its cost review.
 - Security Command Center and Artifact Analysis finding triage.
 - Secret rotation drill (Phase 15 rotated a credential; not repeated here).
 - Dependency-maintenance cadence.
-- Phase 18 steps 7–8: Terraform state recovery and guarded destruction.
+- Phase 18 steps 7–8: Terraform state recovery and guarded destruction. Terraform tooling needs reinstalling first.
+- PII detection in logs (log-based metric alert; Sensitive Data Protection profiling of log sink datasets), raised during the tabletop.
 
 ## Local verification
 
-Observed on 2026-09-23 on `codex/phase-23-resilience`: `pnpm test:api`, 718 passed, including dual-write, cross-owner, migration reversal, and backfill idempotency tests; `pnpm lint:api` clean. These do not prove any live result above.
+Observed on 2026-09-23 on `codex/phase-23-resilience`: `pnpm test:api`, 718 passed on release A (including dual-write, cross-owner, migration reversal, and backfill idempotency tests) and 720 on release B (read switch and rollback consistency); `pnpm lint:api` clean. These do not prove any live result above.
 
 ## Sources
 
