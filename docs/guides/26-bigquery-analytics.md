@@ -1,6 +1,6 @@
 # Phase 26: BigQuery product analytics
 
-**Status:** Implemented and locally verified. Live acceptance is pending. [Spec](../superpowers/specs/2026-09-23-bigquery-analytics-design.md) and [implementation plan](../superpowers/plans/2026-09-23-bigquery-analytics.md).
+**Status:** Signed off by the learner on 2026-09-24 with agreed deferrals (see [Acceptance record](#acceptance-record)). Deployed via PRs #41–#43. [Spec](../superpowers/specs/2026-09-23-bigquery-analytics-design.md) and [implementation plan](../superpowers/plans/2026-09-23-bigquery-analytics.md).
 
 ## Why this phase
 
@@ -55,7 +55,7 @@ export API_URL='<stable API URL>'
    - An in-place worker update adding `ANALYTICS_EVENTS_TABLE` with a generated revision name, and no image change
 
    Apply, then **immediately restore** the `ignore_changes` entry. Don't commit the temporary edit.
-5. **Deploy the code.** Merge this phase's PR and approve the Phase 19 release. The migration adds `analytics_events`, and events start accumulating. The release builds the new worker revision from the service's current template, which now includes `ANALYTICS_EVENTS_TABLE`, and promotes it. Until this release finishes, Scheduler calls fail harmlessly (the route or configuration isn't live yet) and are retried every 15 minutes.
+5. **Deploy the code.** Merge this phase's PR and approve the Phase 19 release. *Merging first also works* (the live run did this): the migration runs and events accumulate, and the release after the Terraform apply promotes the configured worker. Any push to `main` starts that release, or run `gh workflow run release.yml --ref main`. The migration adds `analytics_events`, and events start accumulating. The release builds the new worker revision from the service's current template, which now includes `ANALYTICS_EVENTS_TABLE`, and promotes it. Until this release finishes, Scheduler calls fail harmlessly (the route or configuration isn't live yet) and are retried every 15 minutes.
 6. **Verify the serving worker revision has the setting:**
 
    ```sh
@@ -205,27 +205,41 @@ At sandbox volume, every query here scans kilobytes and costs effectively nothin
 
 ## Acceptance record
 
+On 2026-09-24 the learner completed sections 1 and 4–6 against the sandbox and signed off Phase 26. Section 7 (cost controls) was skipped by learner choice. BigQuery results were queried directly in this session; PostgreSQL results were learner-run in Cloud SQL Studio and pasted.
+
 | Check | Result |
 | --- | --- |
-| Terraform 1.14.7 reinstalled; pre-change plan shows no changes | Pending |
-| Analytics plan reviewed (only expected resources) and applied with the revision workaround | Pending |
-| Serving worker revision has `ANALYTICS_EVENTS_TABLE` | Pending |
-| Events flowing: outbox `pending` reaches 0 after export | Pending |
-| Curated views return results | Pending |
-| Activation funnel reconciles with PostgreSQL | Pending |
-| Suggestion success reconciles with PostgreSQL | Pending |
-| Business-state difference explained | Pending |
-| Duplicate drill: raw inflated, views unchanged, funnel unchanged | Pending |
-| Byte cap rejection observed | Pending |
+| Terraform 1.14.7 reinstalled; `terraform.tfvars` rebuilt from remote state; pre-change plan clean | Passed: only the known cosmetic dashboard normalization (closes the Phase 23 deferred drift check) |
+| Analytics plan reviewed (12 add, worker env + generated revision, no image change) and applied with the revision workaround | Passed; `tasks.tf` restored |
+| Serving worker revision has `ANALYTICS_EVENTS_TABLE` | Passed: `fullstack-suggestion-worker-r35943487467-a1-fa1bca31` at 100% |
+| Post-apply plan clean | Passed after [PR #43](https://github.com/tylervsd/expo-fastapi-todo/pull/43) (explicit Scheduler backoff values); only the dashboard normalization remains |
+| Events flowing: outbox `pending` reaches 0 after export | Passed |
+| Curated views return results | Passed: 2 signups, 4 starts, 3 completions, 8 suggestion outcomes |
+| Activation funnel reconciles with PostgreSQL | Passed, exact: cohort 2026-09-21: 2 / 2 / 1, rates 1.0 / 0.5, incomplete |
+| Suggestion success reconciles with PostgreSQL | Passed, exact: 2026-09-24: 3 ready / 5 failed / 0 expired = 0.375 |
+| Business-state difference explained | Passed: 6 completed workflows vs 3 events; the 3 without events belong to owner 1, completed before Phase 26 |
+| Duplicate drill: raw inflated, views unchanged, funnel unchanged | Passed: raw rows doubled (ready 6, failed 10, starts 8); curated views unchanged; distinct starting users still 2. The naive rate also stayed 0.375 because every outcome was duplicated uniformly (see below) |
+| Byte cap rejection observed | Skipped by learner choice |
+
+### What the live run surfaced
+
+- **A naive tfvars rebuild would have broken production behavior.** The first draft plan would have removed six Cloud Tasks settings from the live API (`api.plain_env`, set in Phase 20). Rebuilding to a clean plan before any change is the safeguard.
+- **Plans need to be kept clean.** An all-default Scheduler `retry_config` is dropped by the API, producing a permanent plan difference. [PR #43](https://github.com/tylervsd/expo-fastapi-todo/pull/43) sets the default backoff values explicitly.
+- **Full-history secret scanning differs by trigger.** A manual release failed on a gitleaks false positive (an IVR test sentinel) that push-triggered releases never scan. [PR #42](https://github.com/tylervsd/expo-fastapi-todo/pull/42) allowlists that one fingerprint; the weekly scheduled release would have hit it too.
+- **Uniform duplicates hide rate distortion.** Duplicating every outcome equally left the naive rate unchanged; skewed duplicates, such as a retry storm on failures, would move it. Distinct-user metrics resist duplicates by definition; event counts don't.
+- **The metric found a real quality problem on day one.** The suggestion success rate was 0.375. Logs show one provider timeout (the first call after a 5.7-day idle period exceeded the 30-second deadline; the queue wait was 357 ms, so not a worker cold start) and four `invalid_output` rejections. Both are consistent with the `openrouter/free` router picking a different, sometimes cold, free model per request. Pinning a specific model is the proposed follow-up.
 
 ### Deferred, not passed
 
-- Analyst access-denial check with a second account (learner choice). The Terraform tests check the grants.
-- AI token/cost attribution (deferred from Phase 21).
-- Latency metrics and client-side events.
+- Section 7 cost controls: byte-cap rejection demo and per-user query quota (learner choice).
+- Optional skewed-duplicate variant of the drill.
+- Analyst access-denial check with a second account (learner choice). The Terraform tests check the grants; project-level basic roles still reach both datasets.
+- Pinning the suggestion model (proposed follow-up from the success-rate finding).
+- AI token/cost attribution (deferred from Phase 21), latency metrics and client-side events.
 - Account deletion feature.
 - Sensitive Data Protection profiling of analytics and log datasets.
 - Streaming ingestion (Storage Write API).
+- Minor review findings recorded at implementation: `CREATE_NEVER` on the load job, partition pruning through `events_deduped`, a bounded `error_code` on failed exports, handling deletion protection when disabling analytics, three suggestion edge-case tests, and one sentence reconciling the worker's `failed` log outcome with the analytics `expired` outcome.
 
 ## Local verification
 
