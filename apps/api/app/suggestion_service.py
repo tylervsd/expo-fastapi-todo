@@ -10,6 +10,7 @@ from uuid import UUID
 from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.orm import Session
 
+from app.analytics_events import record_event
 from app.title_validation import ECMASCRIPT_TRIM_CHARS, canonicalize_title
 from app.workflow_domain import (
     CURRENT_WORKFLOW_DEFINITION_VERSION,
@@ -478,14 +479,7 @@ def finish_suggestion(
             or row.step_id != current_step_id(workflow_id, workflow.state)
         ):
             raise StaleSuggestion("the workflow changed before suggestions were ready")
-        if canonical_titles is not None:
-            row.status = SuggestionStatus.READY.value
-            row.proposed_titles = list(canonical_titles)
-            row.error_code = None
-        else:
-            row.status = SuggestionStatus.FAILED.value
-            row.proposed_titles = []
-            row.error_code = error_code.value if error_code is not None else None
+        _set_result(session, row, canonical_titles, error_code)
         session.flush()
         return suggestion_snapshot_from_row(row)
 
@@ -616,7 +610,7 @@ def _claim_inner(session: Session, suggestion_id: int) -> ClaimResult:
         now = session.scalar(select(func.now()))
         assert now is not None
         if row.expires_at is None or now >= row.expires_at:
-            _fail_row(row)
+            _fail_row(session, row)
             session.flush()
             return ClaimResult(
                 committed=suggestion_snapshot_from_row(row), outcome="timeout"
@@ -630,7 +624,7 @@ def _claim_inner(session: Session, suggestion_id: int) -> ClaimResult:
             # reclaimed, so a duplicate past the claim window records a
             # timeout instead of granting replacement provider work. Users
             # explicitly retry uncertain work with a new request.
-            _fail_row(row)
+            _fail_row(session, row)
             session.flush()
             return ClaimResult(
                 committed=suggestion_snapshot_from_row(row), outcome="timeout"
@@ -775,22 +769,46 @@ def finish_claimed_suggestion(
             _supersede_row(row)
             session.flush()
             return suggestion_snapshot_from_row(row)
-        if canonical_titles is not None:
-            row.status = SuggestionStatus.READY.value
-            row.proposed_titles = list(canonical_titles)
-            row.error_code = None
-        else:
-            row.status = SuggestionStatus.FAILED.value
-            row.proposed_titles = []
-            row.error_code = error_code.value if error_code is not None else None
+        _set_result(session, row, canonical_titles, error_code)
         session.flush()
         return suggestion_snapshot_from_row(row)
 
 
-def _fail_row(row: WorkflowSuggestionRequestRow) -> None:
+def _set_result(
+    session: Session,
+    row: WorkflowSuggestionRequestRow,
+    canonical_titles: tuple[str, ...] | None,
+    error_code: SuggestionErrorCode | None,
+) -> None:
+    if canonical_titles is not None:
+        row.status = SuggestionStatus.READY.value
+        row.proposed_titles = list(canonical_titles)
+        row.error_code = None
+    else:
+        row.status = SuggestionStatus.FAILED.value
+        row.proposed_titles = []
+        row.error_code = error_code.value if error_code is not None else None
+    record_event(
+        session,
+        "suggestion_finished",
+        row.owner_id,
+        workflow_key=row.workflow_id,
+        outcome="ready" if canonical_titles is not None else "failed",
+    )
+
+
+def _fail_row(session: Session, row: WorkflowSuggestionRequestRow) -> None:
+    """Deadline or claim-window expiry, whether found by the sweep or a claim."""
     row.status = SuggestionStatus.FAILED.value
     row.proposed_titles = []
     row.error_code = SuggestionErrorCode.TIMEOUT.value
+    record_event(
+        session,
+        "suggestion_finished",
+        row.owner_id,
+        workflow_key=row.workflow_id,
+        outcome="expired",
+    )
 
 
 def _supersede_row(row: WorkflowSuggestionRequestRow) -> None:
@@ -884,7 +902,7 @@ def expire_suggestions_with_context(session: Session) -> list[ExpiredSuggestion]
                 )
             ):
                 continue
-            _fail_row(row)
+            _fail_row(session, row)
             expired.append(
                 ExpiredSuggestion(
                     suggestion_id=row.id, trace_parent=row.trace_parent
