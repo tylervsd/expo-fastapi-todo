@@ -547,3 +547,19 @@ variable "monitoring" {
   default  = null
   nullable = true
 }
+
+variable "analytics" {
+  description = "Opt-in Phase 26 product analytics: BigQuery datasets, curated views, and the scheduled outbox export. Requires async_suggestions (the worker) and bigquery.googleapis.com in enabled_services. Null disables all analytics resources."
+  type = object({
+    readers        = list(string)
+    raw_dataset    = optional(string, "analytics_raw")
+    dataset        = optional(string, "analytics")
+    scheduler_name = optional(string, "analytics-export")
+  })
+  default = null
+
+  validation {
+    condition     = var.analytics == null || (var.async_suggestions != null && contains(var.enabled_services, "bigquery.googleapis.com"))
+    error_message = "analytics requires async_suggestions and bigquery.googleapis.com in enabled_services."
+  }
+}
