@@ -112,3 +112,6 @@ Live acceptance, learner-run and recorded like prior phases: Terraform reinstall
 - **Worker authentication is Cloud Run IAM** (Scheduler's OIDC identity is the only invoker). Terraform tests check the Scheduler identity; the application has no in-app authentication check to unit test.
 - **All dataset grants use `google_bigquery_dataset_access`**, and only `events_deduped` is an authorized view on the raw dataset. The other views read `events_deduped` inside the curated dataset.
 - **The load job relies on the Terraform-owned table schema** instead of repeating it in the job configuration. Appending JSON that doesn't match the table fails the load, so rows stay unexported.
+- **Rollout order:** apply Terraform first with Guide 20's worker revision workaround, then release the code, so the promoted worker revision carries `ANALYTICS_EVENTS_TABLE`.
+- **Raw dataset access:** Terraform adds no human grants, but BigQuery's default project-role access (Viewer reads, Editor writes) still applies to both datasets. The guide states this instead of claiming analysts cannot read raw data.
+- **Reconciliation window:** exact matching holds only within the 30-day outbox retention window and after pending exports reach 0. The business-state check compares BigQuery (400-day retention) with `todo_workflows`.

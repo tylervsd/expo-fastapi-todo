@@ -205,7 +205,7 @@ run "analytics_enabled" {
   }
   assert {
     condition     = google_bigquery_dataset_access.raw_writer[0].dataset_id == "analytics_raw" && google_bigquery_dataset_access.raw_writer[0].role == "roles/bigquery.dataEditor" && google_bigquery_dataset_access.raw_writer[0].iam_member == "serviceAccount:example-sugg-worker@example-phase18-project.iam.gserviceaccount.com"
-    error_message = "Only the worker identity may write raw events."
+    error_message = "The worker must get the only Terraform-managed write grant on raw events (BigQuery default project-role access still applies)."
   }
   assert {
     condition     = google_bigquery_dataset_access.readers["user:learner@example.test"].dataset_id == "analytics" && google_bigquery_dataset_access.readers["user:learner@example.test"].role == "roles/bigquery.dataViewer"

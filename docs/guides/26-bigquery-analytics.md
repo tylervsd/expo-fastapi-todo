@@ -36,8 +36,7 @@ export API_URL='<stable API URL>'
 
 1. **Reinstall Terraform.** The Phase 18 binary lived in a removed worktree. Follow [Guide 18 §3](18-terraform.md#3-tooling-adc-and-backend-bootstrap) in your main checkout, so `terraform version` reports 1.14.7.
 2. **Recreate local configuration.** Copy `infra/terraform/sandbox/backend.hcl.example` and `terraform.tfvars.example` to their ignored real names, and fill in real values from the live project. Run `terraform -chdir=infra/terraform/sandbox init -backend-config=backend.hcl`, then `plan`. Before adding anything for this phase, the plan must show **no changes**. If it doesn't, stop and reconcile your tfvars with reality first. That no-change plan is also the Terraform drift check deferred in Phase 23.
-3. **Deploy the code first.** Merge this phase's PR and approve the Phase 19 release. The migration adds `analytics_events`, and events start accumulating in PostgreSQL immediately. The worker gets the export route. Doing this before Terraform means the route already exists when Scheduler first calls it.
-4. **Enable analytics.** In your tfvars, add `"bigquery.googleapis.com"` to `enabled_services`, and add:
+3. **Enable analytics.** In your tfvars, add `"bigquery.googleapis.com"` to `enabled_services`, and add:
 
    ```hcl
    analytics = {
@@ -45,7 +44,7 @@ export API_URL='<stable API URL>'
    }
    ```
 
-5. **Review and apply the plan.** Expect exactly these, and reject anything else:
+4. **Apply Terraform, using Guide 20's worker revision workaround.** Releases deploy the worker under a fixed revision name and pin traffic to it. Terraform ignores `template[0].revision` and keeps existing traffic. A plain apply would either collide with the release-owned revision name or create a revision that receives no traffic. As in [Guide 20](20-cloud-tasks-scheduler.md), temporarily remove `template[0].revision` from the **worker's** `ignore_changes` in `infra/terraform/sandbox/tasks.tf`, then plan. Expect exactly these, and reject anything else:
    - The BigQuery API service
    - 2 datasets: `analytics_raw` and `analytics`
    - 1 table: `analytics_raw.events`
@@ -53,9 +52,18 @@ export API_URL='<stable API URL>'
    - 3 dataset access grants (worker writer, your reader, authorized view)
    - 1 project IAM member: the worker gets `roles/bigquery.jobUser`
    - 1 Scheduler job: `analytics-export`
-   - An in-place worker update adding `ANALYTICS_EVENTS_TABLE`
+   - An in-place worker update adding `ANALYTICS_EVENTS_TABLE` with a generated revision name, and no image change
 
-   Because the delivery pipeline owns the worker's image, the worker update must not change the image. Check that the image digest in the plan matches what's deployed.
+   Apply, then **immediately restore** the `ignore_changes` entry. Don't commit the temporary edit.
+5. **Deploy the code.** Merge this phase's PR and approve the Phase 19 release. The migration adds `analytics_events`, and events start accumulating. The release builds the new worker revision from the service's current template, which now includes `ANALYTICS_EVENTS_TABLE`, and promotes it. Until this release finishes, Scheduler calls fail harmlessly (the route or configuration isn't live yet) and are retried every 15 minutes.
+6. **Verify the serving worker revision has the setting:**
+
+   ```sh
+   gcloud run services describe <worker-service> --region="$CLOUD_REGION" --project="$CLOUD_PROJECT" \
+     --format='yaml(status.traffic,spec.template.spec.containers[0].env)'
+   ```
+
+   The revision at 100% must be the release's new revision, and the environment must include `ANALYTICS_EVENTS_TABLE=<project>.analytics_raw.events`.
 
 ## 2. The event contract
 
@@ -67,6 +75,8 @@ export API_URL='<stable API URL>'
 | `suggestion_finished` | A suggestion leaving `pending` for `ready` or `failed` | `workflow_key`, `outcome` |
 
 `outcome` is `ready`, `failed` (provider or validation failure) or `expired` (passed its deadline or claim window, whether the sweep or a claim noticed). Superseded requests emit nothing.
+
+**Who can read the raw data?** Terraform grants only the worker write access and grants human readers only the curated `analytics` dataset. But a dataset created without an explicit access list also gets BigQuery's defaults: project-level **Viewers can read** and **Editors can write** every dataset, including `analytics_raw`. So the curated views are the only analyst surface **only if analysts don't hold basic project roles**. At Accountable, ask who has project Viewer/Editor/Owner, including BI and notebook service accounts.
 
 Every column is an ID, an enum, a timestamp or an integer. The database has **no place to put a title, name or email**, so privacy is enforced by the table's structure, not by reviewers remembering. `user_key` is `users.public_id`. It's pseudonymous, not anonymous: it links back to a person, so it's still personal data.
 
@@ -120,7 +130,7 @@ Implementations:
 
 ## 5. Reconcile against the source
 
-Run each pair and compare the numbers. They must match exactly.
+First make sure nothing is waiting to export: the outbox query from section 4 must show `pending = 0`. Then run each pair and compare the numbers. They must match exactly **within the outbox retention window**. PostgreSQL prunes exported events after 30 days, while BigQuery keeps them for 400. Once the phase has been live for more than 30 days, compare only cohort weeks that started at least 7 days inside the window (`cohort_week >= CURRENT_DATE - 23`) and only days within the last 29 (`day >= CURRENT_DATE - 29`). Older rows exist only in BigQuery, and that's expected.
 
 | BigQuery (curated view) | Cloud SQL Studio |
 | --- | --- |
@@ -129,12 +139,16 @@ Run each pair and compare the numbers. They must match exactly.
 
 For the BigQuery side, prefix each view with your project, for example `` `PROJECT.analytics.activation_funnel` ``, and use the same `bq query ... --maximum_bytes_billed=100000000` form as above.
 
-Then cross-check against **business state**, not just the outbox:
+Then cross-check against **business state**, not just the outbox. BigQuery keeps every event, so compare it with the workflow table:
 
 ```sql
-SELECT
-  (SELECT count(*) FROM todo_workflows WHERE state = 'COMPLETED') AS completed_workflows,
-  (SELECT count(*) FROM analytics_events WHERE event_name = 'workflow_completed') AS completed_events;
+-- Cloud SQL Studio
+SELECT count(*) AS completed_workflows FROM todo_workflows WHERE state = 'COMPLETED';
+```
+
+```sh
+bq query --project_id="$CLOUD_PROJECT" --use_legacy_sql=false --maximum_bytes_billed=100000000 \
+  "SELECT COUNT(*) AS completed_events FROM \`$CLOUD_PROJECT.analytics.events_deduped\` WHERE event_name = 'workflow_completed'"
 ```
 
 These differ by exactly the workflows completed before this phase was deployed. Explaining a difference like that is what reconciliation is for. A difference you *can't* explain means the pipeline is losing or inventing events.
@@ -172,10 +186,10 @@ At sandbox volume, every query here scans kilobytes and costs effectively nothin
 
   ```sh
   bq query --project_id="$CLOUD_PROJECT" --use_legacy_sql=false --maximum_bytes_billed=1 \
-    "SELECT COUNT(*) FROM \`$CLOUD_PROJECT.analytics_raw.events\`"
+    "SELECT COUNT(DISTINCT event_id) FROM \`$CLOUD_PROJECT.analytics_raw.events\`"
   ```
 
-  Expected result: an error saying the query exceeds the bytes-billed limit. The query doesn't run and costs nothing.
+  It reads a column on purpose: a bare `COUNT(*)` is answered from table metadata and bills 0 bytes, so it would pass. Expected result: an error saying the query exceeds the bytes-billed limit. The query doesn't run and costs nothing.
 - **Partitioning and clustering.** The raw table is partitioned by `DATE(occurred_at)` and clustered by `event_name`, so queries that filter on those columns scan less.
 - **Per-user daily quota.** In the console, go to **IAM & Admin → Quotas & System Limits**, filter for BigQuery "Query usage per day per user", and set a custom value. This is a project-level setting, so it's done manually. Check the exact console path in the current UI.
 
@@ -194,7 +208,8 @@ At sandbox volume, every query here scans kilobytes and costs effectively nothin
 | Check | Result |
 | --- | --- |
 | Terraform 1.14.7 reinstalled; pre-change plan shows no changes | Pending |
-| Analytics plan reviewed (only expected resources) and applied | Pending |
+| Analytics plan reviewed (only expected resources) and applied with the revision workaround | Pending |
+| Serving worker revision has `ANALYTICS_EVENTS_TABLE` | Pending |
 | Events flowing: outbox `pending` reaches 0 after export | Pending |
 | Curated views return results | Pending |
 | Activation funnel reconciles with PostgreSQL | Pending |

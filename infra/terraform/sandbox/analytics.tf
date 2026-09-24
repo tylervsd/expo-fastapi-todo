@@ -2,7 +2,9 @@
 # PostgreSQL outbox into analytics_raw; analysts read only the curated,
 # deduplicating views in analytics. All dataset grants use
 # google_bigquery_dataset_access so they never conflict with dataset IAM
-# resources on the same dataset.
+# resources on the same dataset. Datasets also keep BigQuery's default
+# project-role access (Viewers read, Editors write), so analysts must not hold
+# basic project roles if the curated views are to be their only surface.
 
 locals {
   analytics_enabled = var.analytics != null
@@ -15,7 +17,7 @@ resource "google_bigquery_dataset" "analytics_raw" {
   project                    = var.project_id
   dataset_id                 = var.analytics.raw_dataset
   location                   = var.region
-  description                = "Phase 26 raw product events; worker-written, no direct readers."
+  description                = "Phase 26 raw product events; worker-written. No reader grants beyond BigQuery default project-role access."
   delete_contents_on_destroy = false
 
   depends_on = [google_project_service.required]
