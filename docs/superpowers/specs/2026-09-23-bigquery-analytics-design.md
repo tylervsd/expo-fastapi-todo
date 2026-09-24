@@ -1,6 +1,6 @@
 # Phase 26: BigQuery product analytics
 
-**Status:** Design approved by the learner in conversation on 2026-09-23. Written spec awaiting learner review.
+**Status:** Design and written spec approved by the learner on 2026-09-23. Implemented and locally verified; live acceptance pending. See [amendments](#amendments-during-planning-and-implementation).
 
 **Context:** Based on `main` at `8094722`, following Phase 23. The learner will be CTO of Accountable, a pre-launch fintech handling customer PII that uses BigQuery and Hex. The goal is to judge whether product metrics are *trustworthy*: correctly defined, deduplicated, reconciled with the source, and free of unnecessary personal data. Phase 28 (Hex) builds on the curated views defined here. Phase 25 (Pub/Sub) was skipped, so ingestion must not depend on it. Educational sandbox work, not Accountable's data design or compliance evidence. Use invented data.
 
@@ -103,3 +103,12 @@ Local, test-first on the existing pytest + PostgreSQL setup:
 BigQuery view SQL cannot run locally; it is validated live (dry run, then results matched against reconciliation queries).
 
 Live acceptance, learner-run and recorded like prior phases: Terraform reinstalled and a reviewed plan applied; events flowing and views returning results; reconciliation matching; duplicate drill observed; byte cap rejection observed. The analyst access-denial check is deferred by learner choice.
+
+## Amendments during planning and implementation
+
+- **Load wait is 45 seconds, not 120.** The worker's Cloud Run request timeout is 60 seconds, so the load must complete inside it. Scheduler's attempt deadline is 60 seconds.
+- **`expired` means "passed its deadline or claim window" on any path.** The same condition is detected either by the expiry sweep or when a worker claims the row, so both record `expired`. Provider and validation failures record `failed`.
+- **`record_event` takes the internal `owner_id`** and resolves `user_key` from `users.public_id` inside the insert. The stored data is unchanged.
+- **Worker authentication is Cloud Run IAM** (Scheduler's OIDC identity is the only invoker). Terraform tests check the Scheduler identity; the application has no in-app authentication check to unit test.
+- **All dataset grants use `google_bigquery_dataset_access`**, and only `events_deduped` is an authorized view on the raw dataset. The other views read `events_deduped` inside the curated dataset.
+- **The load job relies on the Terraform-owned table schema** instead of repeating it in the job configuration. Appending JSON that doesn't match the table fails the load, so rows stay unexported.
