@@ -72,7 +72,7 @@ def database_session(
     with database_engine.begin() as connection:
         connection.execute(
             text(
-                "TRUNCATE users, sessions, todos, todo_workflows, "
+                "TRUNCATE users, sessions, todos, todo_workflows, analytics_events, "
                 "todo_workflow_suggestion_requests RESTART IDENTITY CASCADE"
             )
         )
