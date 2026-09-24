@@ -945,6 +945,7 @@ def test_worker_health_ready_and_private_route_surface(
     )
     assert paths == [
         "/health",
+        "/internal/analytics/export",
         "/internal/suggestions",
         "/internal/suggestions/expire",
         "/ready",

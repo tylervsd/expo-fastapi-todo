@@ -56,6 +56,7 @@ service_accounts = {
 
 enabled_services = [
   "artifactregistry.googleapis.com",
+  "bigquery.googleapis.com", # Phase 26 analytics
   "billingbudgets.googleapis.com",
   "cloudscheduler.googleapis.com",
   "cloudtasks.googleapis.com",
@@ -255,3 +256,9 @@ monitoring = null
 # Phase 22: apply the kms-lab root first (owns the KMS API), migrate the DB,
 # then opt in. This creates a separate application key; keep it on rollback.
 real_name_encryption = false
+
+# Phase 26 analytics (requires async_suggestions and bigquery.googleapis.com
+# above). Readers get the curated analytics dataset only.
+# analytics = {
+#   readers = ["user:you@example.com"]
+# }

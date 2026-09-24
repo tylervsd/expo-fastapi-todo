@@ -1,0 +1,29 @@
+-- Activation funnel (Phase 26 definition); mirrors
+-- apps/api/analytics_sql/postgres_activation_funnel.sql.
+WITH signups AS (
+  SELECT user_key, occurred_at AS signed_up_at,
+         DATE_TRUNC(DATE(occurred_at), ISOWEEK) AS cohort_week
+  FROM `${project}.${dataset}.events_deduped`
+  WHERE event_name = 'user_signed_up'
+),
+reached AS (
+  SELECT s.user_key, s.cohort_week,
+         LOGICAL_OR(e.event_name = 'workflow_started') AS started,
+         LOGICAL_OR(e.event_name = 'workflow_completed') AS completed
+  FROM signups s
+  LEFT JOIN `${project}.${dataset}.events_deduped` e
+    ON e.user_key = s.user_key
+   AND e.event_name IN ('workflow_started', 'workflow_completed')
+   AND e.occurred_at >= s.signed_up_at
+   AND e.occurred_at < TIMESTAMP_ADD(s.signed_up_at, INTERVAL 7 DAY)
+  GROUP BY s.user_key, s.cohort_week
+)
+SELECT cohort_week,
+       COUNT(*) AS signed_up,
+       COUNTIF(started) AS started_7d,
+       COUNTIF(completed) AS completed_7d,
+       ROUND(SAFE_DIVIDE(COUNTIF(started), COUNT(*)), 4) AS started_rate,
+       ROUND(SAFE_DIVIDE(COUNTIF(completed), COUNT(*)), 4) AS completed_rate,
+       DATE_ADD(cohort_week, INTERVAL 14 DAY) <= CURRENT_DATE('UTC') AS cohort_complete
+FROM reached
+GROUP BY cohort_week

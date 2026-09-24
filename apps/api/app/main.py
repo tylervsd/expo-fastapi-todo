@@ -41,6 +41,7 @@ from app.agent import (
     choose_clarification,
     validate_run_input,
 )
+from app.analytics_events import record_event
 from app.auth_repository import (
     UserRow,
     create_session,
@@ -642,15 +643,16 @@ def create_app(
                 raise HTTPException(status_code=503, detail="Account creation temporarily unavailable.") from exc
         try:
             with session.begin():
-                user = as_user(
-                    create_user(
-                        session,
-                        public_id,
-                        payload.username,
-                        hash_password(payload.password),
-                        ciphertext,
-                    )
+                created = create_user(
+                    session,
+                    public_id,
+                    payload.username,
+                    hash_password(payload.password),
+                    ciphertext,
                 )
+                session.flush()
+                record_event(session, "user_signed_up", created.id)
+                user = as_user(created)
             return user
         except IntegrityError as exc:
             raise HTTPException(status_code=422, detail="Username is taken.") from exc

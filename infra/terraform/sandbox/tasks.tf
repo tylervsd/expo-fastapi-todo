@@ -126,6 +126,14 @@ resource "google_cloud_run_v2_service" "worker" {
       }
 
       dynamic "env" {
+        for_each = local.analytics_enabled ? [local.analytics_table] : []
+        content {
+          name  = "ANALYTICS_EVENTS_TABLE"
+          value = env.value
+        }
+      }
+
+      dynamic "env" {
         for_each = local.async_worker_secrets
         content {
           name = env.key

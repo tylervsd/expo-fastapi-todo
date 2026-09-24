@@ -1,0 +1,6 @@
+-- One row per event_id: the load is at-least-once, so the raw table may
+-- hold duplicates. Keep the earliest load.
+SELECT * EXCEPT (loaded_at)
+FROM `${project}.${raw_dataset}.events`
+WHERE TRUE
+QUALIFY ROW_NUMBER() OVER (PARTITION BY event_id ORDER BY loaded_at) = 1

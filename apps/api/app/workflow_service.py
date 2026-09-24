@@ -7,6 +7,7 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from app.analytics_events import record_event
 from app.todo_repository import create_todo
 from app.workflow_domain import (
     CURRENT_WORKFLOW_DEFINITION_VERSION,
@@ -144,6 +145,9 @@ def start_workflow(
         ).scalar_one_or_none()
         if inserted is not None:
             create_workflow(session, snapshot.id, owner_id, snapshot.title)
+            record_event(
+                session, "workflow_started", owner_id, workflow_key=snapshot.id
+            )
             return snapshot
         existing = session.get(WorkflowStartRequestRow, (owner_id, request_id))
         assert existing is not None
@@ -260,6 +264,10 @@ def advance_workflow(
                 "submitted revision does not match the current workflow revision"
             )
         session.refresh(row)
+        if decision.state is WorkflowState.COMPLETED:
+            record_event(
+                session, "workflow_completed", owner_id, workflow_key=workflow_id
+            )
         accepted = _snapshot_from_row(row)
         session.add(
             WorkflowActionRequestRow(
