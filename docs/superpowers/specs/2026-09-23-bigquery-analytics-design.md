@@ -1,6 +1,6 @@
 # Phase 26: BigQuery product analytics
 
-**Status:** Design and written spec approved by the learner on 2026-09-23. Implemented and locally verified; live acceptance pending. See [amendments](#amendments-during-planning-and-implementation).
+**Status:** Design and written spec approved by the learner on 2026-09-23. Implemented, deployed, and signed off by the learner on 2026-09-24 with deferrals recorded in the [acceptance record](../../guides/26-bigquery-analytics.md#acceptance-record). See [amendments](#amendments-during-planning-and-implementation).
 
 **Context:** Based on `main` at `8094722`, following Phase 23. The learner will be CTO of Accountable, a pre-launch fintech handling customer PII that uses BigQuery and Hex. The goal is to judge whether product metrics are *trustworthy*: correctly defined, deduplicated, reconciled with the source, and free of unnecessary personal data. Phase 28 (Hex) builds on the curated views defined here. Phase 25 (Pub/Sub) was skipped, so ingestion must not depend on it. Educational sandbox work, not Accountable's data design or compliance evidence. Use invented data.
 
