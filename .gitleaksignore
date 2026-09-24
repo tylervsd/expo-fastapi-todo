@@ -11,3 +11,6 @@ bccd3cfec7020a27d1b6be12b6eb6aa81ad6690f:apps/api/tests/test_observability.py:ge
 bccd3cfec7020a27d1b6be12b6eb6aa81ad6690f:apps/api/tests/test_tracing.py:generic-api-key:48
 bccd3cfec7020a27d1b6be12b6eb6aa81ad6690f:apps/api/tests/test_tracing.py:generic-api-key:50
 bccd3cfec7020a27d1b6be12b6eb6aa81ad6690f:apps/api/tests/test_tracing.py:generic-api-key:52
+# IVR spike synthetic transcript sentinel (false positive): the test asserts
+# "SECRET_SENTINEL" never reaches logs. Not a credential.
+e4b5e29fb8e81487fecbba1c7385c19bafc4bd1c:spikes/ivr/tests/test_client.py:generic-api-key:1657
