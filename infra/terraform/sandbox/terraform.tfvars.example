@@ -57,6 +57,7 @@ service_accounts = {
 enabled_services = [
   "artifactregistry.googleapis.com",
   "bigquery.googleapis.com", # Phase 26 analytics
+  # "cloudaicompanion.googleapis.com", # Phase 28a Gemini in BigQuery (optional)
   "billingbudgets.googleapis.com",
   "cloudscheduler.googleapis.com",
   "cloudtasks.googleapis.com",

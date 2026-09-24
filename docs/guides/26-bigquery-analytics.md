@@ -12,7 +12,7 @@ Every board deck has an activation rate. The useful question for a CTO isn't "wh
 - **Reconciliation:** does the warehouse agree with the system of record?
 - **Privacy:** what personal data had to be copied to answer the question?
 
-This phase builds a small pipeline where you can answer each of these, then breaks it on purpose. It's sandbox practice, not Accountable's data design. Use invented data. [Phase 28](../curriculum-roadmap.md#28-hex-analytics-with-bigquery) puts Hex on top of the curated views built here.
+This phase builds a small pipeline where you can answer each of these, then breaks it on purpose. It's sandbox practice, not Accountable's data design. Use invented data. [Phase 28](../curriculum-roadmap.md#28b-hex-analytics-with-bigquery) puts Hex on top of the curated views built here.
 
 ```text
 API / worker transaction ──► analytics_events (PostgreSQL outbox)
