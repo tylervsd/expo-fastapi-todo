@@ -50,9 +50,9 @@ suggestions AS (
     s.n,
     s.user_key,
     k,
-    add_days_fraction(s.started_at, u(CONCAT('sugg-at-', s.n, '-', k)), 14) AS suggested_at
+    add_days_fraction(s.started_at, u(CONCAT('sugg-at-', s.n, '-', k)), 5) AS suggested_at
   FROM starts AS s,
-    UNNEST(GENERATE_ARRAY(1, CAST(FLOOR(u(CONCAT('sugg-count-', s.n)) * 6) AS INT64))) AS k
+    UNNEST(GENERATE_ARRAY(1, CAST(FLOOR(u(CONCAT('sugg-count-', s.n)) * 9) AS INT64))) AS k
 ),
 suggestion_outcomes AS (
   SELECT
