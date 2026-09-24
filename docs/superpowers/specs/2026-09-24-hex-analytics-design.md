@@ -83,6 +83,7 @@ The guide lists the key's ID, creation date and planned deletion date in its acc
 ## Testing and acceptance
 
 **Local:**
+
 - Terraform mock tests for `hex` and `data_freshness`.
 - PostgreSQL tests for `seed_outbox.sql`, on the existing pytest database:
   - deterministic (a second run inserts 0 rows)
@@ -92,6 +93,7 @@ The guide lists the key's ID, creation date and planned deletion date in its acc
 - Markdown and link checks.
 
 **Live, learner-run and recorded:**
+
 - Terraform plan reviewed and applied.
 - The key created, pasted in, and the local file deletion verified.
 - Seeded, exported and reconciled.
