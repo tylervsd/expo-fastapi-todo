@@ -67,7 +67,7 @@ Plus the roadmap split (Phase 28 → 28a and 28b), README status, a commented `e
 
 ## Governance and cost
 
-- **Gemini access:** enabling Gemini in BigQuery gives it access to the project's tables and query history within the user's permissions. Google states that prompts, responses, schema and data are not used for training unless the customer opts in, and that Gemini in BigQuery doesn't support the same compliance and security offerings as BigQuery. The guide cites both, names how to turn features off (Gemini settings, or removing the API), and recommends a separate approved-data project plus compliance review at Accountable.
+- **Gemini access:** enabling Gemini in BigQuery gives it access to the project's tables and query history within the user's permissions. Google states that prompts, responses, schema and data are not used for training unless the customer opts in, and lists SOC 1/2/3, ISO/IEC 27001 and HIPAA coverage for generally available features, with three named gaps: no per-location data residency, no audit logs of prompts and responses, and no Assured Workloads inclusion. The guide cites these, names how to turn features off (Gemini settings, or `gcloud services disable`; removing the API from Terraform alone leaves it enabled because `disable_on_destroy = false`), and recommends a separate approved-data project plus compliance review at Accountable.
 - **Cost:** Gemini in BigQuery's generally available features carry no additional charge; queries are tiny and use a byte cap; the notebook runtime is billed while it runs and is stopped explicitly; `drop.sql` removes the practice data.
 
 ## Verification and acceptance

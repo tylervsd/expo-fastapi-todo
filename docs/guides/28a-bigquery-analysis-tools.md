@@ -23,10 +23,15 @@ Data canvas's natural-language features and BigQuery's SQL generation use **Gemi
 
 - **What it can access:** the project's tables and query history, limited only by the permissions of whoever is using it. You're project Owner, so that includes `analytics_raw` and `analytics`, not just the practice data.
 - **Training:** Google states that prompts, responses, schema and data aren't used to train its models unless you opt in.
-- **Compliance:** Google notes that Gemini in BigQuery doesn't support the same compliance and security offerings as BigQuery itself.
+- **Compliance:** Google lists SOC 1/2/3, ISO/IEC 27001 and HIPAA coverage for generally available Gemini in BigQuery features, plus VPC Service Controls. It also names three gaps, and those are what a compliance owner needs to hear:
+  - **No data residency for individual locations.** Processing happens in US or EU jurisdictions; other data is processed globally.
+  - **No Cloud Logging audit logs of user prompts and responses.**
+  - **Not included in Assured Workloads packages.**
+
+  Google's guidance is to enable it only for projects that need no compliance offerings beyond those listed.
 - **The control you're relying on:** a habit. Prompts reference only `analytics_practice`, and every dataset in this sandbox holds invented data. It's a habit, not a boundary.
-- **Turning it off:** use **Gemini settings** in BigQuery Studio to turn features off, or remove the API from `enabled_services` and apply.
-- **At Accountable:** with real PII, don't do this. Put AI-assisted analysis in a **separate project that holds only approved data**, and get the compliance owner to review the caveat above first.
+- **Turning it off:** use **Gemini settings** in BigQuery Studio to turn features off, or disable the API: `gcloud services disable cloudaicompanion.googleapis.com --project=fullstack-sandbox-tylervsd`. Removing it from `enabled_services` and applying is **not** enough on its own: the sandbox sets `disable_on_destroy = false`, so Terraform only stops managing the API and it stays enabled. Do both, so Terraform and reality agree.
+- **At Accountable:** with real PII, don't do this. Put AI-assisted analysis in a **separate project that holds only approved data**, and get the compliance owner to review the gaps above first.
 
 ### 1.2 Enable the API
 
