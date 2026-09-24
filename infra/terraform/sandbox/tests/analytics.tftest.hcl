@@ -228,6 +228,10 @@ run "analytics_enabled" {
     error_message = "The export must run every 15 minutes against the worker route with the invoker identity."
   }
   assert {
+    condition     = google_cloud_scheduler_job.analytics_export[0].retry_config[0].retry_count == 0 && google_cloud_scheduler_job.analytics_export[0].retry_config[0].min_backoff_duration == "5s" && google_cloud_scheduler_job.analytics_export[0].retry_config[0].max_backoff_duration == "3600s" && google_cloud_scheduler_job.analytics_export[0].retry_config[0].max_doublings == 5
+    error_message = "The export job must keep zero retries with explicit backoff values, so the API retains retryConfig and plans stay clean."
+  }
+  assert {
     condition     = contains([for e in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : e.name if e.value == "example-phase18-project.analytics_raw.events"], "ANALYTICS_EVENTS_TABLE")
     error_message = "The worker must receive ANALYTICS_EVENTS_TABLE."
   }
