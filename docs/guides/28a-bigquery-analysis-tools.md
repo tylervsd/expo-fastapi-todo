@@ -1,6 +1,6 @@
 # Phase 28a: BigQuery analysis tools
 
-**Status:** Implemented; learner walkthrough pending. [Spec](../superpowers/specs/2026-09-24-bigquery-analysis-tools-design.md), [implementation plan](../superpowers/plans/2026-09-24-bigquery-analysis-tools.md), and practice files in [`analytics_practice/`](../../analytics_practice/).
+**Status:** Signed off by the learner on 2026-09-24 with agreed deferrals (see [Acceptance record](#acceptance-record)). [Spec](../superpowers/specs/2026-09-24-bigquery-analysis-tools-design.md), [implementation plan](../superpowers/plans/2026-09-24-bigquery-analysis-tools.md), and practice files in [`analytics_practice/`](../../analytics_practice/).
 
 ## Why this phase
 
@@ -210,16 +210,31 @@ Then fill in the table below from your own experience in Parts A–C. There's no
 
 ## Acceptance record
 
+On 2026-09-24 the learner worked through the lesson and signed off Phase 28a. Results are learner-reported except where marked *verified*.
+
 | Check | Result |
 | --- | --- |
-| Gemini API enabled through a reviewed plan | Pending |
-| Practice data generated; checksum matches | Pending |
-| Exercises 1–6 matched `expected.md`, or differences explained | Pending |
-| Notebook chart and histogram produced; runtime stopped | Pending |
-| Three data canvas questions compared; discrepancies recorded | Pending |
-| Exercise 5 metric run on real data | Pending |
-| "Which tool when" table filled in | Pending |
-| Practice dataset dropped (optional) | Pending |
+| Gemini API enabled through a reviewed plan | Passed, *verified*: `cloudaicompanion.googleapis.com` enabled and present in local tfvars |
+| Practice data generated; checksum matches | Passed, *verified* during implementation (1767 rows, `-6779663904789774770`) |
+| Exercises 1–6 matched `expected.md`, or differences explained | Passed, learner-reported; individual results not captured |
+| Notebook chart and histogram produced; runtime stopped | Passed, learner-reported. Extended with a multi-step Python investigation (first-suggestion outcome vs completion, with a bootstrap interval) |
+| Data canvas questions compared; discrepancies recorded | Passed via a learner-authored question (below); the three scripted prompts not individually recorded |
+| Exercise 5 metric run on real data | Passed, learner-reported |
+| "Which tool when" table filled in | Discussed in session (below); the table itself not captured |
+| Practice dataset dropped (optional) | Passed, *verified*: `analytics_practice` no longer exists |
+
+### What the lesson surfaced
+
+- **AI-generated SQL is usually arithmetically right and definitionally loose.** The learner asked data canvas: "Do users whose first AI suggestion fails complete their workflow less often?" Gemini's SQL matched the reference numbers exactly (expired 8/5, failed 27/15, ready 176/98), but it:
+  - silently dropped users without suggestions
+  - skipped deduplication (harmless here only because each step was duplicate-proof)
+  - gave no sense of uncertainty on an 8-user group
+  - **ignored order.** 42 of 118 completers finished *before* their first suggestion. The notebook example made the same mistake, which shows that a written definition catches what reading code doesn't.
+- **Which tool when** (learner discussion):
+  - **Data canvas:** exploring and first drafts; nothing from it goes into a decision until its SQL has been reviewed against a written definition.
+  - **Notebooks:** multi-step investigations and statistics; notebooks are not a source of truth.
+  - **Queries and views:** anything with a precise definition, anything repeated, and anything someone will act on.
+  - **Hex:** shared reporting on reviewed views (Phase 28b).
 
 ### Deferred, not passed
 

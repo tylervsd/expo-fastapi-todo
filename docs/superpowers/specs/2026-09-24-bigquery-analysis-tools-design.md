@@ -1,6 +1,6 @@
 # Phase 28a: BigQuery analysis tools
 
-**Status:** Design and written spec approved by the learner on 2026-09-24. Implemented; learner walkthrough pending. Amendment: the generator clusters suggestions (0–8 within 5 days of starting) so the exercise 5 median varies; see [`expected.md`](../../../analytics_practice/expected.md).
+**Status:** Design and written spec approved by the learner on 2026-09-24. Implemented and signed off by the learner on 2026-09-24 with deferrals recorded in the [acceptance record](../../guides/28a-bigquery-analysis-tools.md#acceptance-record). Amendment: the generator clusters suggestions (0–8 within 5 days of starting) so the exercise 5 median varies; see [`expected.md`](../../../analytics_practice/expected.md).
 
 **Context:** Based on `main` at `8396811`, after Phase 26. The learner will be CTO of Accountable, a pre-launch fintech that uses BigQuery and Hex. The original roadmap Phase 28 (Hex) is split: **28a** gives hands-on exposure to BigQuery's own analysis tools, and **28b** keeps the Hex scope. The goal of 28a is judgement, not tool mastery: verify a number yourself, know when a notebook is worth it, and catch AI-generated SQL that quietly changes a metric definition. Educational sandbox work with invented data only.
 
