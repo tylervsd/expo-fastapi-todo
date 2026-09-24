@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, contextmanager
@@ -25,6 +26,7 @@ from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from sqlalchemy.orm import Session, sessionmaker
 from starlette.concurrency import run_in_threadpool
 
+from app.analytics_export import LoadRows, bigquery_loader, export_events
 from app.database import (
     create_database_engine,
     create_session_factory,
@@ -299,6 +301,7 @@ def create_worker_app(
     *,
     session_factory: sessionmaker[Session] | None = None,
     suggestion_callable: SuggestionCallable | None = None,
+    analytics_load: LoadRows | None = None,
 ) -> FastAPI:
     """Build the private worker application with its injected seams."""
 
@@ -310,6 +313,10 @@ def create_worker_app(
             engine = create_database_engine(get_database_url())
             factory = create_session_factory(engine)
         app.state.session_factory = factory
+        table = os.environ.get("ANALYTICS_EVENTS_TABLE")
+        app.state.analytics_load = analytics_load or (
+            bigquery_loader(table) if table else None
+        )
         # Lifespan-owned tracer/exporter setup, closed on shutdown. Tests
         # inject an in-memory exporter via app.state.tracing_exporter.
         app.state.tracing_state = init_tracing(
@@ -868,6 +875,49 @@ def create_worker_app(
             duration_ms=sweep_duration_ms,
         )
         return {"expired": expired}
+
+    @app.post("/internal/analytics/export")
+    async def analytics_export(request: Request) -> dict[str, int]:
+        raw = await read_bounded_body(request)
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            raise HTTPException(
+                status_code=422, detail="Export body must be JSON."
+            ) from None
+        if not isinstance(payload, dict) or payload != {}:
+            raise HTTPException(
+                status_code=422, detail="Export body must be an empty object."
+            )
+        load = getattr(request.app.state, "analytics_load", None)
+        factory = get_session_factory(request)
+        if load is None or factory is None:
+            raise worker_unavailable()
+        started = time.monotonic()
+        try:
+            result = await run_in_threadpool(export_events, factory, load)
+        except Exception:  # noqa: BLE001 - sanitized; rows stay for retry
+            log_event(
+                "analytics_export",
+                outcome="failed",
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
+            raise HTTPException(
+                status_code=500, detail="Analytics export failed."
+            ) from None
+        log_event(
+            "analytics_export",
+            outcome="success",
+            selected=result.selected,
+            loaded=result.loaded,
+            pruned=result.pruned,
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+        return {
+            "selected": result.selected,
+            "loaded": result.loaded,
+            "pruned": result.pruned,
+        }
 
     return app
 
