@@ -1,0 +1,10 @@
+-- Suggestion success (Phase 26 definition); mirrors
+-- apps/api/analytics_sql/postgres_suggestion_success.sql.
+SELECT DATE(occurred_at) AS day,
+       COUNTIF(outcome = 'ready') AS ready,
+       COUNTIF(outcome = 'failed') AS failed,
+       COUNTIF(outcome = 'expired') AS expired,
+       ROUND(SAFE_DIVIDE(COUNTIF(outcome = 'ready'), COUNT(*)), 4) AS success_rate
+FROM `${project}.${dataset}.events_deduped`
+WHERE event_name = 'suggestion_finished'
+GROUP BY day
