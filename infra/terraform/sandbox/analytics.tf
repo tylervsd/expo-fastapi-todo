@@ -170,8 +170,15 @@ resource "google_cloud_scheduler_job" "analytics_export" {
   time_zone        = "Etc/UTC"
   attempt_deadline = "60s"
 
+  # Zero retries (the next run retries in 15 minutes). The backoff values are
+  # Cloud Scheduler's defaults, set explicitly: an all-default retryConfig is
+  # dropped by the API and would show as a permanent plan difference.
   retry_config {
-    retry_count = 0
+    retry_count          = 0
+    max_retry_duration   = "0s"
+    min_backoff_duration = "5s"
+    max_backoff_duration = "3600s"
+    max_doublings        = 5
   }
 
   http_target {
