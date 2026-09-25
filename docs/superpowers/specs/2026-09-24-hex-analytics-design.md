@@ -1,6 +1,6 @@
 # Phase 28b: Hex analytics with BigQuery
 
-**Status:** Design approved by the learner in conversation on 2026-09-24. Written spec awaiting learner review.
+**Status:** Design and written spec approved by the learner on 2026-09-24. Implemented; synthetic data seeded and reconciled; learner Hex walkthrough pending.
 
 **Context:** Based on `main` at `373bb74`, after Phase 28a. The learner will be CTO of Accountable, which uses Hex. This phase connects a **personal 14-day Hex trial** (Team plan) to the Phase 26 curated `analytics` views through a least-privilege identity, builds a shared, parameterized metrics app, tries Hex's AI assistant against written definitions, and rehearses deletion including Hex's cached copies. The sandbox holds only invented data; this phase adds more of it.
 
