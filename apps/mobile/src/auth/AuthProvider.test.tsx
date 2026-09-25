@@ -889,7 +889,7 @@ describe("analytics identity", () => {
     expect(mockAnalytics().identify.mock.calls).toEqual([[alice.id]]);
   });
 
-  it("does not identify when the stored session is revoked", async () => {
+  it("does not identify when the stored session is revoked, and resets any prior identity", async () => {
     const authApi = makeAuthApi();
     authApi.fetchMe.mockRejectedValueOnce(new TodoApiError("auth-required", "Please sign in again."));
     const storage = createMemoryTokenStorage();
@@ -897,6 +897,14 @@ describe("analytics identity", () => {
     await renderProvider({ authApi, storage });
     await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
     expect(mockAnalytics().identify).not.toHaveBeenCalled();
+    expect(mockAnalytics().reset).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reset identity for a fresh visitor with no stored token", async () => {
+    const storage = createMemoryTokenStorage();
+    await renderProvider({ storage });
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    expect(mockAnalytics().reset).not.toHaveBeenCalled();
   });
 
   it("identifies after sign-in and resets at sign-out", async () => {

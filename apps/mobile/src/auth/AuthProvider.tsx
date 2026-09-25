@@ -129,6 +129,9 @@ export function AuthProvider({
           } catch {
             // Best effort: local state still settles below.
           }
+          // The stored token was revoked server-side: forget whatever identity
+          // it carried so the next person's anonymous funnel doesn't inherit it.
+          analytics.reset();
         }
         bumpEpoch();
         setStatus("signed-out");
