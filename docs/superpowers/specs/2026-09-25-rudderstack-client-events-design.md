@@ -1,10 +1,10 @@
 # Phase 30a: Client-side product events with RudderStack (web)
 
-**Status:** Design approved in conversation by the learner on 2026-09-25; written spec awaiting review.
+**Status:** Design and written spec approved by the learner on 2026-09-25. Implemented; live walkthrough pending.
 
 **Context:** Based on `main` at `281c342`, after Phase 28b. The learner will be CTO of Accountable, a pre-launch fintech that uses BigQuery and Hex and has **not yet chosen** a customer data platform or product-analytics tool. Phase 26 measures only confirmed server outcomes; it can't see screens, taps, or drop-off before signup. This phase adds a small, deliberate client event plan on **Expo web**, collected by **RudderStack Cloud (free plan)** and loaded into BigQuery next to the Phase 26 events. Phase 30b adds the iOS development build and the React Native SDK behind the same wrapper. Educational sandbox work with invented data, not Accountable's analytics design or compliance evidence.
 
-**Related:** [Curriculum](../../curriculum-roadmap.md#30a-client-side-product-events-with-rudderstack), [Phase 26 design](2026-09-23-bigquery-analytics-design.md), [Phase 28b design](2026-09-24-hex-analytics-design.md).
+**Related:** [Curriculum](../../curriculum-roadmap.md#30a-client-side-product-events-with-rudderstack), [Phase 26 design](2026-09-23-bigquery-analytics-design.md), [Phase 28b design](2026-09-24-hex-analytics-design.md), [Implementation plan](../plans/2026-09-25-rudderstack-client-events.md), [walkthrough](../../guides/30a-rudderstack-client-events.md).
 
 ## Decisions
 

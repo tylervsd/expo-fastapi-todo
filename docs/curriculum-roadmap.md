@@ -331,7 +331,7 @@ Phases 7-9 build one guided-todo creation feature to teach backend-owned state t
 - **Learning experiment:** Run a real ad blocker and see client coverage fall while server signups stay complete. Compare client taps with confirmed outcomes.
 - **Non-goals:** iOS (Phase 30b), a custom-domain proxy, device-mode destinations, a self-hosted data plane, session replay, and collecting free text.
 - **Spec gate:** Approve the vendor and plan, event plan, identity key, consent model, warehouse identity and permissions, curated view definitions, and the deletion path.
-- **Spec:** [Phase 30a design](superpowers/specs/2026-09-25-rudderstack-client-events-design.md).
+- **Spec:** [Phase 30a design](superpowers/specs/2026-09-25-rudderstack-client-events-design.md); [walkthrough](guides/30a-rudderstack-client-events.md).
 
 ## 30b. RudderStack on iOS with an Expo development build
 
