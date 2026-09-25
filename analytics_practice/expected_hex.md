@@ -51,5 +51,6 @@ The dip is the week of 2026-09-07. The 2026-09-21 week includes your 8 real sugg
 ## Reconciliation
 
 On 2026-09-24 the learner ran both Phase 26 PostgreSQL reconciliation queries ([funnel](../apps/api/analytics_sql/postgres_activation_funnel.sql), [suggestion success](../apps/api/analytics_sql/postgres_suggestion_success.sql)) in Cloud SQL Studio:
+
 - The funnel matched all 9 cohorts exactly.
 - The daily success rows, rolled up to ISO weeks, matched all 9 weeks exactly (ready and finished).
