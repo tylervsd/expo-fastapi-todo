@@ -15,7 +15,7 @@ resource "google_bigquery_dataset" "rudderstack_raw" {
   project                    = var.project_id
   dataset_id                 = var.rudderstack.raw_dataset
   location                   = var.region
-  description                = "Phase 30a raw client events, written by RudderStack. Owner-only; analysts use the curated views."
+  description                = "Phase 30a raw client events, written by RudderStack. No grants beyond BigQuery's default project-role access; analysts use the curated views."
   delete_contents_on_destroy = false
 
   depends_on = [google_project_service.required]

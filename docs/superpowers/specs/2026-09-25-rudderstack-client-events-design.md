@@ -75,8 +75,9 @@ Two curated views in `analytics`, authorized on `rudderstack_raw` and on `analyt
 
 **`analytics.signup_funnel`**, one row per week:
 
-- `visitors`: anonymous IDs whose first `auth_screen_viewed` falls in the week.
-- `submitted_24h`: of those, with a `signup_submitted` within 24 hours of the first view.
+- `visitors`: anonymous IDs whose first `auth_screen_viewed` falls in the week, excluding returning users — a visitor is returning if it has a `signin_submitted` within 24 hours of the first view and no `signup_submitted` in that window.
+- `returning_24h`: of the week's first-view anonymous IDs, those returning users.
+- `submitted_24h`: of the (non-returning) visitors, with a `signup_submitted` within 24 hours of the first view.
 - `signed_up_24h`: of those, linked through `identifies` to a `user_key` whose server `user_signed_up` is within 24 hours after the first `signup_submitted`.
 - `server_signups`: server `user_signed_up` events in the week, from `analytics.events_deduped`.
 - `server_signups_identified`: those whose `user_key` appears in `identifies`. `client_coverage = server_signups_identified / server_signups` measures ad-blocker and opt-out loss.
@@ -103,7 +104,7 @@ The plan verifies with one event that an explicit `timestamp` lands in the wareh
 
 ## 5. Governance, cost and deletion
 
-- **What leaves the device:** the anonymous ID, `user.id`, event names, `workflow_key`, and the SDK's automatic context (IP address, user agent, locale, page URL, screen size). The raw dataset is Owner-only; curated views select none of the context.
+- **What leaves the device:** the anonymous ID, `user.id`, event names, `workflow_key`, and the SDK's automatic context (IP address, user agent, locale, page URL, screen size). The raw dataset has no grants beyond BigQuery's default project-role access, so analysts must not hold basic project roles (as for `analytics_raw` in Phase 26); curated views select none of the context.
 - **Processor:** RudderStack processes events in its US region. The guide records this as the question to take to Accountable, alongside Hex (28b) and Gemini (28a).
 - **Deletion:** RudderStack's user suppression API is Growth/Enterprise only and **doesn't delete from warehouse destinations**. Deleting a person's client events is a BigQuery `DELETE` across every `rudderstack_raw` table by `user_id` and every linked `anonymous_id`, plus the staging bucket's 7-day lifecycle and BigQuery time travel. The guide records what "fully deleted" required.
 - **Cost:** free plan; BigQuery load jobs are free; staging storage is negligible.

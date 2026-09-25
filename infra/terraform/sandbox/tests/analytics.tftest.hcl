@@ -389,6 +389,10 @@ run "rudderstack_curated_views" {
     condition     = toset([for a in google_bigquery_dataset_access.rudderstack_authorized_view : a.view[0].table_id]) == toset(["signup_funnel", "suggestion_taps"]) && alltrue([for a in google_bigquery_dataset_access.rudderstack_authorized_view : a.dataset_id == "rudderstack_raw"])
     error_message = "Both views must be authorized on rudderstack_raw."
   }
+  assert {
+    condition     = strcontains(google_bigquery_table.signup_funnel[0].view[0].query, "example-phase18-project.rudderstack_raw.signin_submitted") && strcontains(google_bigquery_table.signup_funnel[0].view[0].query, "returning_24h")
+    error_message = "signup_funnel must exclude returning users (signin_submitted) from signup drop-off and report returning_24h."
+  }
 }
 
 run "rudderstack_requires_analytics" {
