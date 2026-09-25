@@ -7,6 +7,7 @@
     "@assistant-ui/react-ag-ui": "0.0.58",
     "@assistant-ui/react-native": "0.1.40",
     "@expo/metro-runtime": "~57.0.15",
+    "@rudderstack/analytics-js": "3.34.2",
     "@tanstack/react-query": "5.102.8",
     "expo": "57.0.19",
     "expo-crypto": "~57.0.2",

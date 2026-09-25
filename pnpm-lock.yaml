@@ -38,6 +38,9 @@ importers:
       '@expo/metro-runtime':
         specifier: ~57.0.15
         version: 57.0.15(@expo/log-box@57.0.4)(expo@57.0.19)(react-dom@19.2.3(react@19.2.3))(react-native@0.86.3(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/jest-preset@0.86.3(@babel/core@7.29.7(supports-color@8.1.1))(react@19.2.3)(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3)
+      '@rudderstack/analytics-js':
+        specifier: 3.34.2
+        version: 3.34.2
       '@tanstack/react-query':
         specifier: 5.102.8
         version: 5.102.8(react@19.2.3)
@@ -1789,6 +1792,9 @@ packages:
 
   '@rtsao/scc@1.1.0':
     resolution: {integrity: sha512-zt6OdqaDoOnJ1ZYsCYGt9YmWzDXl4vQdKTyJev62gFhRGKdx7mcT54V9KIjg+d2wi9EXsPvAPKe7i7WjfVWB8g==}
+
+  '@rudderstack/analytics-js@3.34.2':
+    resolution: {integrity: sha512-SB3I9xG03w4lHE3ThG+DfBySbBWdyXTDfEJvVbg6NgqZaBg9vvspzpL7Sv1PrLc7aDS/mc6T2MWkp6TNQQt8mw==}
 
   '@sinclair/typebox@0.27.12':
     resolution: {integrity: sha512-hhyNJ+nbR6ZR7pToHvllEFun9TL0sbL+tk/ON75lo+Xas054uez98qRbsuNt7MBCyZKK4+8Yli/OAGZhmfBZ/g==}
@@ -7808,6 +7814,8 @@ snapshots:
       '@types/react': 19.2.18
 
   '@rtsao/scc@1.1.0': {}
+
+  '@rudderstack/analytics-js@3.34.2': {}
 
   '@sinclair/typebox@0.27.12': {}
 
