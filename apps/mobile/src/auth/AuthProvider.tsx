@@ -16,6 +16,8 @@ import { createAuthenticatedApi, defaultTransport, type TodoTransport } from "./
 import { AgentSessionProvider } from "../agent/AgentSessionProvider";
 import { AuthScreen } from "./AuthScreen";
 import { tokenStorage, type TokenStorage } from "./tokenStorage";
+import { analytics } from "../analytics";
+import { AnalyticsConsentSwitch } from "../analytics/AnalyticsConsentSwitch";
 
 export type ProviderAuthApi = {
   signup: (username: string, password: string, realName?: string) => Promise<AuthUser>;
@@ -118,6 +120,7 @@ export function AuthProvider({
         setUser(restored);
         bumpEpoch();
         setStatus("signed-in");
+        analytics.identify(restored.id);
       } catch (error) {
         if (!mounted) return;
         if (error instanceof TodoApiError) {
@@ -149,6 +152,7 @@ export function AuthProvider({
       }
       liveRef.current = null;
       bumpEpoch();
+      analytics.reset();
       try {
         await storage.clear();
       } catch {
@@ -196,6 +200,7 @@ export function AuthProvider({
       liveRef.current = { token: session.token, userId: session.user.id };
       setUser(session.user);
       setStatus("signed-in");
+      analytics.identify(session.user.id);
     })();
     completionChainRef.current = completion.then(
       () => undefined,
@@ -262,6 +267,7 @@ export function AuthProvider({
                 <Text style={styles.signOutButtonText}>Sign out</Text>
               </Pressable>
             </View>
+            <AnalyticsConsentSwitch />
           </SafeAreaView>
           <TodoExperience userId={user.id} api={todoApi} sessionEpoch={sessionEpoch} isSessionCurrent={isSessionCurrent} />
         </View>

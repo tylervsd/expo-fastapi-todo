@@ -94,6 +94,23 @@ jest.mock("react-native", () => {
   });
 });
 
+jest.mock("../analytics", () => ({
+  analytics: {
+    track: jest.fn(),
+    identify: jest.fn(),
+    reset: jest.fn(),
+    consent: jest.fn(() => ({ available: true, enabled: true, gpc: false })),
+    setConsent: jest.fn(),
+  },
+}));
+
+const mockAnalytics = () =>
+  (jest.requireMock("../analytics") as { analytics: Record<string, jest.Mock> }).analytics;
+
+beforeEach(() => {
+  Object.values(mockAnalytics()).forEach((fn) => fn.mockClear());
+});
+
 type MockWorkflowApi = {
   startWorkflow: jest.MockedFunction<TodoWorkflowScreenApi["startWorkflow"]>;
   getWorkflow: jest.MockedFunction<TodoWorkflowScreenApi["getWorkflow"]>;
@@ -3346,6 +3363,38 @@ describe("agent clarification and review flow", () => {
     expect(screen.getByLabelText("Todo titles (one per line)")).toBeTruthy();
     expect(bodies).toHaveLength(2);
   }, 30000);
+});
+
+describe("suggestion tap analytics", () => {
+  it("records one tap with the workflow key when a suggestion request is sent", async () => {
+    const api = makeApi();
+    await renderHost(api);
+    await driveToCollect(api);
+    api.getWorkflow.mockResolvedValue(collectWorkflow);
+    api.getSuggestion.mockResolvedValueOnce(readySuggestion);
+    api.suggestWorkflow.mockResolvedValueOnce(readySuggestion);
+
+    await fireEvent.press(screen.getByRole("button", { name: "Suggest todos" }));
+    await waitFor(() => expect(api.suggestWorkflow).toHaveBeenCalled());
+    expect(mockAnalytics().track.mock.calls).toEqual([
+      ["suggestion_requested", { workflow_key: WORKFLOW_ID }],
+    ]);
+  });
+
+  it("records taps only for requests actually sent", async () => {
+    const api = makeApi();
+    const pending = deferred<WorkflowSuggestion>();
+    await renderHost(api);
+    await driveToCollect(api);
+    api.getWorkflow.mockResolvedValue(collectWorkflow);
+    api.suggestWorkflow.mockReturnValueOnce(pending.promise);
+
+    await fireEvent.press(screen.getByRole("button", { name: "Suggest todos" }));
+    await fireEvent.press(screen.getByRole("button", { name: "Suggest todos" }));
+    await waitFor(() => expect(api.suggestWorkflow).toHaveBeenCalled());
+    expect(mockAnalytics().track).toHaveBeenCalledTimes(api.suggestWorkflow.mock.calls.length);
+    await act(async () => pending.resolve(readySuggestion));
+  });
 });
 
 const notFoundSuggestion = (): Promise<never> =>

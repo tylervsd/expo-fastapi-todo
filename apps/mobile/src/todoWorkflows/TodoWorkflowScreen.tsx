@@ -25,6 +25,7 @@ import type { ClarificationField } from "../todos/todoApi";
 import type { TodoWorkflowScreenApi } from "../auth/authenticatedApi";
 import { AgentRuntimeProvider } from "../agent/AgentRuntimeProvider";
 import { AgentWorkflowPanel } from "../agent/AgentWorkflowPanel";
+import { analytics } from "../analytics";
 import {
   defaultUuidGenerator,
   pendingWriteStore,
@@ -1533,6 +1534,8 @@ export function TodoWorkflowScreen({
       workflowQueryKey(userId, workflowId)
     );
     if (cached === undefined || cached.workflow_id !== workflowId) return;
+    // Phase 30a: the tap, counted separately from the server's confirmed outcome.
+    analytics.track("suggestion_requested", { workflow_key: workflowId });
     const requestId = generateRequestId();
     setSuggestionError(null);
     setNewSuggestionWarning(false);
