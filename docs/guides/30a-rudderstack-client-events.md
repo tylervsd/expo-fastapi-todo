@@ -69,7 +69,7 @@ Behaviors worth knowing before reading the numbers:
 
 - The in-app **AI agent** can also request a suggestion (a clarification round-trip), and that path does **not** fire `suggestion_requested` — it isn't a tap. Server `suggestion_finished` events therefore include outcomes the client never tapped for, so server suggestion volume can be **higher** than `taps` without anything being wrong.
 
-Both views deduplicate by RudderStack's own `id` (its own `_view`s only cover 60 days; these views don't rely on that), use UTC ISO weeks, and select no IP address, user agent, locale, or page URL.
+Both views deduplicate by RudderStack's own `id` (its own `_view`s only cover 60 days; these views don't rely on that), use UTC ISO weeks, and select no IP address, user agent, locale, or page URL — even though the raw tables underneath hold that context (§5). `rudderstack_raw` has no grants beyond BigQuery's own default project-role access (§3), so these two views, not the raw tables, are the only surface analysts should be given.
 
 ## 3. Keyless vendor access
 
@@ -81,6 +81,7 @@ This phase is the opposite of Phase 28b's key exception: no service-account key 
 | **What scopes it to you** | An attribute condition on the pool's AWS provider admits only assertions whose extracted workspace attribute equals *your* RudderStack workspace ID. Anyone else's workspace is rejected at the trust boundary, before any Google credential is issued. |
 | **What the trusted principal can do** | Impersonate one service account, `rudderstack-loader` — nothing else. That's `roles/iam.workloadIdentityUser`, scoped to that one account. |
 | **What `rudderstack-loader` can do** | `roles/bigquery.dataEditor` on the `rudderstack_raw` dataset only (a dataset-level grant, not a project role); `roles/bigquery.jobUser` on the project (needed to run load jobs, grants no data access by itself); `roles/storage.objectCreator` and `roles/storage.objectViewer` on the staging bucket only. It cannot create datasets, change access, read `analytics_raw`, or touch any other bucket. |
+| **Who can read raw client data** | Nobody through a basic project role: `rudderstack_raw` itself carries **no grants beyond BigQuery's own default project-role access** — the same posture as `analytics_raw` in Phase 26. It is not "Owner-only" by an explicit ACL; it simply has no dataset-level reader grants at all. That means analysts must not hold basic project roles (`roles/bigquery.user` and similar reach every dataset with default access), or they could query the raw tables directly. The curated views in §7 are their only intended surface. |
 | **What never exists** | A downloaded key, a credential file, a secret in RudderStack's dashboard for this connection. There is nothing to leak, rotate, or forget to delete. |
 
 **The question for Accountable:** *Which vendors hold keys to our warehouse, and which could authenticate through federation instead?* A vendor that insists on a long-lived key when its platform supports WIF is a design choice worth pushing back on.
@@ -150,14 +151,22 @@ In DevTools Network, record which hosts the page actually contacts. The wrapper 
 
 Record the actual list observed — an SDK version change could add or drop a host.
 
-Inspect a few outgoing payloads and confirm none contains a username, a todo title, or an AI prompt. The only identifiers present should be the anonymous ID, `user.id` (after identify), the event name, and `workflow_key`.
+Inspect a few outgoing payloads. Expect to see:
+
+- The anonymous ID, and `user.id`/`userId` once you're signed in.
+- The event name and, for `auth_screen_viewed`/`suggestion_requested`, their one property (`mode` / `workflow_key`).
+- The SDK's automatic `context` object — IP address (added server-side by RudderStack, not sent by the browser), user agent, locale, and screen size. This is normal SDK behavior, not a leak; it's why `rudderstack_raw`'s tables carry columns the curated views deliberately don't select (§2, §3).
+
+Confirm none of these ever appear: a username, a password, a real name, a todo title, or an AI prompt. If any of those show up in a payload, that's a defect in the wrapper, not an expected field.
 
 ## 6. Synthetic events
 
 `analytics_practice/seed_client_events.py` sends deterministic, backdated events through RudderStack's own HTTP API, reproducing the Phase 28b seed's 400 users and suggestion times, plus 600 anonymous visitors who never sign up.
 
+The repo's Python is uv-managed ([setup](../setup/macos.md#5-uv-and-python-3147)); there is normally no bare `python` on `PATH`, so run it through `uv run`:
+
 ```sh
-python analytics_practice/seed_client_events.py --dry-run
+uv run python analytics_practice/seed_client_events.py --dry-run
 ```
 
 The current dry run reports **3907 events**: `auth_screen_viewed` 1643, `identify` 371, `signin_submitted` 487, `signup_submitted` 442, `suggestion_requested` 964. Well under the free plan's 250K/month limit.
@@ -166,14 +175,14 @@ Verify the pipe end to end with one event before sending everything:
 
 ```sh
 RUDDERSTACK_WRITE_KEY=... RUDDERSTACK_DATA_PLANE_URL=https://... \
-  python analytics_practice/seed_client_events.py --probe
+  uv run python analytics_practice/seed_client_events.py --probe
 ```
 
 Trigger **Sync now** on the BigQuery destination (or wait up to 3 hours on the free plan), then in BigQuery confirm the probe row landed with its `timestamp` column backdated into **2026-07** — not the time you ran the script. That confirms RudderStack respects an explicit `timestamp` rather than stamping arrival time. Then send the rest and sync again:
 
 ```sh
 RUDDERSTACK_WRITE_KEY=... RUDDERSTACK_DATA_PLANE_URL=https://... \
-  python analytics_practice/seed_client_events.py --send
+  uv run python analytics_practice/seed_client_events.py --send
 ```
 
 A rerun sends the same message IDs; the curated views deduplicate by `id`, so nothing double-counts.
@@ -210,9 +219,11 @@ Compare against `analytics_practice/expected_client.md` (recorded once the live 
 
 ## 8. Consent, GPC, sign-out
 
-1. **Opt-out.** With the "Share usage analytics" switch off, use the app and confirm DevTools Network shows no requests to the data plane host.
-2. **Global Privacy Control.** Enable it (Brave ships it on by default; in Firefox set `privacy.globalprivacycontrol.enabled` to `true` in `about:config`) and reload. The switch should show disabled with the GPC explanation in place of the label, and no data-plane requests should fire even if you try to toggle it.
-3. **Sign-out identity reset.** Sign out, then sign back in (or as a different account) and confirm Live Events shows a **new anonymous ID** for the pre-sign-in events — not the previous session's.
+The "Share usage analytics" switch lives in the **signed-in header** — it only renders once you're signed in, so there's nothing to toggle from the auth screen itself.
+
+1. **Sign-out identity reset, first, with consent on and no GPC.** Sign in, then sign out and sign back in (or as a different account). Confirm Live Events shows a **new anonymous ID** for the pre-sign-in events — not the previous session's. Do this before opt-out or GPC below: both of those stop sending, and a browser that isn't sending anything would make the "new anonymous ID" check impossible to observe.
+2. **Opt-out.** Turn the switch off and use the app; confirm DevTools Network shows no requests to the data plane host. Turn the switch back on afterward, or move to a fresh browser/profile for the next check — an opted-out browser sends nothing, which would look identical to GPC working even if GPC weren't wired up at all.
+3. **Global Privacy Control**, in a browser/profile where consent is still on. Enable GPC (Brave ships it on by default; in Firefox set `privacy.globalprivacycontrol.enabled` to `true` in `about:config`) and reload. The switch should render disabled with the GPC explanation in place of the label, and no data-plane requests should fire even if you try to toggle it.
 
 ## 9. Ad blocker experiment
 
