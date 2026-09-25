@@ -1,6 +1,6 @@
 # Phase 28b: Hex analytics with BigQuery
 
-**Status:** Implemented; synthetic data seeded and reconciled; learner Hex walkthrough pending. [Spec](../superpowers/specs/2026-09-24-hex-analytics-design.md), [implementation plan](../superpowers/plans/2026-09-24-hex-analytics.md), [reference results](../../analytics_practice/expected_hex.md).
+**Status:** Completed and signed off by the learner on 2026-09-25; synthetic data seeded and reconciled. [Spec](../superpowers/specs/2026-09-24-hex-analytics-design.md), [implementation plan](../superpowers/plans/2026-09-24-hex-analytics.md), [reference results](../../analytics_practice/expected_hex.md).
 
 ## Why Hex
 
@@ -209,18 +209,22 @@ Removing the synthetic data rehearses the deletion request described in Phase 26
 
 ## Acceptance record
 
+The learner reported Phase 28b completed and signed off on 2026-09-25. Manual checks below reflect that sign-off; individual live artifacts and the key ID were not captured here. Existing deferrals remain listed below.
+
+Walkthrough notes: disabling **Use BigQuery Storage API** resolved the connection permission error with the existing IAM grants. In section 9, `KEY_ID` means the actual 40-character key ID returned by section 2's key-list command.
+
 | Check | Result |
 | --- | --- |
 | Synthetic data seeded, exported and reconciled | Passed, *verified* 2026-09-24: 1756 synthetic events in both PostgreSQL and BigQuery; funnel 9/9 and weekly success 9/9 identical |
-| Terraform plan reviewed and applied (`hex`, `data_freshness`) | Pending |
-| Key created; local file deletion verified; key ID recorded | Pending (key ID: —, created: —, planned deletion: —) |
-| Hex connection sees `analytics` only | Pending |
-| App built; inputs change the results | Pending |
-| Hex numbers match `expected_hex.md` | Pending |
-| Duplicate drill: raw inflated, Hex unchanged, raw access denied | Pending |
-| AI assistant comparison recorded | Pending |
-| Published and viewed as a viewer | Pending |
-| Deletion drill completed; key deleted | Pending |
+| Terraform plan reviewed and applied (`hex`, `data_freshness`) | Complete per learner sign-off |
+| Key created; local file deletion verified; key ID recorded | Complete per learner sign-off; key metadata not captured |
+| Hex connection sees `analytics` only | Complete per learner sign-off |
+| App built; inputs change the results | Complete per learner sign-off |
+| Hex numbers match `expected_hex.md` | Complete per learner sign-off |
+| Duplicate drill: raw inflated, Hex unchanged, raw access denied | Complete per learner sign-off |
+| AI assistant comparison recorded | Complete per learner sign-off |
+| Published and viewed as a viewer | Complete per learner sign-off |
+| Deletion drill completed; key deleted | Complete per learner sign-off |
 
 ### Deferred, not passed
 
