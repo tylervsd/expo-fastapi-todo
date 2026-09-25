@@ -321,3 +321,23 @@ Phases 7-9 build one guided-todo creation feature to teach backend-owned state t
 - **Learning experiment:** Introduce a bounded delay and a controlled frontend error in a test environment, find the affected journey and release in RUM, then remove the fault and verify recovery. Do not equate sampled RUM session counts with the complete backend event metrics from Phases 26 and 28.
 - **Non-goals:** Replacing Google Cloud Logging/Monitoring, a mandatory backend APM migration, full distributed tracing, collecting sensitive user content, and session replay in the initial implementation. Replay stays disabled; a later optional exercise requires explicit privacy, masking, consent, and cost decisions.
 - **Spec gate:** Approve Datadog account/site and data residency, SDK compatibility and pins, client-token versus secret API-key handling, build-time source-map upload, screen/action naming, consent and pseudonymous identity policy, payload filtering, retention/deletion, sampling and cost budget, and platform acceptance evidence. Keep secret API keys in build/CI secret storage, never the client bundle.
+
+## 30a. Client-side product events with RudderStack
+
+- **Learning goal:** Measure what server events can't see, such as pre-signup drop-off and taps versus confirmed outcomes, using a customer data platform whose events land in BigQuery next to the Phase 26 events.
+- **Visible outcome:** Expo web sends four deliberate events through RudderStack Cloud into a Terraform-managed BigQuery dataset. Curated views show a signup funnel with client coverage, and suggestion taps next to their server outcomes.
+- **New technology/pattern:** RudderStack JavaScript SDK behind a single app wrapper, anonymous-to-known identity with `identify`/`reset`, opt-out consent with Global Privacy Control, a keyless vendor-to-warehouse connection through workload identity federation, and the RudderStack HTTP API for synthetic events.
+- **Verification emphasis:** No sends without a key, with consent off, or under GPC; no usernames, titles or prompts in payloads; least-privilege loader access; curated views that exclude IP and user-agent context; reference results from synthetic events; measured ad-blocker loss; warehouse deletion done by the owner, not the vendor.
+- **Learning experiment:** Run a real ad blocker and see client coverage fall while server signups stay complete. Compare client taps with confirmed outcomes.
+- **Non-goals:** iOS (Phase 30b), a custom-domain proxy, device-mode destinations, a self-hosted data plane, session replay, and collecting free text.
+- **Spec gate:** Approve the vendor and plan, event plan, identity key, consent model, warehouse identity and permissions, curated view definitions, and the deletion path.
+- **Spec:** [Phase 30a design](superpowers/specs/2026-09-25-rudderstack-client-events-design.md).
+
+## 30b. RudderStack on iOS with an Expo development build
+
+- **Learning goal:** Bring the Phase 30a event plan to the iOS app, which needs a custom development build instead of Expo Go.
+- **Visible outcome:** The iOS simulator app sends the same four events through the React Native SDK behind the Phase 30a wrapper, with platform visible in the curated views.
+- **New technology/pattern:** `expo-dev-client`, prebuild and native modules, the RudderStack React Native SDK, and platform-aware consent (no GPC on iOS). The development build is reused by Phase 29.
+- **Verification emphasis:** The same wrapper tests on both platforms, identical event names and properties, reset on sign-out, and no regression in Expo web or the existing E2E suites.
+- **Non-goals:** App Store distribution, Android, push notifications, and App Tracking Transparency prompts (no cross-app tracking).
+- **Spec gate:** Approve the development-build workflow, SDK pins, and consent behavior on iOS.
