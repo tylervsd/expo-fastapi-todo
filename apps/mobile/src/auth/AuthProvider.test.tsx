@@ -920,6 +920,55 @@ describe("analytics identity", () => {
     expect(mockAnalytics().reset).toHaveBeenCalledTimes(1);
   });
 
+  const authViews = () =>
+    mockAnalytics().track.mock.calls.filter(([name]) => name === "auth_screen_viewed");
+
+  it("records the auth screen view for a fresh visitor with no stored token", async () => {
+    await renderProvider();
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    expect(authViews()).toEqual([["auth_screen_viewed", { mode: "signin" }]]);
+  });
+
+  it("records the auth screen view when the token store can't be read", async () => {
+    const storage = createMemoryTokenStorage();
+    jest.spyOn(storage, "get").mockRejectedValueOnce(new Error("storage unavailable"));
+    await renderProvider({ storage });
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    expect(authViews()).toEqual([["auth_screen_viewed", { mode: "signin" }]]);
+  });
+
+  it("records no auth screen view after a rejected stored session", async () => {
+    const authApi = makeAuthApi();
+    authApi.fetchMe.mockRejectedValueOnce(new TodoApiError("auth-required", "Please sign in again."));
+    const storage = createMemoryTokenStorage();
+    await storage.set("tok-1");
+    await renderProvider({ authApi, storage });
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    expect(authViews()).toEqual([]);
+  });
+
+  it("records no auth screen view after sign-out", async () => {
+    const storage = createMemoryTokenStorage();
+    await storage.set("tok-1");
+    await renderProvider({ storage });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Sign out" })).toBeTruthy());
+    await fireEvent.press(screen.getByRole("button", { name: "Sign out" }));
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    expect(authViews()).toEqual([]);
+    await fireEvent.press(screen.getByRole("button", { name: "New here? Create an account." }));
+    expect(authViews()).toEqual([["auth_screen_viewed", { mode: "signup" }]]);
+  });
+
+  it("records no auth screen view after a request reports auth-required", async () => {
+    const storage = createMemoryTokenStorage();
+    await storage.set("tok-1");
+    const transport = makeTransport();
+    transport.listTodos.mockRejectedValueOnce(new TodoApiError("auth-required", "Please sign in again."));
+    await renderProvider({ storage, transport });
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    expect(authViews()).toEqual([]);
+  });
+
   it("shows the consent switch when signed in", async () => {
     const storage = createMemoryTokenStorage();
     await storage.set("tok-1");

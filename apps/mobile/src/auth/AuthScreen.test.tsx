@@ -61,11 +61,19 @@ const setup = async (overrides?: {
   signup?: jest.Mock;
   login?: jest.Mock;
   onAuthenticated?: jest.Mock;
+  recordEntryView?: boolean;
 }) => {
   const signup = overrides?.signup ?? jest.fn(async () => user);
   const login = overrides?.login ?? jest.fn(async () => session);
   const onAuthenticated = overrides?.onAuthenticated ?? jest.fn();
-  await render(<AuthScreen signup={signup} login={login} onAuthenticated={onAuthenticated} />);
+  await render(
+    <AuthScreen
+      signup={signup}
+      login={login}
+      onAuthenticated={onAuthenticated}
+      recordEntryView={overrides?.recordEntryView}
+    />
+  );
   return { signup, login, onAuthenticated };
 };
 
@@ -203,6 +211,17 @@ describe("analytics", () => {
     expect(mockAnalytics().track.mock.calls).toEqual([["auth_screen_viewed", { mode: "signin" }]]);
     await fireEvent.press(screen.getByRole("button", { name: "New here? Create an account." }));
     expect(mockAnalytics().track).toHaveBeenLastCalledWith("auth_screen_viewed", { mode: "signup" });
+  });
+
+  it("skips the mount-time view when told to, but still records mode switches", async () => {
+    await setup({ recordEntryView: false });
+    expect(mockAnalytics().track).not.toHaveBeenCalled();
+    await fireEvent.press(screen.getByRole("button", { name: "New here? Create an account." }));
+    await fireEvent.press(screen.getByRole("button", { name: "Have an account? Sign in." }));
+    expect(mockAnalytics().track.mock.calls).toEqual([
+      ["auth_screen_viewed", { mode: "signup" }],
+      ["auth_screen_viewed", { mode: "signin" }],
+    ]);
   });
 
   it("records no submit when validation fails", async () => {

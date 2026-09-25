@@ -35,10 +35,13 @@ export function AuthScreen({
   signup,
   login,
   onAuthenticated,
+  recordEntryView = true,
 }: {
   signup: AuthApi["signup"];
   login: AuthApi["login"];
   onAuthenticated: (session: Session) => void;
+  /** False right after a sign-out or rejected session: the rotated anonymous ID isn't a new visitor. */
+  recordEntryView?: boolean;
 }): React.JSX.Element {
   const [mode, setMode] = useState<Mode>("signin");
   const [username, setUsername] = useState("");
@@ -48,8 +51,12 @@ export function AuthScreen({
   const [pending, setPending] = useState(false);
   const busy = useRef(false);
 
-  // One view per mount and per mode switch (Phase 30a funnel entry).
+  // One view per mount and per mode switch (Phase 30a funnel entry). The
+  // mount-time view is skipped when recordEntryView is false.
+  const lastViewed = useRef<Mode | null>(recordEntryView ? null : "signin");
   useEffect(() => {
+    if (lastViewed.current === mode) return;
+    lastViewed.current = mode;
     analytics.track("auth_screen_viewed", { mode });
   }, [mode]);
 

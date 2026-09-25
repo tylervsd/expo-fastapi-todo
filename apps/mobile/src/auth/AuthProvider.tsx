@@ -71,6 +71,10 @@ export function AuthProvider({
   const [status, setStatus] = useState<Status>("unknown");
   const [user, setUser] = useState<AuthUser | null>(null);
   const [signingOut, setSigningOut] = useState(false);
+  // Set when this app session reset the analytics identity (sign-out, session
+  // cleanup, or a rejected stored token). The auth screen that follows then
+  // skips its mount-time view: the rotated anonymous ID is not a new visitor.
+  const [identityReset, setIdentityReset] = useState(false);
   const liveRef = useRef<SessionIdentity | null>(null);
   const epochRef = useRef(0);
   const [sessionEpoch, setSessionEpoch] = useState(0);
@@ -132,6 +136,7 @@ export function AuthProvider({
           // The stored token was revoked server-side: forget whatever identity
           // it carried so the next person's anonymous funnel doesn't inherit it.
           analytics.reset();
+          setIdentityReset(true);
         }
         bumpEpoch();
         setStatus("signed-out");
@@ -163,6 +168,7 @@ export function AuthProvider({
       }
       queryClient.clear();
       setUser(null);
+      setIdentityReset(true);
       setStatus("signed-out");
     },
     [authApi, storage, queryClient, bumpEpoch]
@@ -239,6 +245,7 @@ export function AuthProvider({
           signup={authApi.signup}
           login={authApi.login}
           onAuthenticated={handleAuthenticated}
+          recordEntryView={!identityReset}
         />
       </SessionEpochContext.Provider>
     );
