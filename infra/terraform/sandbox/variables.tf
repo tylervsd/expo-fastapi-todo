@@ -563,3 +563,16 @@ variable "analytics" {
     error_message = "analytics requires async_suggestions and bigquery.googleapis.com in enabled_services."
   }
 }
+
+variable "hex" {
+  description = "Opt-in Phase 28b Hex access: a service account that reads only the curated analytics dataset. Its key is created and deleted with gcloud, never Terraform. Requires analytics."
+  type = object({
+    account_id = optional(string, "hex-reader")
+  })
+  default = null
+
+  validation {
+    condition     = var.hex == null || var.analytics != null
+    error_message = "hex requires analytics to be enabled."
+  }
+}

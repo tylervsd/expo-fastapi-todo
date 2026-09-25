@@ -263,3 +263,6 @@ real_name_encryption = false
 # analytics = {
 #   readers = ["user:you@example.com"]
 # }
+
+# Phase 28b Hex (requires analytics). Key: gcloud only, never Terraform.
+# hex = {}

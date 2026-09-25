@@ -1,0 +1,3 @@
+-- Latest load time only: no event data leaves the raw dataset through this view.
+SELECT MAX(loaded_at) AS last_loaded_at
+FROM `${project}.${raw_dataset}.events`
