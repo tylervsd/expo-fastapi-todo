@@ -13,7 +13,7 @@ This curriculum hasn't used a downloaded service-account key since Phase 18. It 
 | | |
 | --- | --- |
 | **Why** | Hex's per-user BigQuery OAuth, where each person queries as themselves, is [available on the Enterprise plan](https://learn.hex.tech/docs/connect-to-data/data-connections/oauth-data-connections). A trial needs a service-account key. |
-| **Scope** | `hex-reader` can read **only** the curated `analytics` dataset and run query jobs. No `analytics_raw`, no other data, no basic project role. |
+| **Scope** | `hex-reader` can read **only** the curated `analytics` dataset from this project's data, and run query jobs. No `analytics_raw`, no other project data, no basic project role. **But** running jobs also lets it query *public* datasets (such as `bigquery-public-data`), billed to this project. A leaked key could cost money even though it can't reach your data, which is why §8's daily query quota is recommended. |
 | **Where the key lives** | Only inside Hex's connection settings. It exists on your disk for a moment and is then deleted. Never in Git, never in a notebook cell. |
 | **Owner** | You. |
 | **Expiry** | The end of the trial. Record the planned date in the acceptance record. |
@@ -41,12 +41,24 @@ Run these from your **main checkout** after this phase's PR is merged and pulled
    gcloud iam service-accounts keys create "$KEY" --iam-account="$HEX_SA"
    ```
 
-3. **Connect Hex.** In your trial workspace, open **Settings → Data sources → Add → BigQuery** (the menu wording may differ slightly). Set the project to `fullstack-sandbox-tylervsd` and paste the contents of the key file. Save and test the connection.
+3. **Connect Hex.** In your trial workspace, open **Settings → Data sources → Add → BigQuery** (the menu wording may differ slightly) and set the project to `fullstack-sandbox-tylervsd`. **If the form lets you upload the key file, upload `$KEY` directly.** Otherwise copy it to the clipboard without printing it, paste it into Hex, and then clear the clipboard:
+
+   ```sh
+   pbcopy < "$KEY"
+   ```
+
+   ```sh
+   pbcopy < /dev/null
+   ```
+
+   Never `cat` the key: it would stay in your terminal scrollback. If you use a clipboard manager, or Universal Clipboard to your other Apple devices, the key may be copied there too, so upload the file if you can. Save and test the connection.
 4. **Delete the key file right away** and confirm it's gone:
 
    ```sh
-   rm -P "$KEY" && test ! -e "$KEY" && echo "key file deleted"
+   rm "$KEY" && rmdir "$(dirname "$KEY")" && test ! -e "$KEY" && echo "key file deleted"
    ```
+
+   On an SSD, "secure overwrite" tools (like `rm -P`, which modern macOS ignores) don't reliably erase data. The real control is **deleting the key in Google Cloud** (section 9), which makes any leftover copy useless.
 
 5. **Record the key ID** for the acceptance record:
 
@@ -84,7 +96,7 @@ Create a project named **"Product metrics (sandbox)"** using the BigQuery connec
 
    ```sql
    SELECT * FROM analytics.activation_funnel
-   WHERE cohort_week BETWEEN {{ start_date }} AND {{ end_date }}
+   WHERE cohort_week BETWEEN CAST({{ start_date }} AS DATE) AND CAST({{ end_date }} AS DATE)
    {% if not include_incomplete %} AND cohort_complete {% endif %}
    ORDER BY cohort_week
    ```
@@ -99,7 +111,7 @@ Create a project named **"Product metrics (sandbox)"** using the BigQuery connec
           SUM(ready + failed + expired) AS finished,
           ROUND(SAFE_DIVIDE(SUM(ready), SUM(ready + failed + expired)), 4) AS success_rate
    FROM analytics.suggestion_success
-   WHERE day BETWEEN {{ start_date }} AND {{ end_date }}
+   WHERE day BETWEEN CAST({{ start_date }} AS DATE) AND CAST({{ end_date }} AS DATE)
    GROUP BY week
    {% if not include_incomplete %} HAVING DATE_ADD(week, INTERVAL 7 DAY) <= CURRENT_DATE() {% endif %}
    ORDER BY week
@@ -107,7 +119,7 @@ Create a project named **"Product metrics (sandbox)"** using the BigQuery connec
 
    Add a line chart. The 2026-09-07 dip should be obvious.
 
-   `{{ }}` and `{% if %}` are Hex's Jinja parameter syntax, and Hex passes input values as query parameters, not pasted text. Check the syntax in Hex's SQL editor if the UI has changed. A live dashboard can legitimately use `CURRENT_DATE()`; unlike 28a's reproducible reference answers, the inputs make the window explicit.
+   `{{ }}` and `{% if %}` are Hex's Jinja parameter syntax, and Hex passes input values as query parameters, not pasted text. The `CAST(... AS DATE)` guards against the input arriving as a timestamp, which BigQuery won't compare with a `DATE` column. Check the syntax in Hex's SQL editor if the UI has changed. A live dashboard can legitimately use `CURRENT_DATE()`; unlike 28a's reproducible reference answers, the inputs make the window explicit.
 
 5. **Definitions.** A Markdown cell with the [Phase 26 definitions](26-bigquery-analytics.md#3-metric-definitions), word for word, linking to the view SQL in the repo. Every number on the page should have its definition next to it.
 
@@ -166,7 +178,7 @@ Share it only inside your trial workspace. **No public links**, even for invente
 ## 8. Cost
 
 - **Where Hex's queries show up.** They run as `hex-reader`, billed to the sandbox project. In BigQuery, open **Job history → Project history** and filter by that account. At this data size, each query costs effectively nothing.
-- **Optional cap:** a custom per-user daily query quota applies to service accounts too (IAM & Admin → Quotas; check the current console path).
+- **Recommended cap during the trial:** a custom per-user daily query quota also applies to service accounts. It limits what `hex-reader` (or a leaked copy of its key) can spend, including on public datasets (IAM & Admin → Quotas; check the current console path).
 - **No schedules:** keep Hex's scheduled runs off during the trial.
 - **The trial** needs no card. Afterwards the workspace drops to the free plan unless you upgrade.
 
