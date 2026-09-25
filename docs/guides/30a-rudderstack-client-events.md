@@ -69,7 +69,7 @@ Behaviors worth knowing before reading the numbers:
 
 - The in-app **AI agent** can also request a suggestion (a clarification round-trip), and that path does **not** fire `suggestion_requested` — it isn't a tap. Server `suggestion_finished` events therefore include outcomes the client never tapped for, so server suggestion volume can be **higher** than `taps` without anything being wrong.
 
-Both views deduplicate by RudderStack's own `id` (its own `_view`s only cover 60 days; these views don't rely on that), use UTC ISO weeks, and select no IP address, user agent, locale, or page URL — even though the raw tables underneath hold that context (§5). `rudderstack_raw` has no grants beyond BigQuery's own default project-role access (§3), so these two views, not the raw tables, are the only surface analysts should be given.
+Both views deduplicate by RudderStack's own `id` (its own `_view`s only cover 60 days; these views don't rely on that), use UTC ISO weeks, and select no IP address, user agent, locale, page URL, or screen size — even though the raw tables underneath hold that context (§5). `rudderstack_raw` has no grants beyond BigQuery's own default project-role access (§3), so these two views, not the raw tables, are the only surface analysts should be given.
 
 ## 3. Keyless vendor access
 
@@ -155,7 +155,7 @@ Inspect a few outgoing payloads. Expect to see:
 
 - The anonymous ID, and `user.id`/`userId` once you're signed in.
 - The event name and, for `auth_screen_viewed`/`suggestion_requested`, their one property (`mode` / `workflow_key`).
-- The SDK's automatic `context` object — IP address (added server-side by RudderStack, not sent by the browser), user agent, locale, and screen size. This is normal SDK behavior, not a leak; it's why `rudderstack_raw`'s tables carry columns the curated views deliberately don't select (§2, §3).
+- The SDK's automatic `context` object — IP address (added server-side by RudderStack, not sent by the browser), user agent, locale, page URL, and screen size. This is normal SDK behavior, not a leak; it's why `rudderstack_raw`'s tables carry columns the curated views deliberately don't select (§2, §3).
 
 Confirm none of these ever appear: a username, a password, a real name, a todo title, or an AI prompt. If any of those show up in a payload, that's a defect in the wrapper, not an expected field.
 
