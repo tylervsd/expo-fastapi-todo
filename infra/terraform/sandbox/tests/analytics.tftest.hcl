@@ -45,6 +45,14 @@ override_resource {
   }
 }
 
+override_resource {
+  target          = google_service_account.hex_reader
+  override_during = plan
+  values = {
+    email = "example-hex-reader@example-phase18-project.iam.gserviceaccount.com"
+  }
+}
+
 variables {
   project_id = "example-phase18-project"
   region     = "us-west1"
@@ -232,6 +240,18 @@ run "analytics_enabled" {
     error_message = "The export job must keep zero retries with explicit backoff values, so the API retains retryConfig and plans stay clean."
   }
   assert {
+    condition     = strcontains(google_bigquery_table.data_freshness[0].view[0].query, "MAX(loaded_at) AS last_loaded_at") && !strcontains(google_bigquery_table.data_freshness[0].view[0].query, "user_key") && !strcontains(google_bigquery_table.data_freshness[0].view[0].query, "event_id")
+    error_message = "data_freshness must expose only the latest load time."
+  }
+  assert {
+    condition     = google_bigquery_dataset_access.freshness_authorized_view[0].dataset_id == "analytics_raw" && google_bigquery_dataset_access.freshness_authorized_view[0].view[0].table_id == "data_freshness"
+    error_message = "data_freshness must be an authorized view on the raw dataset."
+  }
+  assert {
+    condition     = length(google_service_account.hex_reader) == 0
+    error_message = "Hex identity must not exist unless hex is enabled."
+  }
+  assert {
     condition     = contains([for e in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : e.name if e.value == "example-phase18-project.analytics_raw.events"], "ANALYTICS_EVENTS_TABLE")
     error_message = "The worker must receive ANALYTICS_EVENTS_TABLE."
   }
@@ -246,4 +266,41 @@ run "analytics_requires_async_worker" {
   }
 
   expect_failures = [var.analytics]
+}
+
+run "hex_enabled" {
+  command = plan
+
+  variables {
+    analytics = { readers = ["user:learner@example.test"] }
+    hex       = {}
+  }
+
+  assert {
+    condition     = google_service_account.hex_reader[0].account_id == "hex-reader"
+    error_message = "The Hex identity must use the default account id."
+  }
+  assert {
+    condition     = google_bigquery_dataset_access.hex_reader[0].dataset_id == "analytics" && google_bigquery_dataset_access.hex_reader[0].role == "roles/bigquery.dataViewer" && google_bigquery_dataset_access.hex_reader[0].iam_member == "serviceAccount:example-hex-reader@example-phase18-project.iam.gserviceaccount.com"
+    error_message = "Hex must read only the curated analytics dataset."
+  }
+  assert {
+    condition     = google_project_iam_member.hex_job_user[0].role == "roles/bigquery.jobUser" && google_project_iam_member.hex_job_user[0].member == "serviceAccount:example-hex-reader@example-phase18-project.iam.gserviceaccount.com"
+    error_message = "Hex needs project jobUser to run queries, nothing broader."
+  }
+  assert {
+    condition     = google_bigquery_dataset_access.raw_writer[0].iam_member != "serviceAccount:example-hex-reader@example-phase18-project.iam.gserviceaccount.com"
+    error_message = "Hex must have no access to the raw dataset."
+  }
+}
+
+run "hex_requires_analytics" {
+  command = plan
+
+  variables {
+    analytics = null
+    hex       = {}
+  }
+
+  expect_failures = [var.hex]
 }

@@ -119,6 +119,38 @@ resource "google_bigquery_table" "suggestion_success" {
   depends_on = [google_bigquery_table.events_deduped]
 }
 
+resource "google_bigquery_table" "data_freshness" {
+  count = local.analytics_enabled ? 1 : 0
+
+  project             = var.project_id
+  dataset_id          = google_bigquery_dataset.analytics[0].dataset_id
+  table_id            = "data_freshness"
+  deletion_protection = false
+
+  view {
+    use_legacy_sql = false
+    query = templatefile("${path.module}/analytics/data_freshness.sql.tftpl", {
+      project     = var.project_id
+      raw_dataset = var.analytics.raw_dataset
+    })
+  }
+
+  depends_on = [google_bigquery_table.events]
+}
+
+resource "google_bigquery_dataset_access" "freshness_authorized_view" {
+  count = local.analytics_enabled ? 1 : 0
+
+  project    = var.project_id
+  dataset_id = google_bigquery_dataset.analytics_raw[0].dataset_id
+
+  view {
+    project_id = var.project_id
+    dataset_id = google_bigquery_dataset.analytics[0].dataset_id
+    table_id   = google_bigquery_table.data_freshness[0].table_id
+  }
+}
+
 resource "google_bigquery_dataset_access" "raw_writer" {
   count = local.analytics_enabled ? 1 : 0
 
