@@ -4,7 +4,8 @@
 -- of its first auth-screen view and never submits a signup in that window;
 -- returning visitors are excluded from visitors/submitted_24h/signed_up_24h
 -- and counted separately in returning_24h, so sign-ins aren't read as
--- signup drop-off.
+-- signup drop-off. The server signup may land up to 1 minute before the
+-- client's signup_submitted timestamp (client/server clock slack).
 WITH views AS (
   SELECT anonymous_id, MIN(timestamp) AS first_view_at
   FROM (
@@ -70,7 +71,7 @@ visitor_outcomes AS (
   LEFT JOIN server_signups ss
     ON ss.user_key = l.user_key
    AND vr.submitted_at IS NOT NULL
-   AND ss.signed_up_at >= vr.submitted_at
+   AND ss.signed_up_at >= TIMESTAMP_SUB(vr.submitted_at, INTERVAL 1 MINUTE)
    AND ss.signed_up_at < TIMESTAMP_ADD(vr.submitted_at, INTERVAL 24 HOUR)
   GROUP BY vr.anonymous_id, vr.first_view_at, vr.submitted_at, vr.returning
 ),

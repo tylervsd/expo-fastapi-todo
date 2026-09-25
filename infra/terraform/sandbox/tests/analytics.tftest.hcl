@@ -393,6 +393,10 @@ run "rudderstack_curated_views" {
     condition     = strcontains(google_bigquery_table.signup_funnel[0].view[0].query, "example-phase18-project.rudderstack_raw.signin_submitted") && strcontains(google_bigquery_table.signup_funnel[0].view[0].query, "returning_24h")
     error_message = "signup_funnel must exclude returning users (signin_submitted) from signup drop-off and report returning_24h."
   }
+  assert {
+    condition     = strcontains(google_bigquery_table.signup_funnel[0].view[0].query, "INTERVAL 1 MINUTE")
+    error_message = "signup_funnel must allow 1 minute of client/server clock slack when matching a signup submit to the server signup."
+  }
 }
 
 run "rudderstack_requires_analytics" {
