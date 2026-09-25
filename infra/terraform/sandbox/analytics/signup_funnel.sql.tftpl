@@ -1,0 +1,74 @@
+-- Signup funnel (Phase 30a definition). Client events are deduplicated by
+-- RudderStack message id; weeks are UTC ISO weeks. No context columns.
+WITH views AS (
+  SELECT anonymous_id, MIN(timestamp) AS first_view_at
+  FROM (
+    SELECT * FROM `${project}.${raw_dataset}.auth_screen_viewed`
+    WHERE TRUE
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY id ORDER BY received_at) = 1
+  )
+  GROUP BY anonymous_id
+),
+submits AS (
+  SELECT anonymous_id, timestamp AS submitted_at
+  FROM `${project}.${raw_dataset}.signup_submitted`
+  WHERE TRUE
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY id ORDER BY received_at) = 1
+),
+links AS (
+  SELECT DISTINCT anonymous_id, user_id AS user_key
+  FROM `${project}.${raw_dataset}.identifies`
+  WHERE user_id IS NOT NULL
+),
+server_signups AS (
+  SELECT user_key, occurred_at AS signed_up_at
+  FROM `${project}.${dataset}.events_deduped`
+  WHERE event_name = 'user_signed_up'
+),
+visitor_submits AS (
+  SELECT v.anonymous_id, v.first_view_at, MIN(s.submitted_at) AS submitted_at
+  FROM views v
+  LEFT JOIN submits s
+    ON s.anonymous_id = v.anonymous_id
+   AND s.submitted_at >= v.first_view_at
+   AND s.submitted_at < TIMESTAMP_ADD(v.first_view_at, INTERVAL 24 HOUR)
+  GROUP BY v.anonymous_id, v.first_view_at
+),
+visitor_outcomes AS (
+  SELECT vs.anonymous_id, vs.first_view_at, vs.submitted_at,
+         LOGICAL_OR(ss.user_key IS NOT NULL) AS signed_up
+  FROM visitor_submits vs
+  LEFT JOIN links l ON l.anonymous_id = vs.anonymous_id
+  LEFT JOIN server_signups ss
+    ON ss.user_key = l.user_key
+   AND vs.submitted_at IS NOT NULL
+   AND ss.signed_up_at >= vs.submitted_at
+   AND ss.signed_up_at < TIMESTAMP_ADD(vs.submitted_at, INTERVAL 24 HOUR)
+  GROUP BY vs.anonymous_id, vs.first_view_at, vs.submitted_at
+),
+funnel AS (
+  SELECT DATE_TRUNC(DATE(first_view_at), ISOWEEK) AS week,
+         COUNT(*) AS visitors,
+         COUNTIF(submitted_at IS NOT NULL) AS submitted_24h,
+         COUNTIF(signed_up) AS signed_up_24h
+  FROM visitor_outcomes
+  GROUP BY week
+),
+coverage AS (
+  SELECT DATE_TRUNC(DATE(ss.signed_up_at), ISOWEEK) AS week,
+         COUNT(*) AS server_signups,
+         COUNTIF(k.user_key IS NOT NULL) AS server_signups_identified
+  FROM server_signups ss
+  LEFT JOIN (SELECT DISTINCT user_key FROM links) k ON k.user_key = ss.user_key
+  GROUP BY week
+)
+SELECT COALESCE(f.week, c.week) AS week,
+       IFNULL(f.visitors, 0) AS visitors,
+       IFNULL(f.submitted_24h, 0) AS submitted_24h,
+       IFNULL(f.signed_up_24h, 0) AS signed_up_24h,
+       IFNULL(c.server_signups, 0) AS server_signups,
+       IFNULL(c.server_signups_identified, 0) AS server_signups_identified,
+       ROUND(SAFE_DIVIDE(c.server_signups_identified, c.server_signups), 4) AS client_coverage,
+       DATE_ADD(COALESCE(f.week, c.week), INTERVAL 9 DAY) <= CURRENT_DATE('UTC') AS cohort_complete
+FROM funnel f
+FULL OUTER JOIN coverage c ON f.week = c.week
