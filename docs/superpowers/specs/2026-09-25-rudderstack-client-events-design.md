@@ -23,7 +23,7 @@ All events use `track`; none carries free text. Automatic page tracking stays of
 
 | Event | Fired when | Properties |
 | --- | --- | --- |
-| `auth_screen_viewed` | The auth screen mounts, and when the user switches between sign-in and sign-up | `mode`: `signin` / `signup` |
+| `auth_screen_viewed` | The auth screen mounts (except right after a sign-out or a rejected stored session in the same app session), and when the user switches between sign-in and sign-up | `mode`: `signin` / `signup` |
 | `signup_submitted` | The signup form passes client validation and the request is sent | none |
 | `signin_submitted` | The sign-in form is sent | none |
 | `suggestion_requested` | The user taps the suggest action on a workflow | `workflow_key` (the id the server's suggestion events use) |
@@ -34,7 +34,8 @@ All events use `track`; none carries free text. Automatic page tracking stays of
 
 - Before sign-in: RudderStack's anonymous ID, stored in browser `localStorage` (not cookies).
 - After signup or sign-in succeeds, and when a stored session is restored on start: `identify(user.id)` with no traits (no username, no real name).
-- Sign-out: `reset()`, so the next person on a shared device gets a new anonymous ID.
+- Sign-out, and a stored session rejected on start: `reset()`, so the next person on a shared device gets a new anonymous ID.
+- The auth screen that follows either reset skips its mount-time `auth_screen_viewed`: the rotated ID isn't a new visitor, and recording it would read every sign-out as signup drop-off. Mode-switch views still record. A fresh visitor (no stored token, or unreadable token storage) records the mount-time view.
 
 ### Consent
 
@@ -47,6 +48,7 @@ All events use `track`; none carries free text. Automatic page tracking stays of
 - The only module that imports the SDK (`@rudderstack/analytics-js`, pinned).
 - Exports `track(name, props)`, `identify(id)`, `reset()`, `setConsent(enabled)`, `getConsent()`. Event names are a fixed TypeScript union, so a typo doesn't compile.
 - Does nothing when `EXPO_PUBLIC_RUDDERSTACK_WRITE_KEY` or `EXPO_PUBLIC_RUDDERSTACK_DATA_PLANE_URL` is unset, so local development and tests never send.
+- Loads the SDK lazily, on the first `track` or `identify` (which the wrapper only makes with consent on and GPC off), or on a `reset()` that must clear a persisted identity. A load failure turns later calls into no-ops.
 - Never throws into the UI; SDK failures are swallowed and logged at debug level.
 - Phase 30b puts the React Native SDK behind the same interface.
 
@@ -57,7 +59,7 @@ The write key is public by design (it only permits sending events to one source)
 An opt-in `rudderstack` object variable in the sandbox root, default `null`, in `infra/terraform/sandbox/rudderstack.tf`. It requires `analytics` (validation, like `hex`). Fields: `workspace_id` (required), `curated_views` (default `false`), and names with defaults.
 
 - **Dataset `rudderstack_raw`** in `us-west1`, created by Terraform. RudderStack's namespace setting points at it, so RudderStack needs Data Editor, not Data Owner, and can't create datasets or change access. The namespace can't be changed later; the guide sets it before the first sync.
-- **Staging bucket** in `us-west1`: uniform bucket-level access, public access prevention enforced, lifecycle delete after 7 days (a backstop to RudderStack's post-sync cleanup).
+- **Staging bucket** in `us-west1`: uniform bucket-level access, public access prevention enforced, lifecycle delete after 7 days (the only cleanup: the loader has no delete permission on the bucket).
 - **Service account `rudderstack-loader`:**
   - `roles/bigquery.dataEditor` on `rudderstack_raw` only, via `google_bigquery_dataset_access` (never mixed with dataset IAM resources, as in Phase 26).
   - `roles/bigquery.jobUser` on the project.
@@ -78,7 +80,7 @@ Two curated views in `analytics`, authorized on `rudderstack_raw` and on `analyt
 - `visitors`: anonymous IDs whose first `auth_screen_viewed` falls in the week, excluding returning users — a visitor is returning if it has a `signin_submitted` within 24 hours of the first view and no `signup_submitted` in that window.
 - `returning_24h`: of the week's first-view anonymous IDs, those returning users.
 - `submitted_24h`: of the (non-returning) visitors, with a `signup_submitted` within 24 hours of the first view.
-- `signed_up_24h`: of those, linked through `identifies` to a `user_key` whose server `user_signed_up` is within 24 hours after the first `signup_submitted`.
+- `signed_up_24h`: of those, linked through `identifies` to a `user_key` whose server `user_signed_up` is from 1 minute before (client/server clock slack) to 24 hours after the first `signup_submitted`.
 - `server_signups`: server `user_signed_up` events in the week, from `analytics.events_deduped`.
 - `server_signups_identified`: those whose `user_key` appears in `identifies`. `client_coverage = server_signups_identified / server_signups` measures ad-blocker and opt-out loss.
 - `cohort_complete`: the week ended at least 48 hours before `CURRENT_DATE('UTC')`.
@@ -104,16 +106,16 @@ The plan verifies with one event that an explicit `timestamp` lands in the wareh
 
 ## 5. Governance, cost and deletion
 
-- **What leaves the device:** the anonymous ID, `user.id`, event names, `workflow_key`, and the SDK's automatic context (IP address, user agent, locale, page URL, screen size). The raw dataset has no grants beyond BigQuery's default project-role access, so analysts must not hold basic project roles (as for `analytics_raw` in Phase 26); curated views select none of the context.
+- **What leaves the device:** the anonymous ID, `user.id`, event names, `workflow_key`, and the SDK's automatic context (IP address, user agent, locale, page URL, screen size). The raw dataset has no grants beyond BigQuery's default project-role access, so analysts must not hold basic project roles (as for `analytics_raw` in Phase 26); curated views select none of the context. **No RudderStack contact at all while consent is off or GPC is set:** the SDK loads lazily, so a page with consent off or GPC on never loads it, except for one load when an explicit sign-out, opt-out, or rejected stored session must clear an identity a previous page session persisted.
 - **Processor:** RudderStack processes events in its US region. The guide records this as the question to take to Accountable, alongside Hex (28b) and Gemini (28a).
-- **Deletion:** RudderStack's user suppression API is Growth/Enterprise only and **doesn't delete from warehouse destinations**. Deleting a person's client events is a BigQuery `DELETE` across every `rudderstack_raw` table by `user_id` and every linked `anonymous_id`, plus the staging bucket's 7-day lifecycle and BigQuery time travel. The guide records what "fully deleted" required.
+- **Deletion:** RudderStack's user suppression API is Growth/Enterprise only and **doesn't delete from warehouse destinations**. Deleting a person's client events is a BigQuery `DELETE` across every `rudderstack_raw` table by `user_id` and every linked `anonymous_id` (the `users` table by `id`), verified against the raw tables, plus the staging bucket's 7-day lifecycle and BigQuery's time travel (up to 7 days) and fail-safe (7 more). The guide records what "fully deleted" required.
 - **Cost:** free plan; BigQuery load jobs are free; staging storage is negligible.
 
 ## Testing and acceptance
 
 **Local:**
 
-- **Jest, wrapper:** no sends without the write key, with consent off, or under GPC; `reset()` on sign-out and on opt-out; `identify` sends no traits; SDK exceptions never reach the caller; payloads contain no username, todo title, or prompt.
+- **Jest, wrapper:** no sends without the write key, with consent off, or under GPC; the SDK doesn't load until its first call; `reset()` on sign-out and on opt-out; `identify` sends no traits; SDK exceptions never reach the caller; payloads contain no username, todo title, or prompt.
 - **Jest, screens:** each of the four events fires exactly once at the right moment (auth mount and mode switch, signup submit, sign-in submit, suggest tap); `identify` on sign-in, signup and session restore.
 - **Terraform mock tests:** nothing when disabled; `rudderstack` requires `analytics`; the WIF condition binds the workspace ID; bucket-only storage roles; `dataEditor` on `rudderstack_raw` only; no views until `curated_views = true`; views select no context columns.
 - **pytest:** the seed generator is deterministic and reproduces the 28b signup and suggestion times.
@@ -124,7 +126,7 @@ The plan verifies with one event that an explicit `timestamp` lands in the wareh
 - Terraform plan reviewed and applied; RudderStack source and destination set up with WIF.
 - The web app deployed with the write key; events visible in RudderStack Live Events.
 - After a sync, the synthetic seed run, and `curated_views = true` applied: the views match `expected_client.md`.
-- Opt-out and GPC: no network requests to the data plane. Sign-out: a new anonymous ID.
+- Opt-out and GPC: a fresh page load makes no request to any RudderStack host (data plane or control plane). Sign-out: a new anonymous ID.
 - A real ad blocker: the gap appears in `client_coverage`.
 - The deletion drill done and recorded.
 
