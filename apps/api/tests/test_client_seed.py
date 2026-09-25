@@ -68,6 +68,19 @@ def test_shape_has_blocked_users_visitors_and_retaps() -> None:
     assert 80 <= len(returning) <= 160
 
 
+def test_visitor_events_never_carry_a_userid() -> None:
+    # Visitor anonymous IDs are ANON_PREFIX + (100000 + v); synthetic-user anonymous IDs
+    # are ANON_PREFIX + n for n in 1..400. The returning-user metric depends on visitor
+    # events (including signin_submitted) never being attributable to a userId, and on
+    # a user's own signin_submitted always carrying that user's userId.
+    for event in seed.build_events():
+        n = int(event["anonymousId"][len(seed.ANON_PREFIX):])
+        if n > 100000:
+            assert "userId" not in event
+        elif event.get("event") == "signin_submitted":
+            assert event["userId"] == f"{seed.USER_PREFIX}{n:012d}"
+
+
 def test_matches_the_28b_outbox_seed(database_session: Session, database_engine: Engine) -> None:
     with database_engine.begin() as connection:
         connection.connection.cursor().execute((SCRIPTS / "seed_outbox.sql").read_text())
