@@ -266,3 +266,9 @@ real_name_encryption = false
 
 # Phase 28b Hex (requires analytics). Key: gcloud only, never Terraform.
 # hex = {}
+
+# Phase 30a RudderStack client events (see docs/guides/30a-rudderstack-client-events.md).
+# rudderstack = {
+#   workspace_id  = "your-rudderstack-workspace-id"
+#   curated_views = false # true after the first sync
+# }

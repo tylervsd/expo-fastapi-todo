@@ -16,6 +16,8 @@ import { createAuthenticatedApi, defaultTransport, type TodoTransport } from "./
 import { AgentSessionProvider } from "../agent/AgentSessionProvider";
 import { AuthScreen } from "./AuthScreen";
 import { tokenStorage, type TokenStorage } from "./tokenStorage";
+import { analytics } from "../analytics";
+import { AnalyticsConsentSwitch } from "../analytics/AnalyticsConsentSwitch";
 
 export type ProviderAuthApi = {
   signup: (username: string, password: string, realName?: string) => Promise<AuthUser>;
@@ -69,6 +71,10 @@ export function AuthProvider({
   const [status, setStatus] = useState<Status>("unknown");
   const [user, setUser] = useState<AuthUser | null>(null);
   const [signingOut, setSigningOut] = useState(false);
+  // Set when this app session reset the analytics identity (sign-out, session
+  // cleanup, or a rejected stored token). The auth screen that follows then
+  // skips its mount-time view: the rotated anonymous ID is not a new visitor.
+  const [identityReset, setIdentityReset] = useState(false);
   const liveRef = useRef<SessionIdentity | null>(null);
   const epochRef = useRef(0);
   const [sessionEpoch, setSessionEpoch] = useState(0);
@@ -118,6 +124,7 @@ export function AuthProvider({
         setUser(restored);
         bumpEpoch();
         setStatus("signed-in");
+        analytics.identify(restored.id);
       } catch (error) {
         if (!mounted) return;
         if (error instanceof TodoApiError) {
@@ -126,6 +133,10 @@ export function AuthProvider({
           } catch {
             // Best effort: local state still settles below.
           }
+          // The stored token was revoked server-side: forget whatever identity
+          // it carried so the next person's anonymous funnel doesn't inherit it.
+          analytics.reset();
+          setIdentityReset(true);
         }
         bumpEpoch();
         setStatus("signed-out");
@@ -149,6 +160,7 @@ export function AuthProvider({
       }
       liveRef.current = null;
       bumpEpoch();
+      analytics.reset();
       try {
         await storage.clear();
       } catch {
@@ -156,6 +168,7 @@ export function AuthProvider({
       }
       queryClient.clear();
       setUser(null);
+      setIdentityReset(true);
       setStatus("signed-out");
     },
     [authApi, storage, queryClient, bumpEpoch]
@@ -196,6 +209,7 @@ export function AuthProvider({
       liveRef.current = { token: session.token, userId: session.user.id };
       setUser(session.user);
       setStatus("signed-in");
+      analytics.identify(session.user.id);
     })();
     completionChainRef.current = completion.then(
       () => undefined,
@@ -231,6 +245,7 @@ export function AuthProvider({
           signup={authApi.signup}
           login={authApi.login}
           onAuthenticated={handleAuthenticated}
+          recordEntryView={!identityReset}
         />
       </SessionEpochContext.Provider>
     );
@@ -262,6 +277,7 @@ export function AuthProvider({
                 <Text style={styles.signOutButtonText}>Sign out</Text>
               </Pressable>
             </View>
+            <AnalyticsConsentSwitch />
           </SafeAreaView>
           <TodoExperience userId={user.id} api={todoApi} sessionEpoch={sessionEpoch} isSessionCurrent={isSessionCurrent} />
         </View>

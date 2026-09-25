@@ -70,6 +70,23 @@ jest.mock("react-native", () => {
   });
 });
 
+jest.mock("../analytics", () => ({
+  analytics: {
+    track: jest.fn(),
+    identify: jest.fn(),
+    reset: jest.fn(),
+    consent: jest.fn(() => ({ available: true, enabled: true, gpc: false })),
+    setConsent: jest.fn(),
+  },
+}));
+
+const mockAnalytics = () =>
+  (jest.requireMock("../analytics") as { analytics: Record<string, jest.Mock> }).analytics;
+
+beforeEach(() => {
+  Object.values(mockAnalytics()).forEach((fn) => fn.mockClear());
+});
+
 jest.mock("expo-secure-store", () => {
   const store = new Map<string, string>();
   const api = {
@@ -860,5 +877,102 @@ describe("agent session factory", () => {
     for (const query of client.getQueryCache().getAll()) {
       expect(JSON.stringify(query.queryKey)).not.toContain("tok-A");
     }
+  });
+});
+
+describe("analytics identity", () => {
+  it("identifies a restored session by user id only", async () => {
+    const storage = createMemoryTokenStorage();
+    await storage.set("tok-1");
+    await renderProvider({ storage });
+    await waitFor(() => expect(screen.getByText("Welcome, alice")).toBeTruthy());
+    expect(mockAnalytics().identify.mock.calls).toEqual([[alice.id]]);
+  });
+
+  it("does not identify when the stored session is revoked, and resets any prior identity", async () => {
+    const authApi = makeAuthApi();
+    authApi.fetchMe.mockRejectedValueOnce(new TodoApiError("auth-required", "Please sign in again."));
+    const storage = createMemoryTokenStorage();
+    await storage.set("tok-1");
+    await renderProvider({ authApi, storage });
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    expect(mockAnalytics().identify).not.toHaveBeenCalled();
+    expect(mockAnalytics().reset).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reset identity for a fresh visitor with no stored token", async () => {
+    const storage = createMemoryTokenStorage();
+    await renderProvider({ storage });
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    expect(mockAnalytics().reset).not.toHaveBeenCalled();
+  });
+
+  it("identifies after sign-in and resets at sign-out", async () => {
+    await renderProvider();
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    await fireEvent.changeText(screen.getByLabelText("Username"), "alice");
+    await fireEvent.changeText(screen.getByLabelText("Password"), "long-enough-password");
+    await fireEvent.press(screen.getByRole("button", { name: "Sign in" }));
+    await waitFor(() => expect(screen.getByText("Welcome, alice")).toBeTruthy());
+    expect(mockAnalytics().identify.mock.calls).toEqual([[alice.id]]);
+    await fireEvent.press(screen.getByRole("button", { name: "Sign out" }));
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    expect(mockAnalytics().reset).toHaveBeenCalledTimes(1);
+  });
+
+  const authViews = () =>
+    mockAnalytics().track.mock.calls.filter(([name]) => name === "auth_screen_viewed");
+
+  it("records the auth screen view for a fresh visitor with no stored token", async () => {
+    await renderProvider();
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    expect(authViews()).toEqual([["auth_screen_viewed", { mode: "signin" }]]);
+  });
+
+  it("records the auth screen view when the token store can't be read", async () => {
+    const storage = createMemoryTokenStorage();
+    jest.spyOn(storage, "get").mockRejectedValueOnce(new Error("storage unavailable"));
+    await renderProvider({ storage });
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    expect(authViews()).toEqual([["auth_screen_viewed", { mode: "signin" }]]);
+  });
+
+  it("records no auth screen view after a rejected stored session", async () => {
+    const authApi = makeAuthApi();
+    authApi.fetchMe.mockRejectedValueOnce(new TodoApiError("auth-required", "Please sign in again."));
+    const storage = createMemoryTokenStorage();
+    await storage.set("tok-1");
+    await renderProvider({ authApi, storage });
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    expect(authViews()).toEqual([]);
+  });
+
+  it("records no auth screen view after sign-out", async () => {
+    const storage = createMemoryTokenStorage();
+    await storage.set("tok-1");
+    await renderProvider({ storage });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Sign out" })).toBeTruthy());
+    await fireEvent.press(screen.getByRole("button", { name: "Sign out" }));
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    expect(authViews()).toEqual([]);
+    await fireEvent.press(screen.getByRole("button", { name: "New here? Create an account." }));
+    expect(authViews()).toEqual([["auth_screen_viewed", { mode: "signup" }]]);
+  });
+
+  it("records no auth screen view after a request reports auth-required", async () => {
+    const storage = createMemoryTokenStorage();
+    await storage.set("tok-1");
+    const transport = makeTransport();
+    transport.listTodos.mockRejectedValueOnce(new TodoApiError("auth-required", "Please sign in again."));
+    await renderProvider({ storage, transport });
+    await waitFor(() => expect(screen.getByLabelText("Username")).toBeTruthy());
+    expect(authViews()).toEqual([]);
+  });
+
+  it("shows the consent switch when signed in", async () => {
+    const storage = createMemoryTokenStorage();
+    await storage.set("tok-1");
+    await renderProvider({ storage });
+    await waitFor(() => expect(screen.getByLabelText("Share usage analytics")).toBeTruthy());
   });
 });

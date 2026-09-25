@@ -53,6 +53,15 @@ override_resource {
   }
 }
 
+override_resource {
+  target          = google_service_account.rudderstack_loader
+  override_during = plan
+  values = {
+    email = "example-rudderstack-loader@example-phase18-project.iam.gserviceaccount.com"
+    name  = "projects/example-phase18-project/serviceAccounts/example-rudderstack-loader@example-phase18-project.iam.gserviceaccount.com"
+  }
+}
+
 variables {
   project_id = "example-phase18-project"
   region     = "us-west1"
@@ -303,4 +312,111 @@ run "hex_requires_analytics" {
   }
 
   expect_failures = [var.hex]
+}
+
+run "rudderstack_disabled_by_default" {
+  command = plan
+
+  variables {
+    analytics = { readers = [] }
+  }
+
+  assert {
+    condition     = length(google_bigquery_dataset.rudderstack_raw) == 0 && length(google_storage_bucket.rudderstack_staging) == 0 && length(google_iam_workload_identity_pool.rudderstack) == 0 && length(google_service_account.rudderstack_loader) == 0
+    error_message = "RudderStack must create nothing unless enabled."
+  }
+}
+
+run "rudderstack_enabled" {
+  command = plan
+
+  variables {
+    analytics   = { readers = ["user:learner@example.test"] }
+    rudderstack = { workspace_id = "2AbCdEfGh123" }
+  }
+
+  assert {
+    condition     = google_bigquery_dataset.rudderstack_raw[0].dataset_id == "rudderstack_raw" && google_bigquery_dataset.rudderstack_raw[0].location == "us-west1"
+    error_message = "The raw client dataset must be rudderstack_raw in the sandbox region."
+  }
+  assert {
+    condition     = google_bigquery_dataset_access.rudderstack_loader[0].dataset_id == "rudderstack_raw" && google_bigquery_dataset_access.rudderstack_loader[0].role == "roles/bigquery.dataEditor" && google_bigquery_dataset_access.rudderstack_loader[0].iam_member == "serviceAccount:example-rudderstack-loader@example-phase18-project.iam.gserviceaccount.com"
+    error_message = "The loader must get dataEditor on rudderstack_raw only."
+  }
+  assert {
+    condition     = google_project_iam_member.rudderstack_job_user[0].role == "roles/bigquery.jobUser" && google_project_iam_member.rudderstack_job_user[0].member == "serviceAccount:example-rudderstack-loader@example-phase18-project.iam.gserviceaccount.com"
+    error_message = "The loader needs project jobUser for load jobs, nothing broader."
+  }
+  assert {
+    condition     = google_storage_bucket.rudderstack_staging[0].uniform_bucket_level_access && google_storage_bucket.rudderstack_staging[0].public_access_prevention == "enforced" && tolist(google_storage_bucket.rudderstack_staging[0].lifecycle_rule[0].condition)[0].age == 7 && tolist(google_storage_bucket.rudderstack_staging[0].lifecycle_rule[0].action)[0].type == "Delete"
+    error_message = "The staging bucket must be uniform, non-public, and delete objects after 7 days."
+  }
+  assert {
+    condition     = toset([for m in google_storage_bucket_iam_member.rudderstack_staging : m.role]) == toset(["roles/storage.objectCreator", "roles/storage.objectViewer"]) && alltrue([for m in google_storage_bucket_iam_member.rudderstack_staging : m.member == "serviceAccount:example-rudderstack-loader@example-phase18-project.iam.gserviceaccount.com"])
+    error_message = "The loader gets only object create and view, on the staging bucket only."
+  }
+  assert {
+    condition     = google_iam_workload_identity_pool_provider.rudderstack[0].aws[0].account_id == "422074288268" && google_iam_workload_identity_pool_provider.rudderstack[0].attribute_condition == "attribute.workspace == '2AbCdEfGh123'" && google_iam_workload_identity_pool_provider.rudderstack[0].attribute_mapping["attribute.workspace"] == "assertion.arn.extract('assumed-role/data-plane-service-account/{workspace}')"
+    error_message = "The pool must trust only RudderStack's AWS account and this workspace."
+  }
+  assert {
+    condition     = google_service_account_iam_member.rudderstack_wif[0].role == "roles/iam.workloadIdentityUser" && google_service_account_iam_member.rudderstack_wif[0].member == "principalSet://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/rudderstack/attribute.workspace/2AbCdEfGh123"
+    error_message = "Only this workspace's federated identity may impersonate the loader."
+  }
+  assert {
+    condition     = length(google_bigquery_table.signup_funnel) == 0 && length(google_bigquery_table.suggestion_taps) == 0
+    error_message = "Curated client views wait for curated_views = true (tables exist only after the first sync)."
+  }
+}
+
+run "rudderstack_curated_views" {
+  command = plan
+
+  variables {
+    analytics   = { readers = ["user:learner@example.test"] }
+    rudderstack = { workspace_id = "2AbCdEfGh123", curated_views = true }
+  }
+
+  assert {
+    condition     = strcontains(google_bigquery_table.signup_funnel[0].view[0].query, "example-phase18-project.rudderstack_raw.identifies") && strcontains(google_bigquery_table.signup_funnel[0].view[0].query, "example-phase18-project.analytics.events_deduped") && strcontains(google_bigquery_table.suggestion_taps[0].view[0].query, "INTERVAL 30 MINUTE")
+    error_message = "The views must join client tables to the curated server events."
+  }
+  assert {
+    condition     = alltrue([for q in [google_bigquery_table.signup_funnel[0].view[0].query, google_bigquery_table.suggestion_taps[0].view[0].query] : !strcontains(q, "context_") && strcontains(q, "PARTITION BY id")])
+    error_message = "Views must deduplicate by message id and select no context (IP, user agent, URL) columns."
+  }
+  assert {
+    condition     = toset([for a in google_bigquery_dataset_access.rudderstack_authorized_view : a.view[0].table_id]) == toset(["signup_funnel", "suggestion_taps"]) && alltrue([for a in google_bigquery_dataset_access.rudderstack_authorized_view : a.dataset_id == "rudderstack_raw"])
+    error_message = "Both views must be authorized on rudderstack_raw."
+  }
+  assert {
+    condition     = strcontains(google_bigquery_table.signup_funnel[0].view[0].query, "example-phase18-project.rudderstack_raw.signin_submitted") && strcontains(google_bigquery_table.signup_funnel[0].view[0].query, "returning_24h")
+    error_message = "signup_funnel must exclude returning users (signin_submitted) from signup drop-off and report returning_24h."
+  }
+  assert {
+    condition     = strcontains(google_bigquery_table.signup_funnel[0].view[0].query, "INTERVAL 1 MINUTE")
+    error_message = "signup_funnel must allow 1 minute of client/server clock slack when matching a signup submit to the server signup."
+  }
+}
+
+run "rudderstack_requires_analytics" {
+  command = plan
+
+  variables {
+    analytics   = null
+    rudderstack = { workspace_id = "2AbCdEfGh123" }
+  }
+
+  expect_failures = [var.rudderstack]
+}
+
+run "rudderstack_rejects_unsafe_workspace_id" {
+  command = plan
+
+  variables {
+    analytics   = { readers = [] }
+    rudderstack = { workspace_id = "x' || true || '" }
+  }
+
+  expect_failures = [var.rudderstack]
 }

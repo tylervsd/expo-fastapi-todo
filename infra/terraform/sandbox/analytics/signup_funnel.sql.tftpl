@@ -1,0 +1,105 @@
+-- Signup funnel (Phase 30a definition). Client events are deduplicated by
+-- RudderStack message id; weeks are UTC ISO weeks. No context columns.
+-- A visitor is "returning" if it signs in (signin_submitted) within 24 hours
+-- of its first auth-screen view and never submits a signup in that window;
+-- returning visitors are excluded from visitors/submitted_24h/signed_up_24h
+-- and counted separately in returning_24h, so sign-ins aren't read as
+-- signup drop-off. The server signup may land up to 1 minute before the
+-- client's signup_submitted timestamp (client/server clock slack).
+WITH views AS (
+  SELECT anonymous_id, MIN(timestamp) AS first_view_at
+  FROM (
+    SELECT * FROM `${project}.${raw_dataset}.auth_screen_viewed`
+    WHERE TRUE
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY id ORDER BY received_at) = 1
+  )
+  GROUP BY anonymous_id
+),
+submits AS (
+  SELECT anonymous_id, timestamp AS submitted_at
+  FROM `${project}.${raw_dataset}.signup_submitted`
+  WHERE TRUE
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY id ORDER BY received_at) = 1
+),
+signins AS (
+  SELECT anonymous_id, timestamp AS signed_in_at
+  FROM `${project}.${raw_dataset}.signin_submitted`
+  WHERE TRUE
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY id ORDER BY received_at) = 1
+),
+links AS (
+  SELECT DISTINCT anonymous_id, user_id AS user_key
+  FROM `${project}.${raw_dataset}.identifies`
+  WHERE user_id IS NOT NULL
+),
+server_signups AS (
+  SELECT user_key, occurred_at AS signed_up_at
+  FROM `${project}.${dataset}.events_deduped`
+  WHERE event_name = 'user_signed_up'
+),
+visitor_submits AS (
+  SELECT v.anonymous_id, v.first_view_at, MIN(s.submitted_at) AS submitted_at
+  FROM views v
+  LEFT JOIN submits s
+    ON s.anonymous_id = v.anonymous_id
+   AND s.submitted_at >= v.first_view_at
+   AND s.submitted_at < TIMESTAMP_ADD(v.first_view_at, INTERVAL 24 HOUR)
+  GROUP BY v.anonymous_id, v.first_view_at
+),
+visitor_signins AS (
+  SELECT v.anonymous_id, v.first_view_at,
+         LOGICAL_OR(si.anonymous_id IS NOT NULL) AS has_signin_24h
+  FROM views v
+  LEFT JOIN signins si
+    ON si.anonymous_id = v.anonymous_id
+   AND si.signed_in_at >= v.first_view_at
+   AND si.signed_in_at < TIMESTAMP_ADD(v.first_view_at, INTERVAL 24 HOUR)
+  GROUP BY v.anonymous_id, v.first_view_at
+),
+visitor_returning AS (
+  SELECT vs.anonymous_id, vs.first_view_at, vs.submitted_at,
+         (vsi.has_signin_24h AND vs.submitted_at IS NULL) AS returning
+  FROM visitor_submits vs
+  JOIN visitor_signins vsi
+    ON vsi.anonymous_id = vs.anonymous_id AND vsi.first_view_at = vs.first_view_at
+),
+visitor_outcomes AS (
+  SELECT vr.anonymous_id, vr.first_view_at, vr.submitted_at, vr.returning,
+         LOGICAL_OR(ss.user_key IS NOT NULL) AS signed_up
+  FROM visitor_returning vr
+  LEFT JOIN links l ON l.anonymous_id = vr.anonymous_id
+  LEFT JOIN server_signups ss
+    ON ss.user_key = l.user_key
+   AND vr.submitted_at IS NOT NULL
+   AND ss.signed_up_at >= TIMESTAMP_SUB(vr.submitted_at, INTERVAL 1 MINUTE)
+   AND ss.signed_up_at < TIMESTAMP_ADD(vr.submitted_at, INTERVAL 24 HOUR)
+  GROUP BY vr.anonymous_id, vr.first_view_at, vr.submitted_at, vr.returning
+),
+funnel AS (
+  SELECT DATE_TRUNC(DATE(first_view_at), ISOWEEK) AS week,
+         COUNTIF(NOT returning) AS visitors,
+         COUNTIF(returning) AS returning_24h,
+         COUNTIF(NOT returning AND submitted_at IS NOT NULL) AS submitted_24h,
+         COUNTIF(NOT returning AND signed_up) AS signed_up_24h
+  FROM visitor_outcomes
+  GROUP BY week
+),
+coverage AS (
+  SELECT DATE_TRUNC(DATE(ss.signed_up_at), ISOWEEK) AS week,
+         COUNT(*) AS server_signups,
+         COUNTIF(k.user_key IS NOT NULL) AS server_signups_identified
+  FROM server_signups ss
+  LEFT JOIN (SELECT DISTINCT user_key FROM links) k ON k.user_key = ss.user_key
+  GROUP BY week
+)
+SELECT COALESCE(f.week, c.week) AS week,
+       IFNULL(f.visitors, 0) AS visitors,
+       IFNULL(f.returning_24h, 0) AS returning_24h,
+       IFNULL(f.submitted_24h, 0) AS submitted_24h,
+       IFNULL(f.signed_up_24h, 0) AS signed_up_24h,
+       IFNULL(c.server_signups, 0) AS server_signups,
+       IFNULL(c.server_signups_identified, 0) AS server_signups_identified,
+       ROUND(SAFE_DIVIDE(c.server_signups_identified, c.server_signups), 4) AS client_coverage,
+       DATE_ADD(COALESCE(f.week, c.week), INTERVAL 9 DAY) <= CURRENT_DATE('UTC') AS cohort_complete
+FROM funnel f
+FULL OUTER JOIN coverage c ON f.week = c.week

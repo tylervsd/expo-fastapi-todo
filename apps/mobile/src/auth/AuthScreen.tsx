@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Pressable,
   SafeAreaView,
@@ -9,6 +9,7 @@ import {
   View,
 } from "react-native";
 import { TodoApiError, type AuthUser, type Session } from "../todos/todoApi";
+import { analytics } from "../analytics";
 
 export type AuthApi = {
   signup: (username: string, password: string, realName?: string) => Promise<AuthUser>;
@@ -34,10 +35,13 @@ export function AuthScreen({
   signup,
   login,
   onAuthenticated,
+  recordEntryView = true,
 }: {
   signup: AuthApi["signup"];
   login: AuthApi["login"];
   onAuthenticated: (session: Session) => void;
+  /** False right after a sign-out or rejected session: the rotated anonymous ID isn't a new visitor. */
+  recordEntryView?: boolean;
 }): React.JSX.Element {
   const [mode, setMode] = useState<Mode>("signin");
   const [username, setUsername] = useState("");
@@ -47,6 +51,15 @@ export function AuthScreen({
   const [pending, setPending] = useState(false);
   const busy = useRef(false);
 
+  // One view per mount and per mode switch (Phase 30a funnel entry). The
+  // mount-time view is skipped when recordEntryView is false.
+  const lastViewed = useRef<Mode | null>(recordEntryView ? null : "signin");
+  useEffect(() => {
+    if (lastViewed.current === mode) return;
+    lastViewed.current = mode;
+    analytics.track("auth_screen_viewed", { mode });
+  }, [mode]);
+
   const submit = () => {
     if (busy.current) return;
     if (username.trim() === "" || password === "") {
@@ -54,6 +67,7 @@ export function AuthScreen({
       return;
     }
     busy.current = true;
+    analytics.track(mode === "signin" ? "signin_submitted" : "signup_submitted", {});
     setPending(true);
     setError(null);
     const attempt = mode === "signin" ? login(username, password)
@@ -63,6 +77,7 @@ export function AuthScreen({
         if (mode === "signin") {
           onAuthenticated(result as Session);
         } else {
+          analytics.identify((result as AuthUser).id);
           setMode("signin");
           setUsername(username);
           setPassword("");

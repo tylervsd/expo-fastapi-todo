@@ -23,6 +23,23 @@ jest.mock("react-native", () => {
   });
 });
 
+jest.mock("../analytics", () => ({
+  analytics: {
+    track: jest.fn(),
+    identify: jest.fn(),
+    reset: jest.fn(),
+    consent: jest.fn(() => ({ available: true, enabled: true, gpc: false })),
+    setConsent: jest.fn(),
+  },
+}));
+
+const mockAnalytics = () =>
+  (jest.requireMock("../analytics") as { analytics: Record<string, jest.Mock> }).analytics;
+
+beforeEach(() => {
+  Object.values(mockAnalytics()).forEach((fn) => fn.mockClear());
+});
+
 const user: AuthUser = { id: "6fc33b84-16a8-4d8e-ae94-fc50bb457d72", username: "alice" };
 const session: Session = {
   token: "tok-1",
@@ -44,11 +61,19 @@ const setup = async (overrides?: {
   signup?: jest.Mock;
   login?: jest.Mock;
   onAuthenticated?: jest.Mock;
+  recordEntryView?: boolean;
 }) => {
   const signup = overrides?.signup ?? jest.fn(async () => user);
   const login = overrides?.login ?? jest.fn(async () => session);
   const onAuthenticated = overrides?.onAuthenticated ?? jest.fn();
-  await render(<AuthScreen signup={signup} login={login} onAuthenticated={onAuthenticated} />);
+  await render(
+    <AuthScreen
+      signup={signup}
+      login={login}
+      onAuthenticated={onAuthenticated}
+      recordEntryView={overrides?.recordEntryView}
+    />
+  );
   return { signup, login, onAuthenticated };
 };
 
@@ -178,4 +203,54 @@ it("disables platform text transforms on credential fields", async () => {
   expect(username.props.autoCorrect).toBe(false);
   expect(password.props.autoCapitalize).toBe("none");
   expect(password.props.autoCorrect).toBe(false);
+});
+
+describe("analytics", () => {
+  it("records the auth screen view on mount and on mode switch", async () => {
+    await setup();
+    expect(mockAnalytics().track.mock.calls).toEqual([["auth_screen_viewed", { mode: "signin" }]]);
+    await fireEvent.press(screen.getByRole("button", { name: "New here? Create an account." }));
+    expect(mockAnalytics().track).toHaveBeenLastCalledWith("auth_screen_viewed", { mode: "signup" });
+  });
+
+  it("skips the mount-time view when told to, but still records mode switches", async () => {
+    await setup({ recordEntryView: false });
+    expect(mockAnalytics().track).not.toHaveBeenCalled();
+    await fireEvent.press(screen.getByRole("button", { name: "New here? Create an account." }));
+    await fireEvent.press(screen.getByRole("button", { name: "Have an account? Sign in." }));
+    expect(mockAnalytics().track.mock.calls).toEqual([
+      ["auth_screen_viewed", { mode: "signup" }],
+      ["auth_screen_viewed", { mode: "signin" }],
+    ]);
+  });
+
+  it("records no submit when validation fails", async () => {
+    await setup();
+    await fireEvent.press(screen.getByRole("button", { name: "Sign in" }));
+    expect(mockAnalytics().track.mock.calls.map(([name]) => name)).toEqual(["auth_screen_viewed"]);
+  });
+
+  it("records signup submit, identifies the new user, and sends no typed text", async () => {
+    const { signup } = await setup();
+    await fireEvent.press(screen.getByRole("button", { name: "New here? Create an account." }));
+    await fireEvent.changeText(screen.getByLabelText("Real name (optional)"), "Real Person");
+    await fireEvent.changeText(screen.getByLabelText("Username"), "alice");
+    await fireEvent.changeText(screen.getByLabelText("Password"), "long-enough-password");
+    await fireEvent.press(screen.getByRole("button", { name: "Create account" }));
+    await waitFor(() => expect(signup).toHaveBeenCalled());
+    await waitFor(() => expect(mockAnalytics().identify.mock.calls).toEqual([[user.id]]));
+    expect(mockAnalytics().track).toHaveBeenCalledWith("signup_submitted", {});
+    const sent = JSON.stringify([mockAnalytics().track.mock.calls, mockAnalytics().identify.mock.calls]);
+    expect(sent).not.toMatch(/alice|long-enough-password|Real Person/);
+  });
+
+  it("records sign-in submit and leaves identify to the provider", async () => {
+    const { login } = await setup();
+    await fireEvent.changeText(screen.getByLabelText("Username"), "alice");
+    await fireEvent.changeText(screen.getByLabelText("Password"), "long-enough-password");
+    await fireEvent.press(screen.getByRole("button", { name: "Sign in" }));
+    await waitFor(() => expect(login).toHaveBeenCalled());
+    expect(mockAnalytics().track).toHaveBeenCalledWith("signin_submitted", {});
+    expect(mockAnalytics().identify).not.toHaveBeenCalled();
+  });
 });

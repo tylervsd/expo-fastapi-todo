@@ -1,0 +1,40 @@
+-- Suggestion taps vs confirmed outcomes (Phase 30a definition). A tap's
+-- outcome is the first server suggestion_finished for the same workflow
+-- within 30 minutes (15-minute reservation TTL plus expiry slack) and before
+-- that workflow's next tap. Client events deduplicated by message id.
+WITH taps AS (
+  SELECT id, workflow_key, timestamp AS tapped_at
+  FROM `${project}.${raw_dataset}.suggestion_requested`
+  WHERE TRUE
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY id ORDER BY received_at) = 1
+),
+ordered AS (
+  SELECT id, workflow_key, tapped_at,
+         LEAD(tapped_at) OVER (PARTITION BY workflow_key ORDER BY tapped_at, id) AS next_tap_at
+  FROM taps
+),
+outcomes AS (
+  SELECT workflow_key, outcome, occurred_at
+  FROM `${project}.${dataset}.events_deduped`
+  WHERE event_name = 'suggestion_finished'
+),
+tap_outcomes AS (
+  SELECT o.id, o.workflow_key, o.tapped_at,
+         ARRAY_AGG(r.outcome IGNORE NULLS ORDER BY r.occurred_at LIMIT 1)[SAFE_OFFSET(0)] AS outcome
+  FROM ordered o
+  LEFT JOIN outcomes r
+    ON r.workflow_key = o.workflow_key
+   AND r.occurred_at >= o.tapped_at
+   AND r.occurred_at < TIMESTAMP_ADD(o.tapped_at, INTERVAL 30 MINUTE)
+   AND (o.next_tap_at IS NULL OR r.occurred_at < o.next_tap_at)
+  GROUP BY o.id, o.workflow_key, o.tapped_at
+)
+SELECT DATE_TRUNC(DATE(tapped_at), ISOWEEK) AS week,
+       COUNT(*) AS taps,
+       COUNT(DISTINCT workflow_key) AS workflows_tapped,
+       COUNTIF(outcome = 'ready') AS taps_ready,
+       COUNTIF(outcome = 'failed') AS taps_failed,
+       COUNTIF(outcome = 'expired') AS taps_expired,
+       COUNTIF(outcome IS NULL) AS taps_no_outcome
+FROM tap_outcomes
+GROUP BY week

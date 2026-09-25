@@ -576,3 +576,27 @@ variable "hex" {
     error_message = "hex requires analytics to be enabled."
   }
 }
+
+variable "rudderstack" {
+  description = "Opt-in Phase 30a client events: a raw dataset, staging bucket, and loader identity that RudderStack reaches through workload identity federation (no key). Set curated_views = true after RudderStack's first sync creates its tables. Requires analytics."
+  type = object({
+    workspace_id  = string
+    curated_views = optional(bool, false)
+    raw_dataset   = optional(string, "rudderstack_raw")
+    bucket_name   = optional(string)
+    account_id    = optional(string, "rudderstack-loader")
+    pool_id       = optional(string, "rudderstack")
+  })
+  default = null
+
+  validation {
+    condition     = var.rudderstack == null || var.analytics != null
+    error_message = "rudderstack requires analytics to be enabled."
+  }
+
+  validation {
+    # Interpolated into the pool's CEL trust condition, so only plain IDs.
+    condition     = var.rudderstack == null ? true : can(regex("^[A-Za-z0-9]+$", var.rudderstack.workspace_id))
+    error_message = "rudderstack.workspace_id must be the alphanumeric RudderStack workspace ID."
+  }
+}
